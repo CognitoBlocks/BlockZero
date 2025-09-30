@@ -8,7 +8,7 @@ from pathlib import Path
 from ..settings import Settings
 from mycelia.shared.logging import structlog
 
-log = structlog.get_logger(__name__)
+logger = structlog.get_logger(__name__)
 
 try:
     from datasets import load_dataset  # optional, but very handy
@@ -36,7 +36,7 @@ def _load_hf_dataset(dataset_id: str, subset: Optional[str]) -> DatasetBundle:
     train = ds.get("train") or ds[list(ds.keys())[0]]
     eval_ = ds.get("validation") or ds.get("eval") or None
     test = ds.get("test") or None
-    log.info("datasets.hf_loaded", dataset_id=dataset_id, subset=subset, splits=list(ds.keys()))
+    logger.info("datasets.hf_loaded", dataset_id=dataset_id, subset=subset, splits=list(ds.keys()))
     return DatasetBundle(name=f"{dataset_id}{('/'+subset) if subset else ''}", train=train, eval=eval_, test=test)
 
 

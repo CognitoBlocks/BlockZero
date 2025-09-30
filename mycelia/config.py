@@ -1,0 +1,319 @@
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import math
+import os
+import re
+from enum import Enum
+from pathlib import Path
+from typing import Dict, List, Literal, Optional
+
+import fsspec
+import torch
+from pydantic import BaseModel, Field, NonNegativeInt, PositiveInt, field_validator, model_validator
+
+from mycelia.shared.logging import structlog  
+
+logger = structlog.get_logger(__name__)
+
+# ---------------------------
+# Enums
+# ---------------------------
+
+class Precision(str, Enum):
+    fp32 = "fp32"
+    bf16 = "bf16"
+    fp16_mixed = "fp16-mixed"
+
+
+class AttnImpl(str, Enum):
+    sdpa = "sdpa"
+    flash = "flash"
+    eager = "eager"
+
+
+# ---------------------------
+# Sections
+# ---------------------------
+
+class RunCfg(BaseModel):
+    run_name: str = "centralised"
+    port: int = Field(29500, ge=1, le=65535)
+    miner_uid: int = 1
+
+
+class ModelCfg(BaseModel):
+    model_path: str = "Qwen/Qwen3-0.6B"
+    torch_compile: bool = True
+    attn_implementation: AttnImpl = AttnImpl.sdpa
+    precision: Precision = Precision.fp16_mixed
+    device: str = "cuda"
+
+class DataCfg(BaseModel):
+    dataset_name: str = "allenai/c4"
+    data_dir: str = "en"
+    batch_size: PositiveInt = 512
+    sequence_length: PositiveInt = 1024
+    per_device_train_batch_size: PositiveInt = 5
+
+
+class MoECfg(BaseModel):
+    my_expert_group_id: int = 1
+    dense_to_moe: bool = True
+    interleave: bool = True
+    noise: bool = False
+    noise_std: float = 0.1
+    num_experts: PositiveInt = 8
+    partial_topk: PositiveInt = 1
+    full_topk: PositiveInt = 2
+    aux_load_balance: bool = True
+    router_aux_loss_coef: float = 1.0
+    partial_moe: bool = True
+    num_worker_groups: PositiveInt = 2
+    rotate_expert: bool = False
+
+
+class OptimizerCfg(BaseModel):
+    lr: float = 2e-5
+    outer_lr: float = 0.7
+    outer_momentum: float = 0.9
+
+
+class ParallelismCfg(BaseModel):
+    gradient_accumulation_steps: Optional[PositiveInt] = None
+    global_opt_interval: PositiveInt = 100
+
+    @staticmethod
+    def _cuda_device_count_safe() -> int:
+        try:
+            return int(torch.cuda.device_count())
+        except Exception:
+            return 0
+
+class ScheduleCfg(BaseModel):
+    warmup_steps: PositiveInt = 600
+    total_steps: PositiveInt = 88_000
+    # Derived defaults for intervals set in Checkpoint/Logging via global_opt_interval
+
+
+class CheckpointCfg(BaseModel):
+    resume_from_ckpt: bool = True
+    base_checkpoint_path: Path = Path("./checkpoints")
+    checkpoint_path: Optional[Path] = None
+    checkpoint_interval: Optional[PositiveInt] = None
+    full_validation_interval: Optional[PositiveInt] = None
+    checkpoint_topk: PositiveInt = 20
+
+
+class LoggingCfg(BaseModel):
+    log_wandb: bool = True
+    wandb_project_name: str = "test-moe"
+    wandb_resume: bool = False
+    wandb_full_id: str = "oo2vn2v4"
+    wandb_partial_id: List[Optional[str]] = ["3q8mckj8"]
+    base_metric_path: Path = Path("./dimoe/metrics")
+    metric_path: Optional[Path] = None
+    metric_interval: Optional[PositiveInt] = None
+
+
+# ---------------------------
+# Top-level config
+# ---------------------------
+
+class Config(BaseModel):
+    """
+    Centralized training/eval configuration for DiMoE runs.
+
+    - Inputs grouped into sections
+    - Derived fields computed lazily
+    - Run-name bumping if checkpoint dir exists
+    """
+    run: RunCfg = RunCfg()
+    model: ModelCfg = ModelCfg()
+    data: DataCfg = DataCfg()
+    moe: MoECfg = MoECfg()
+    opt: OptimizerCfg = OptimizerCfg()
+    par: ParallelismCfg = ParallelismCfg()
+    sched: ScheduleCfg = ScheduleCfg()
+    ckpt: CheckpointCfg = CheckpointCfg()
+    log: LoggingCfg = LoggingCfg()
+
+    # -----------------------
+    # Derivations & hygiene
+    # -----------------------
+
+    @model_validator(mode="after")
+    def _derive_all(self):
+        # 1) Derived parallelism pieces that depend on data cfg
+        if self.par.gradient_accumulation_steps is None:
+            # ceil(batch_size / per_device_train_batch_size)
+            g = math.ceil(self.data.batch_size / self.data.per_device_train_batch_size)
+            self.par.gradient_accumulation_steps = max(1, int(g))
+
+        # 2) Derived paths from run_name
+        if self.ckpt.checkpoint_path is None:
+            self.ckpt.checkpoint_path = self.ckpt.base_checkpoint_path / self.run.run_name
+
+        if self.log.metric_path is None:
+            self.log.metric_path = self.log.base_metric_path / f"{self.run.run_name}.csv"
+
+        # 3) Interval defaults relative to global_opt_interval
+        goi = self.par.global_opt_interval
+        if self.ckpt.checkpoint_interval is None:
+            self.ckpt.checkpoint_interval = max(1, round(goi * 0.2))
+        if self.ckpt.full_validation_interval is None:
+            self.ckpt.full_validation_interval = max(1, round(goi * 0.2))
+        if self.log.metric_interval is None:
+            self.log.metric_interval = max(1, round(goi * 0.2))
+
+        logger.info(self.__str__())
+        return self
+
+    # ---- String / JSON helpers ----
+    def __str__(self) -> str:
+        """Pretty JSON representation of the config."""
+        # return json.dumps(self.dict(), indent=4)
+        return self.to_json()
+
+    def to_dict(self) -> dict:
+        return self.model_dump(mode="python")
+
+    def to_json(self, **kwargs) -> str:
+        return self.model_dump_json(**kwargs)
+    
+    # ---- Lifecycle hooks ----
+    def __init__(self, **data):
+        """
+        Initialize, validate derived fields, and auto-bump `run_name` if an on-disk
+        config exists and differs.
+        """
+        super().__init__(**data)
+
+        # Recompute dependent fields that rely on CUDA availability or run_name.
+        self._refresh_paths()
+
+        # If an existing config exists, bump run_name when the configs don't match.
+        config_path = os.path.join(self.ckpt.checkpoint_path, "config.json")
+        while os.path.exists(config_path):
+            logger.info(f"found existing config path {config_path}")
+            with open(config_path, "r", encoding="utf-8") as f:
+                existing_config_dict = json.load(f)
+            bumped = self.bump_run_name_if_diff(existing_config_dict)
+
+            if not bumped:  # landed on the same config
+                return
+            else:
+                # bumped so need to check on the config at the new folder
+                config_path = os.path.join(self.ckpt.checkpoint_path, "config.json")
+
+    @classmethod
+    def from_json(cls, path: str) -> "Config":
+        """
+        Load a Config from a JSON file.
+
+        Parameters
+        ----------
+        path : str
+            Path to the JSON config file.
+
+        Returns
+        -------
+        Config
+            Instantiated Config object.
+        """
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        logger.info(f"loaded config {data}")
+        return cls(**data)
+
+    # ---- Internal utilities ----
+    def _refresh_paths(self) -> None:
+        """Refresh paths that depend on `run_name`."""
+        self.ckpt.checkpoint_path = os.path.join(self.ckpt.base_checkpoint_path, self.run.run_name)
+        self.log.metric_path = os.path.join(self.log.base_metric_path, f"{self.run.run_name}.csv")
+
+    @staticmethod
+    def _bump_run_name(name: str) -> str:
+        """
+        Increment a run name in a `-vN` style.
+
+        Examples
+        --------
+        "foo" -> "foo-v2"
+        "foo-v3" -> "foo-v4"
+        "test-1B" -> "test-1B-v2"
+        """
+        m = re.match(r"^(.*?)(?:-v(\d+))?$", name)
+        if m:
+            base, ver = m.group(1), m.group(2)
+            return f"{base}-v{int(ver) + 1}" if ver else f"{base}-v2"
+        return name + "-v2"
+
+    # ---- Comparison & versioning ----
+    def same_as(self, other: Dict) -> bool:
+        """
+        Return True if configs are equivalent.
+
+        This compares key sets and values. It assumes `other` is a dict produced by
+        the same schema (e.g., read from a previous `config.json`).
+        """
+        self_keys = set(self.dict().keys())
+        other_keys = set(other.keys())
+
+        if self_keys != other_keys:
+            missing_in_other = self_keys - other_keys
+            extra_in_other = other_keys - self_keys
+            if missing_in_other:
+                logger.info(f"Keys present in self but missing in other: {missing_in_other}")
+            if extra_in_other:
+                logger.info(f"Keys present in other but missing in self: {extra_in_other}")
+            return False
+
+        equal = True
+        for k, v in self.dict().items():
+            if v != other[k]:
+                logger.info(f"Config mismatch {k}: existing {other[k]} vs new {v}")
+                equal = False
+        return equal
+
+    def bump_run_name_if_diff(self, other: Dict) -> bool:
+        """
+        If configs differ, bump `run_name` to the next version and refresh paths.
+
+        Returns
+        -------
+        bool
+            True if bumped, False if configs were the same.
+        """
+        if self.same_as(other):
+            return False
+        self.run_name = self._bump_run_name(self.run_name)
+        self._refresh_paths()
+        logger.info(f"Bumped run_name to {self.run_name} due to config differences.")
+        return True
+
+    # ---- Persistence ----
+    def write(self) -> None:
+        """
+        Persist this config to `<checkpoint_path>/config.json`.
+
+        Creates the directory if it does not exist.
+        """
+        os.makedirs(self.checkpoint_path, exist_ok=True)
+        target = os.path.join(self.checkpoint_path, "config.json")
+        with fsspec.open(target, "w", encoding="utf-8") as f:
+            json.dump(self.dict(), f, indent=4)
+        logger.info(f"Wrote config to {target}")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train DiMoE with config")
+    parser.add_argument(
+        "--path",
+        type=str,
+        help="Path to JSON config file",
+    )
+    return parser.parse_args()

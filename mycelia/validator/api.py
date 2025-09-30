@@ -10,7 +10,7 @@ from mycelia.shared.model import export_model_artifact, TinyMLP
 from mycelia.shared.logging import structlog
 from mycelia.shared.storage import put_bytes  # optional if you want to also publish to remote storage
 
-log = structlog.get_logger(__name__)
+logger = structlog.get_logger(__name__)
 
 app = FastAPI(title="Validator API", version="0.1.0")
 _settings = Settings()
@@ -46,7 +46,7 @@ def model_manifest():
         uri = put_bytes(blob, path_hint=f"validator/current_model.{fmt}.bin")
         manifest["artifact_uri"] = uri
     except Exception as e:
-        log.info("validator.manifest_no_remote_uri", error=str(e))
+        logger.info("validator.manifest_no_remote_uri", error=str(e))
 
     return JSONResponse(manifest)
 

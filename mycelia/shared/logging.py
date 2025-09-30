@@ -63,4 +63,4 @@ structlog.configure_once(
     wrapper_class=structlog.stdlib.BoundLogger,
     cache_logger_on_first_use=True,
 )
-log = structlog.get_logger()
+logger = structlog.get_logger(__name__)

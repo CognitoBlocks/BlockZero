@@ -10,46 +10,32 @@ import requests
 import torch
 from torch import nn
 
-from ..settings import Settings
-from .storage import get_bytes, put_bytes  # optional, if you store artifacts remotely
-from .logging import structlog  # or standard logging if you prefer
-from . import blockchain
+from mycelia.config import Config
+from mycelia.shared.logging import structlog  
+from mycelia.shared.expert_manager import ExpertManager, create_expert_groups 
+from mycelia.shared.modeling_moe import get_base_model  , partial_moe
+from mycelia.shared import blockchain
 
-log = structlog.get_logger(__name__)
+logger = structlog.get_logger(__name__)
 
-# ---- Default tiny model (stand-in) ----
-class TinyMLP(nn.Module):
-    def __init__(self, in_dim: int = 1024, hidden: int = 512, out_dim: int = 1024):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, out_dim),
-        )
+def _default_model(rank:int, config: Config) -> nn.Module:
+    start_step = 0   
+    em = ExpertManager(
+        model=get_base_model(config, noise= True),
+        rank=rank,
+        num_experts=config.moe.num_experts,
+        num_worker_groups=config.moe.num_worker_groups,
+    )
+    em.compute_group_assignments(seed=start_step if config.moe.rotate_expert else 0)
 
-    def forward(self, x):
-        return self.net(x)
+    model = get_base_model(config, noise=start_step == 0, expert_group_assignment=em.expert_group_assignment).to(config.model.device)
+    
+    if getattr(config, "partial_moe", False):
+        model = partial_moe(config, model, config.moe.my_expert_group_id, em.expert_group_assignment)
 
+    model = model.to(config.model.device)
 
-def _default_model(settings: Settings) -> nn.Module:
-    """
-    Provide a small, dependency-light model that always works in CPU/GPU.
-    Swap for HF AutoModel if you prefer (commented example below).
-    """
-    model = TinyMLP(in_dim=1024, hidden=512, out_dim=1024)
-    device = torch.device(settings.device if torch.cuda.is_available() or "cuda" in settings.device else "cpu")
-    model.to(device)
-    log.info("model.default_initialized", kind="TinyMLP", device=str(device))
     return model
-
-# If you want a HF-based default instead, uncomment:
-# from transformers import AutoModel
-# def _default_model(settings: Settings) -> nn.Module:
-#     model = AutoModel.from_pretrained(settings.model_name)
-#     device = torch.device(settings.device if torch.cuda.is_available() or "cuda" in settings.device else "cpu")
-#     model.to(device)
-#     log.info("model.default_initialized", kind="HF", name=settings.model_name, device=str(device))
-#     return model
 
 
 def _fetch_validator_endpoint_from_chain(round_hint: Optional[str] = None) -> Optional[str]:
@@ -62,7 +48,7 @@ def _fetch_validator_endpoint_from_chain(round_hint: Optional[str] = None) -> Op
         endpoint = (info or {}).get("api_base")
         return endpoint
     except Exception as e:
-        log.warning("model.chain_lookup_failed", error=str(e))
+        logger.warning("model.chain_lookup_failed", error=str(e))
         return None
 
 
@@ -81,7 +67,7 @@ def _ping_validator_and_get_manifest(api_base: str, timeout: float = 5.0) -> Opt
             return r.json()
         return None
     except Exception as e:
-        log.info("model.validator_unreachable", api_base=api_base, error=str(e))
+        logger.info("model.validator_unreachable", api_base=api_base, error=str(e))
         return None
 
 
@@ -93,7 +79,7 @@ def _download_artifact(manifest: dict, settings: Settings) -> bytes:
     """
     if "artifact_bytes_url" in manifest:
         url = manifest["artifact_bytes_url"]
-        log.info("model.downloading_direct", url=url)
+        logger.info("model.downloading_direct", url=url)
         r = requests.get(url, timeout=30)
         r.raise_for_status()
         return r.content
@@ -101,7 +87,7 @@ def _download_artifact(manifest: dict, settings: Settings) -> bytes:
     uri = manifest.get("artifact_uri")
     if not uri:
         raise ValueError("Manifest missing 'artifact_uri' or 'artifact_bytes_url'")
-    log.info("model.downloading_via_storage", uri=uri)
+    logger.info("model.downloading_via_storage", uri=uri)
     return get_bytes(uri)  # your storage backend should handle s3://, file://, ipfs://, etc.
 
 
@@ -112,7 +98,7 @@ def _load_from_blob(blob: bytes, fmt: str, device: str) -> nn.Module:
     """
     buffer = io.BytesIO(blob)
     state = torch.load(buffer, map_location="cpu")
-    model = TinyMLP()  # must match architecture used by validator
+    model = _default_model()  # must match architecture used by validator
     model.load_state_dict(state, strict=False)
     dev = torch.device(device if torch.cuda.is_available() or "cuda" in device else "cpu")
     model.to(dev)
@@ -120,30 +106,29 @@ def _load_from_blob(blob: bytes, fmt: str, device: str) -> nn.Module:
     return model
 
 
-def load_base(settings: Optional[Settings] = None, round_hint: Optional[str] = None) -> nn.Module:
+def load_base(config: Optional[Config] = None, round_hint: Optional[str] = None) -> nn.Module:
     """
     Main entry point used by miners (and potentially validator itself).
     1) Ask the chain for an active validator endpoint.
     2) If available, ping and fetch current model.
     3) Else, initialize a default model.
     """
-    cfg = settings or Settings()
+    config = config or Config()
     api_base = _fetch_validator_endpoint_from_chain(round_hint)
 
     if api_base:
         manifest = _ping_validator_and_get_manifest(api_base)
         if manifest:
             try:
-                blob = _download_artifact(manifest, cfg)
-                model = _load_from_blob(blob, manifest.get("format", "state_dict"), cfg.device)
-                log.info("model.loaded_from_validator", api_base=api_base)
+                blob = _download_artifact(manifest, config)
+                model = _load_from_blob(blob, manifest.get("format", "state_dict"), config.model.device)
+                logger.info("model.loaded_from_validator", api_base=api_base)
                 return model
             except Exception as e:
-                log.warning("model.validator_load_failed", error=str(e))
+                logger.warning("model.validator_load_failed", error=str(e))
 
     # Fallback
-    return _default_model(cfg)
-
+    return _default_model(rank = config.run.miner_uid, config = config)
 
 # --- Helper: export/save current model to artifact (used by validator) ---
 

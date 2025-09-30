@@ -12,7 +12,7 @@ fsspec==2024.6.1
 # ML stack
 # -----------------------------
 torch>=2.3.0       # install specific CUDA/CPU wheel from PyTorch website if needed
-transformers==4.44.0
+transformers>=4.56.0
 accelerate==1.0.0
 datasets==3.0.0
 bitsandbytes==0.43.1; platform_system == "Linux"
@@ -57,3 +57,9 @@ black==24.8.0
 mypy==1.11.1
 types-redis==4.6.0.20240819
 types-PyYAML==6.0.12.20240808
+
+# -----------------------------
+# Others
+# -----------------------------
+requests
+torch

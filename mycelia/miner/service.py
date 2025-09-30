@@ -19,19 +19,19 @@ def run(
 ):
     configure_logging()
     if config:
-        log.info("miner.config_path", path=config)
+        logger.info("miner.config_path", path=config)
         # If you wired YAML → Settings, load/merge here. For now, Settings() reads env.
     cfg = Settings()
-    log.info("miner.start", broker_url=cfg.broker_url, device=cfg.device, model=cfg.model_name)
+    logger.info("miner.start", broker_url=cfg.broker_url, device=cfg.device, model=cfg.model_name)
     try:
         run_service()
     except KeyboardInterrupt:
-        log.info("miner.stopped")
+        logger.info("miner.stopped")
 
 @app.command(help="Quick health check (exits 0 if import/startup is OK).")
 def health():
     configure_logging()
-    log.info("miner.health", status="ok")
+    logger.info("miner.health", status="ok")
 
 def run_app():
     app()
