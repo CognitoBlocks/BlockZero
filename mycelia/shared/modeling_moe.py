@@ -4,18 +4,18 @@ and provide helpers for partial (grouped) expert execution.
 
 Contents
 --------
-- DenseBlock: wraps Qwen3Moe MLP to behave like a "dense" block while preserving API
+- DenseBlock: wraps DeepseekV3 MLP to behave like a "dense" block while preserving API
 - myceliaSparseMoeBlock: sparse MoE block that activates only a subset of experts (by group)
-- CustomMoE: an Qwen3Moe model variant that interleaves MoE and dense blocks
+- CustomMoE: an DeepseekV3 model variant that interleaves MoE and dense blocks
 - get_base_model: load base LLaMA or OLMo, optionally convert to MoE
 - get_base_tokenizer: load tokenizer (HF login via env var if provided)
-- dense_model_to_moe: transform a dense model into Qwen3Moe parameter layout
+- dense_model_to_moe: transform a dense model into DeepseekV3 parameter layout
 - get_layer_expert_id: parse layer/expert indices from parameter names
 - partial_moe: drop experts outside the current group and rebuild a partial model
 
 Assumptions
 -----------
-- Parameter names use Qwen3Moe/transformers conventions (e.g., "model.layers.{i}.mlp.experts.{e}").
+- Parameter names use DeepseekV3/transformers conventions (e.g., "model.layers.{i}.mlp.experts.{e}").
 - Experts are identified by the "experts.{expert_id}" path segment.
 - Your `Config` provides fields used by `get_base_model` and `get_base_tokenizer`.
 """
@@ -27,6 +27,7 @@ import re
 import copy
 import logging
 from typing import Dict, List, Optional, Tuple, Union
+from collections import OrderedDict
 
 import torch
 import torch.nn as nn
@@ -41,28 +42,133 @@ from transformers import (
     AutoModelForCausalLM,
     PretrainedConfig
 )
-from transformers.models.qwen3_moe.modeling_qwen3_moe import (
-    Qwen3MoeDecoderLayer,
-    Qwen3MoeMLP,  
-    Qwen3MoeForCausalLM,
-    load_balancing_loss_func,
+from transformers.models.deepseek_v3.modeling_deepseek_v3 import (
+    DeepseekV3MoE,  
+    DeepseekV3MLP,  
+    DeepseekV3DecoderLayer,
+    DeepseekV3ForCausalLM,
+    DeepseekV3TopkRouter,
 )
-from transformers.models.qwen3_moe.configuration_qwen3_moe import Qwen3MoeConfig
-
+from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
+from transformers.utils.deprecation import deprecate_kwarg
 from transformers.modeling_outputs import MoeCausalLMOutputWithPast
-from transformers.models.qwen3.modeling_qwen3 import Qwen3DecoderLayer, Qwen3Attention
 
 from mycelia.config import Config
+from mycelia.shared.logging import structlog  
+from mycelia.shared.deepseek.modeling_deepseek import DeepseekAttention  
+from mycelia.shared.helper import *  
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
-class SparseMoeBlock(nn.Module):
+class Decoder(DeepseekV3DecoderLayer):
+
+    @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Cache] = None,
+        use_cache: Optional[bool] = False,
+        cache_position: Optional[torch.LongTensor] = None,
+        position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        **kwargs: Unpack[TransformersKwargs],
+    ) -> torch.Tensor:
+        logger.info("A")
+        residual = hidden_states
+        logger.info("A1")
+        hidden_states = self.input_layernorm(hidden_states)
+        # Self Attention
+        logger.info("A2")
+        hidden_states, _ = self.self_attn(
+            hidden_states=hidden_states,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            position_embeddings=position_embeddings,
+            **kwargs,
+        )
+        logger.info("A3")
+        hidden_states = residual + hidden_states
+        logger.info("B")
+        # Fully Connected
+        residual = hidden_states
+        logger.info("C")
+        hidden_states = self.post_attention_layernorm(hidden_states)
+        logger.info("D")
+        hidden_states = self.mlp(hidden_states)
+        logger.info("E")
+        hidden_states = residual + hidden_states
+        logger.info("F")
+        return hidden_states
+
+class TopkRouter(DeepseekV3TopkRouter):
+    def __init__(self, config, available_experts = None):
+        super().__init__(config)
+        if available_experts is not None:
+            self.available_experts = torch.as_tensor(available_experts)
+
+        self.weight = nn.Parameter(torch.zeros((self.n_routed_experts, config.hidden_size)))
+
+    # @torch.no_grad()
+    def _mask_routing_weights(self, x: torch.Tensor, dim: int = 1) -> torch.Tensor:
+        """
+        Zero-out routing weights for experts not present in this group.
+        """
+        mask_1d = torch.zeros(x.size(dim), dtype=torch.bool, device=x.device)
+        mask_1d[self.available_experts.to(x.device)] = True
+
+        # Broadcast mask across all other dims
+        shape = [1] * x.ndim
+        shape[dim] = x.size(dim)
+        mask = mask_1d.view(shape).to(dtype=x.dtype)
+
+        # logger.info("masking", mask)
+        return x * mask
+    
+    # @torch.no_grad()
+    def get_topk_indices(self, scores):
+
+        scores_for_choice = scores.view(-1, self.n_routed_experts) + self.e_score_correction_bias.unsqueeze(0)
+        group_scores = (
+            scores_for_choice.view(-1, self.n_group, self.n_routed_experts // self.n_group)
+            .topk(2, dim=-1)[0]
+            .sum(dim=-1)
+        )
+        group_idx = torch.topk(group_scores, k=self.topk_group, dim=-1, sorted=False)[1]
+        group_mask = torch.zeros_like(group_scores)
+        group_mask.scatter_(1, group_idx, 1)
+        score_mask = (
+            group_mask.unsqueeze(-1)
+            .expand(-1, self.n_group, self.n_routed_experts // self.n_group)
+            .reshape(-1, self.n_routed_experts)
+        )
+        scores_for_choice = scores_for_choice.masked_fill(~score_mask.bool(), 0.0)
+        scores_for_choice = self._mask_routing_weights(scores_for_choice)
+        topk_indices = torch.topk(scores_for_choice, k=self.top_k, dim=-1, sorted=False)[1]
+        return topk_indices
+
+    # TODO: no customisation needed here, remove
+    def forward(self, hidden_states):
+        hidden_states = hidden_states.view(-1, self.config.hidden_size)
+        router_logits = F.linear(hidden_states.type(torch.float32), self.weight.type(torch.float32))
+        scores = router_logits.sigmoid()
+        topk_indices = self.get_topk_indices(scores)
+        topk_weights = scores.gather(1, topk_indices)
+        if self.norm_topk_prob:
+            denominator = topk_weights.sum(dim=-1, keepdim=True) + 1e-20
+            topk_weights /= denominator
+        topk_weights = topk_weights * self.routed_scaling_factor
+        return topk_indices, topk_weights
+class SparseMoeBlock(DeepseekV3MoE):
     """
     Sparse MoE block that only uses a subset of experts assigned to the current group.
 
     Parameters
     ----------
-    config : Qwen3MoeConfig-like
+    config : DeepseekV3Config-like
         Must provide: hidden_size, num_experts, num_experts_per_tok, norm_topk_prob.
     my_group_id : int
         The group this rank belongs to.
@@ -80,94 +186,59 @@ class SparseMoeBlock(nn.Module):
         my_group_id: int | None = None,
         expert_group_assignment: Dict[int, Dict[int, List[int]]] | None = None,
     ):
-        super().__init__()
+        super().__init__(config)
         self.num_experts: int = config.num_experts
         self.top_k: int = config.num_experts_per_tok
-        self.norm_topk_prob: bool = getattr(config, "norm_topk_prob", True)
+        self.norm_topk_prob: bool = getattr(config,"norm_topk_prob", True)
         self.layer_id: int = layer_id
         self.expert_group_assignment = expert_group_assignment
-
-        # Router gate that scores experts
-        self.gate = nn.Linear(config.hidden_size, self.num_experts, bias=False)
 
         # Only instantiate experts owned by this group at this layer
         if my_group_id is not None and expert_group_assignment is not None:
             allowed = expert_group_assignment[layer_id][my_group_id]
-            self.experts = nn.ModuleDict({str(k): Qwen3MoeMLP(config) for k in allowed})
+        
         elif num_experts is not None:
             allowed = list(range(num_experts))
-            self.experts = nn.ModuleDict({str(k): Qwen3MoeMLP(config) for k in allowed})
-        else:
-            raise KeyError
+        
+        self.experts = nn.ModuleDict({str(k): DeepseekV3MLP(config, intermediate_size=config.moe_intermediate_size) for k in allowed})
 
-        self.keep_ids = torch.as_tensor([int(k) for k in self.experts.keys()])
-
-    def _mask_routing_weights(self, x: torch.Tensor, my_group_id: int | None = None, dim: int = 1) -> torch.Tensor:
-        """
-        Zero-out routing weights for experts not present in this group.
-        """
-
-        if my_group_id is None:
-            keep_ids = self.keep_ids
-        else:
-            keep_ids = torch.as_tensor(self.expert_group_assignment[self.layer_id][my_group_id], device=x.device)
-
-        mask_1d = torch.zeros(x.size(dim), dtype=torch.bool, device=x.device)
-        mask_1d[keep_ids.to(x.device)] = True
-
-        # Broadcast mask across all other dims
-        shape = [1] * x.ndim
-        shape[dim] = x.size(dim)
-        mask = mask_1d.view(shape).to(dtype=x.dtype)
-        return x * mask
-
-    def forward(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        batch_size, sequence_length, hidden_dim = hidden_states.shape
-        hidden_states = hidden_states.view(-1, hidden_dim)
-        # router_logits: (batch * sequence_length, n_experts)
-        router_logits = self.gate(hidden_states)
-
-        routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
-        routing_weights = self._mask_routing_weights(routing_weights)
-        routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
-
-        if self.norm_topk_prob:
-            routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
-
-        # we cast back to the input dtype
-        routing_weights = routing_weights.to(hidden_states.dtype)
-
-        final_hidden_states = torch.zeros(
-            (batch_size * sequence_length, hidden_dim),
-            dtype=hidden_states.dtype,
-            device=hidden_states.device,
+        self.shared_experts = DeepseekV3MLP(
+            config=config, intermediate_size=config.moe_intermediate_size * config.n_shared_experts
         )
+        
+        self.available_experts = torch.as_tensor([int(k) for k in self.experts.keys()])
 
-        # One hot encode the selected experts to create an expert mask
-        # this will be used to easily index which expert is going to be selected
-        expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+        self.gate = TopkRouter(config, self.available_experts)
 
-        # Loop over all available experts in the model and perform the computation on each expert
-        for expert_idx in self.experts.keys():
-            expert_layer = self.experts[expert_idx]
-            idx, top_x = torch.where(expert_mask[int(expert_idx)])
+    def moe(self, hidden_states: torch.Tensor, topk_indices: torch.Tensor, topk_weights: torch.Tensor):
+        r"""
+        CALL FOR CONTRIBUTION! I don't have time to optimise this right now, but expert weights need to be fused
+        to not have to do a loop here (deepseek has 256 experts soooo yeah).
+        """
+        final_hidden_states = torch.zeros_like(hidden_states, dtype=topk_weights.dtype)
+        expert_mask = torch.nn.functional.one_hot(topk_indices, num_classes=self.num_experts)
+        expert_mask = expert_mask.permute(2, 0, 1)
 
-            # Index the correct hidden states and compute the expert hidden state for
-            # the current expert. We need to make sure to multiply the output hidden
-            # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
-            current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
-            current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
+        for expert_idx in self.available_experts.tolist():
+            expert = self.experts[str(expert_idx)]
+            mask = expert_mask[expert_idx]
+            token_indices, weight_indices = torch.where(mask)
 
-            # However `index_add_` only support torch tensors for indexing so we'll use
-            # the `top_x` tensor here.
-            final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
-        final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
+            if token_indices.numel() > 0:
+                expert_weights = topk_weights[token_indices, weight_indices]
+                expert_input = hidden_states[token_indices]
+                expert_output = expert(expert_input)
+                weighted_output = expert_output * expert_weights.unsqueeze(-1)
+                final_hidden_states.index_add_(0, token_indices, weighted_output)
 
-        return final_hidden_states, router_logits
-
-class MyceliaMoE(Qwen3MoeForCausalLM):
+        # in original deepseek, the output of the experts are gathered once we leave this module
+        # thus the moe module is itelsf an IsolatedParallel module
+        # and all expert are "local" meaning we shard but we don't gather
+        
+        return final_hidden_states.type(hidden_states.dtype)
+class MyceliaMoE(DeepseekV3ForCausalLM):
     """
-    Qwen3Moe variant that interleaves MoE and dense blocks and optionally restricts experts
+    DeepseekV3 variant that interleaves MoE and dense blocks and optionally restricts experts
     to those owned by the calling group.
 
     If `partial=True`, MoE blocks become `myceliaSparseMoeBlock` limited to the group’s experts.
@@ -177,7 +248,7 @@ class MyceliaMoE(Qwen3MoeForCausalLM):
     def __init__(
         self,
         config: Config,
-        model_config: Qwen3MoeConfig,
+        model_config: PretrainedConfig,
         my_group_id: Optional[int] = None,
         expert_group_assignment: Optional[Dict[int, Dict[int, List[int]]]] = None,
         partial: bool = False,
@@ -186,13 +257,16 @@ class MyceliaMoE(Qwen3MoeForCausalLM):
         layers: List[nn.Module] = []
 
         for i in range(model_config.num_hidden_layers):
-            layer = Qwen3MoeDecoderLayer(model_config, layer_idx=i)
+            # layer = DeepseekV3DecoderLayer(model_config, layer_idx=i)
+            layer = Decoder(model_config, layer_idx=i)
 
-            # Interleave MoE and dense layers (MoE on even indices if interleave=True)
+            layer.self_attn = DeepseekAttention(model_config)
+            
+            # Interleave MoE and dense layers (MoE on odd indices if interleave=True)
             if getattr(model_config, "interleave", True) and (i + 1) % model_config.decoder_sparse_step == 0:
                 if not partial:
                     layer.mlp = SparseMoeBlock(
-                        model_config, i, num_experts=config.num_experts, expert_group_assignment=expert_group_assignment
+                        model_config, i, num_experts=config.moe.num_experts, expert_group_assignment=expert_group_assignment
                     )  # full MoE (all experts)
                 else:
                     assert (
@@ -201,7 +275,13 @@ class MyceliaMoE(Qwen3MoeForCausalLM):
                     layer.mlp = SparseMoeBlock(
                         model_config, i, my_group_id=my_group_id, expert_group_assignment=expert_group_assignment
                     )
+            
+            elif i == 0:
+                layer.mlp = DeepseekV3MLP(model_config, intermediate_size=10944)
 
+            else:
+                layer.mlp = DeepseekV3MLP(model_config)
+            
             layers.append(layer)
 
         self.model.layers = nn.ModuleList(layers)
@@ -250,11 +330,12 @@ class MyceliaMoE(Qwen3MoeForCausalLM):
         output_router_logits = (
             output_router_logits if output_router_logits is not None else self.config.output_router_logits
         )
+
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
+        
         # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
         outputs = self.model(
             input_ids=input_ids,
@@ -269,7 +350,7 @@ class MyceliaMoE(Qwen3MoeForCausalLM):
             return_dict=return_dict,
             cache_position=cache_position,
         )
-
+        
         hidden_states = outputs[0]
         # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
@@ -311,9 +392,8 @@ class MyceliaMoE(Qwen3MoeForCausalLM):
             past_key_values=outputs.past_key_values,
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
-            router_logits=outputs.router_logits,
+            router_logits=outputs.router_logits if output_router_logits else None,
         )
-
 
 # ---------------------------------------------------------------------
 # Loading helpers
@@ -322,7 +402,7 @@ def get_base_model(
     config: Config, expert_group_assignment: Dict[int, Dict[int, List[int]]] | None = None, noise: bool = False, full=False
 ) -> Optional[LlamaForCausalLM | OlmoForCausalLM]:
     """
-    Load a base Causal LM by `config.model_path` and optionally convert to MoE.
+    Load a base Causal LM by `config.model.model_path` and optionally convert to MoE.
 
     Returns
     -------
@@ -338,26 +418,25 @@ def get_base_model(
     elif "olmo" in config.model.model_path:
         model = OlmoForCausalLM.from_pretrained(config.model.model_path)
 
-    elif "Qwen" in config.model.model_path:
-        model = AutoModelForCausalLM.from_pretrained(config.model.model_path)
+    else:
+        model = AutoModelForCausalLM.from_pretrained(config.model.model_path, trust_remote_code=True) #TODO: need miner agreement to trust remote code
 
-    if model is not None and getattr(config, "dense_to_moe", False):
-        noise = getattr(config, "noise", False) and noise
-        logger.info(f"dense_model_to_moe noise {noise}")
-        model = dense_model_to_moe(
+    if model is not None and get_nested_attr(config,"moe.dense_to_moe", False):
+        noise = get_nested_attr(config,"moe.noise", False) and noise
+        # logger.info(f"extract_model_from_shared_expert", noise = noise)
+        model = extract_model_from_shared_expert(
             config,
             model,
             topk=config.moe.full_topk if full else config.moe.partial_topk,
             noise=noise,
-            noise_std=getattr(config, "noise_std", 0.02),
+            noise_std=get_nested_attr(config,"moe.noise_std", 0.02),
             expert_group_assignment=expert_group_assignment,
         )
 
-    if model is not None and getattr(config, "torch_compile", False):
+    if model is not None and get_nested_attr(config,"model.torch_compile", False):
         model = torch.compile(model)
 
     return model
-
 
 def get_base_tokenizer(config: Config):
     """
@@ -371,7 +450,7 @@ def get_base_tokenizer(config: Config):
     """
 
     tokenizer = AutoTokenizer.from_pretrained(config.model.model_path, use_fast=True)
-    tokenizer.pad_token = "</s>"
+    # tokenizer.pad_token = "</s>"
     return tokenizer
 
 def noise_injection(weight: torch.Tensor, noise_ratio: float = 0.5, init_std: float = 0.02) -> torch.Tensor:
@@ -398,6 +477,107 @@ def noise_injection(weight: torch.Tensor, noise_ratio: float = 0.5, init_std: fl
     weight[mask] = rand_weight[mask]
     return weight
 
+def extract_model_from_shared_expert(   
+    config: Config,
+    model: nn.Module,
+    topk: int,
+    noise: bool = False,
+    noise_std: Optional[float] = None,
+    expert_group_assignment: Dict[int, list] | None = None,
+):
+
+    gate_mat_pat = re.compile(
+        r"^model\.layers\.(\d+)\.mlp\.gate\.weight$"
+    )
+
+    state_dict = model.state_dict()
+    moe_config = get_moe_model_config(config, topk, org_model = model)
+
+    # 1) Find per-layer top expert index from gate.weight
+    # TODO: change top expert selection based on sigmoid gate weight & may need to select multiple expert 
+    layer_top_expert = {}
+    for k, v in state_dict.items():
+        m = gate_mat_pat.match(k)
+        if not m:
+            continue
+
+        layer = int(m.group(1))
+        gate_w = v
+        try:
+            scores = gate_w.sum(dim=1)         # [num_experts]
+        
+        except Exception as ex:
+            raise RuntimeError(
+                f"Failed to compute per-expert sums for {k} "
+                f"(shape={tuple(getattr(gate_w, 'shape', []))})."
+            ) from ex
+
+        try:
+            # torch.Tensor argmax
+            top_idx = int(scores.argmax().item())
+        except Exception:
+            # Fallback for non-torch arrays
+            top_idx = int(scores.argmax())
+
+        layer_top_expert[layer] = top_idx
+
+    # logger.info("top experts", layer_top_expert)
+
+    # 2) Build new state dict, copying everything except experts that we drop/overwrite
+    new_sd = OrderedDict()
+    for k, v in state_dict.items():
+        layer, expert_id = get_layer_expert_id(k)
+
+        # no layer -> directly copy old 
+        if layer is None:
+            new_sd[k] = v
+            continue 
+        
+
+        # no expert -> if layer is even -> skip, else directly copy 
+        if expert_id is None:
+            if (layer + 1) % 2 == 0: 
+                if "mlp.gate.weight" in k:
+                    gate_sd = TopkRouter(moe_config).state_dict()
+                    new_sd[k] = gate_sd['weight']
+                    new_sd[k.replace('weight', 'e_score_correction_bias')] = gate_sd['e_score_correction_bias']
+                    continue
+                else:
+                    new_sd[k] = v
+                    continue 
+
+            elif "gate.weight" not in k and "shared" not in k:
+                new_sd[k] = v
+                continue 
+            else:
+                continue
+            
+        if expert_id >= config.moe.num_experts:
+            continue
+
+        if layer not in layer_top_expert:
+            new_sd[k] = v
+            continue 
+
+        top_eid = layer_top_expert[layer]
+        # We keep the slot but replace its weight with the top expert's weight
+        src_key = k.replace(f"expert.{expert_id}", f"expert.{top_eid}")        
+        if (layer + 1) % 2 == 0 :
+            src_w = state_dict[src_key]
+            try:
+                new_sd[k] = src_w.clone()
+            except AttributeError:
+                new_sd[k] = src_w
+
+        elif expert_id == 0:
+            new_sd[k.replace(f"experts.{expert_id}.", "")] = state_dict[src_key].clone()
+
+    # Start from a base OLMoE config, then copy overlapping fields from the dense config
+    model = MyceliaMoE(config, moe_config, expert_group_assignment=expert_group_assignment)
+
+    # TODO: strict should be true
+    _missing, _unexpected = model.load_state_dict(new_sd, strict=False)  # will raise if mismatch
+    return model
 
 def dense_model_to_moe(
     config: Config,
@@ -457,7 +637,7 @@ def dense_model_to_moe(
 
         # Convert target MLP layers into MoE (interleave == even layers or all if interleave=False)
         if mlp_layer_name["w1"] in key and (
-            (config.moe.interleave and layer_index is not None and layer_index % 2 == 0) or not config.moe.interleave
+            (config.moe.interleave and layer_index is not None and (layer_index + 1) % 2 == 0) or not config.moe.interleave
         ):
             layer_prefix = key[: key.find("mlp.") + len("mlp.")]
             layer_suffix = key[key.find("mlp.") + len("mlp.") :]
@@ -510,34 +690,37 @@ def dense_model_to_moe(
             pass
 
     # Start from a base OLMoE config, then copy overlapping fields from the dense config
-    moe_config = get_model_config(config, topk)
-    dense_config = dense_model.config
-    for k, v in dense_config.to_dict().items():
-        setattr(moe_config, k, v)
+    moe_config = get_moe_model_config(config, topk, org_model = dense_model)
 
     model = MyceliaMoE(config, moe_config, expert_group_assignment=expert_group_assignment)
-
+    
     _missing, _unexpected = model.load_state_dict(moe_sd, strict=True)  # will raise if mismatch
     return model
 
-def get_model_config(config: Config, topk: int, org_model: nn.Module = None) -> PretrainedConfig:
+def get_moe_model_config(config: Config, topk: int, org_model: nn.Module = None) -> PretrainedConfig:
 
     # get the base config from qwen model 
-    base_config = AutoConfig.from_pretrained("Qwen/Qwen3-0.6B")
+    base_config = AutoConfig.from_pretrained("deepseek-ai/DeepSeek-V3") #TODO: need user permission
+    # base_config = AutoConfig.from_pretrained(config.model.model_path, trust_remote_code=True) #TODO: need user permission
     
-    # merge our subnet config to the base config 
-    base_config.num_experts = int(config.moe.num_experts)
-    base_config.num_experts_per_tok = int(topk)
-    base_config.interleave = bool(config.moe.interleave)
-    base_config.output_router_logits = getattr(config, "aux_load_balance", False)
-    base_config.router_aux_loss_coef = getattr(config, "router_aux_loss_coef", False)
-    base_config.norm_topk_prob = True
-
     # merge the existing model config into the base config
     if org_model is not None:
         org_model_config = org_model.config
         for k, v in org_model_config.to_dict().items():
             setattr(base_config, k, v)
+    
+    # merge our subnet config to the base config 
+    base_config.num_experts = int(config.moe.num_experts)
+    base_config.n_routed_experts = int(config.moe.num_experts)
+    base_config.n_group = 1
+    base_config.topk_group = 1
+    base_config.num_experts_per_tok = int(topk)
+    base_config.interleave = bool(config.moe.interleave)
+    base_config.intermediate_size = base_config.moe_intermediate_size
+    base_config.decoder_sparse_step = 2 if bool(config.moe.interleave) else 1
+    base_config.output_router_logits = get_nested_attr(config,"moe.aux_load_balance", False)
+    base_config.router_aux_loss_coef = get_nested_attr(config,"moe.router_aux_loss_coef", False)
+    base_config.norm_topk_prob = True
     
     return base_config
 
@@ -556,7 +739,6 @@ def get_layer_expert_id(layer_name: str) -> Tuple[Optional[int], Optional[int]]:
     layer_id = int(m.group(1))
     expert_id = int(m.group(2)) if m.group(2) is not None else None
     return layer_id, expert_id
-
 
 def partial_moe(
     config: Config,
@@ -590,13 +772,13 @@ def partial_moe(
             del sd[k]
 
     topk = getattr(moe_model.config, "num_experts_per_tok", 2)
-    moe_config = get_model_config(config, topk, moe_model)
+    moe_config = get_moe_model_config(config, topk, moe_model)
 
     partial = MyceliaMoE(
         config, moe_config, my_group_id=my_group_id, expert_group_assignment=expert_group_assignment, partial=True
     )
 
-    if partial is not None and getattr(config, "torch_compile", False):
+    if partial is not None and get_nested_attr(config,"model.torch_compile", False):
         partial = torch.compile(partial)
 
     partial.load_state_dict(sd, strict=True)  # partial by design

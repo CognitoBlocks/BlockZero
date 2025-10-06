@@ -1,4 +1,5 @@
-from ..shared import messaging, scoring, blockchain
+from . import scoring
+from ..shared import messaging, blockchain
 from .evaluator import Evaluator
 from .aggregator import Aggregator
 

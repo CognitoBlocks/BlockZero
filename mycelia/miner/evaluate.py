@@ -44,6 +44,7 @@ logger = structlog.getLogger(__name__)
 
 tqdm(disable=True, total=0)
 
+@torch.no_grad
 def evaluate_model(
     step: int,
     model: nn.Module,
@@ -86,7 +87,7 @@ def evaluate_model(
                 outputs = model(**device_batch)
 
             loss_sum += float(outputs.loss.detach().item())
-            aux_loss_sum += float(outputs.aux_loss.detach().item())
+            aux_loss_sum += float(outputs.aux_loss.detach().item()) if outputs.aux_loss is not None else 0
 
             del outputs, device_batch
 

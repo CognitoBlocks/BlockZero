@@ -1,8 +1,3 @@
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Protocol, Dict, Any
-from mycelia.shared import messaging, training, weights, storage, model, datasets
-
 import os
 import gc
 import time
@@ -32,7 +27,7 @@ from mycelia.shared.modeling_moe import get_base_tokenizer, partial_moe
 from mycelia.shared.datasets import get_dataloader, HFStreamingTorchDataset
 from mycelia.miner.train_helper import free_cuda_models, get_status
 from mycelia.miner.evaluate import evaluate_model
-from mycelia.miner.checkpoint import (
+from mycelia.shared.checkpoint import (
     get_resume_info,
     save_checkpoint,
     load_checkpoint,
@@ -46,6 +41,7 @@ from mycelia.shared.expert_manager import (
     get_weight_sum,
     broadcast_weights,
 )
+from mycelia.shared.helper import *
 
 configure_logging()
 logger = structlog.get_logger(__name__)
@@ -121,7 +117,7 @@ def setup_training(
         global_model (nn.Module): Deep-copied global model on CPU, kept in sync with `model`.
         inner_optimizer (Optimizer): Optimizer for `model`.
         outer_optimizer (Optimizer): Optimizer for `global_model`.
-        scaler (torch.cuda.amp.GradScaler): GradScaler (enabled iff `config.precision == "fp16-mixed"`).
+        scaler (torch.cuda.amp.GradScaler): GradScaler (enabled iff `config.model.precision == "fp16-mixed"`).
         scheduler (LRScheduler): LR scheduler attached to `inner_optimizer`.
         start_step (int): Step to resume from (0 if starting fresh).
         expert_groups (Sequence[Sequence[int]]): Grouping returned by `create_expert_groups`; typically a list
@@ -138,21 +134,21 @@ def setup_training(
     resume = False
     start_step = 0
     latest_checkpoint_path = None
-    if getattr(config, "resume_from_ckpt", False):
+    if get_nested_attr(config,"ckpt.resume_from_ckpt", False):
         resume, start_step, latest_checkpoint_path = get_resume_info(rank, config)
 
     # === model & Experts manager ===
-    model, em = load_base_model(config)
+    model, em = load_base_model(rank, config)
     model = model.to(device)
     global_model = copy.deepcopy(model).cpu()
 
     # === optimizers ===
     logger.info(f" rank {rank} optimizer")
-    inner_optimizer = torch.optim.AdamW(model.named_parameters(), lr=config.lr, weight_decay=0.1, betas=(0.9, 0.95))
+    inner_optimizer = torch.optim.AdamW(model.named_parameters(), lr=config.opt.lr, weight_decay=0.1, betas=(0.9, 0.95))
     outer_optimizer = torch.optim.SGD(
         global_model.named_parameters(),
-        lr=config.outer_lr,
-        momentum=config.outer_momentum,
+        lr=config.opt.outer_lr,
+        momentum=config.opt.outer_momentum,
         nesterov=True,
     )
 
@@ -160,18 +156,19 @@ def setup_training(
     logger.info(f" rank {rank} scheduler")
     scheduler = get_cosine_schedule_with_warmup(
         inner_optimizer,
-        num_warmup_steps=config.warmup_steps,
-        num_training_steps=config.total_steps,
+        num_warmup_steps=config.sched.warmup_steps,
+        num_training_steps=config.sched.total_steps,
     )
 
     # === scaler ===
-    inner_scaler = torch.amp.GradScaler("cuda", enabled=(getattr(config, "precision", "") == "fp16-mixed"))
-    outer_scaler = torch.amp.GradScaler("cuda", enabled=(getattr(config, "precision", "") == "fp16-mixed"))
+    inner_scaler = torch.amp.GradScaler("cuda", enabled=(get_nested_attr(config, "model.precision", "") == "fp16-mixed"))
+    outer_scaler = torch.amp.GradScaler("cuda", enabled=(get_nested_attr(config, "model.precision", "") == "fp16-mixed"))
 
     # === dataloader ===
-    train_dataloader = get_dataloader(config, rank=rank, world_size=config.world_size, tokenizer=tokenizer)
+    train_dataloader = get_dataloader(config, rank=rank, world_size=config.data.world_size, tokenizer=tokenizer)
+
     # === load checkpoint (if any) ===
-    if getattr(config, "resume_from_ckpt", False) and resume and latest_checkpoint_path:
+    if get_nested_attr(config,"resume_from_ckpt", False) and resume and latest_checkpoint_path:
         # logger.info(
         #     "rank %s setup training: resuming from %s (start_step=%s)", rank, latest_checkpoint_path, start_step
         # )
@@ -281,7 +278,7 @@ def train_worker(rank: int, world_size: int, config: Config) -> None:
                     else:
                         msg = f"loss_batch {loss_batch:.4f} | {msg}"
 
-                logger.info(f"rank {rank} | step {step} | inner {inner_opt_step} | group {my_group_id} | {msg}")
+                logger.info(f"rank {rank} | step {step} | inner {inner_opt_step} | {msg}")
 
             inner_opt_step = step // config.local_par.gradient_accumulation_steps
             is_inner_optimizer_step = step % config.local_par.gradient_accumulation_steps == 0
@@ -348,7 +345,7 @@ def train_worker(rank: int, world_size: int, config: Config) -> None:
                 metric_logger.log(metrics, print_log=False)
 
             # === global optimizer ===
-            if not is_start_step and is_inner_optimizer_step and inner_opt_step % config.local_par.global_opt_interval == 0 and config.eval_world_size >= 1:
+            if not is_start_step and is_inner_optimizer_step and inner_opt_step % config.local_par.global_opt_interval == 0 :
                 # --- pre-opt: barrier reached + eval ---
                 logp(f"reached global opt barrier", loss_batch, aux_loss_batch)
 
@@ -482,8 +479,8 @@ def train_worker(rank: int, world_size: int, config: Config) -> None:
                 gc.collect()
                 torch.cuda.empty_cache()
 
-    except:
-        logger.info("Training completed.")
+    except Exception as E:
+        logger.error("Quit training", exc_info=True)
         cleanup()
         metric_logger.close()
 

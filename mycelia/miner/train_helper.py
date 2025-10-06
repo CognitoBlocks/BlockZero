@@ -19,30 +19,26 @@ from transformers import (
     get_cosine_schedule_with_warmup,
 )
 
-from dimoe.config import Config
-from dimoe.metric_logger import MetricLogger
-from dimoe.model import get_base_model, get_base_tokenizer, partial_moe
-from dimoe.data import get_dataloader
-from dimoe.checkpoint import (
+from mycelia.config import Config
+from mycelia.shared.metrics import MetricLogger
+from mycelia.shared.model import get_base_model, partial_moe
+from mycelia.shared.modeling_moe import get_base_tokenizer
+from mycelia.shared.datasets import get_dataloader
+from mycelia.shared.checkpoint import (
     get_resume_info,
     save_checkpoint,
     load_checkpoint,
     delete_old_checkpoints,
 )
-from dimoe.expert_manager import (
+from mycelia.shared.expert_manager import (
     ExpertManager,
     create_expert_groups,
     sync_expert_weights,
-    sync_shared_weights,
+    sync_weights,
     get_weight_sum,
     broadcast_weights,
 )
-from dimoe.evaluate import (
-    send_shard,
-    mark_done,
-    Evaluator,
-    _init_evaluator_rref,
-    get_evaluator_rref,
+from mycelia.miner.evaluate import (
     evaluate_model,
 )
 
@@ -170,9 +166,9 @@ def get_status(
     Times are reported in hours, throughput in tokens/second.
     """
 
-    total_batch_size = config.batch_size * config.world_size
+    total_batch_size = config.data.batch_size * config.local_par.world_size
     total_samples = inner_opt_step * total_batch_size
-    total_tokens = total_samples * config.sequence_length
+    total_tokens = total_samples * config.data.sequence_length
 
     _, expert_sum = get_weight_sum(model, shared=False)
 
@@ -192,7 +188,7 @@ def get_status(
         metrics = metrics | {
             "inner_step_time_hours": training_time / 3600,
             "total_training_time_hours": total_training_time / 3600,
-            "tokens_per_second": (config.sequence_length * total_batch_size) / training_time,
+            "tokens_per_second": (config.data.sequence_length * total_batch_size) / training_time,
         }
     if loss_batch is not None and loss_batch != 0:
         if aux_loss_batch is not None and aux_loss_batch != 0:

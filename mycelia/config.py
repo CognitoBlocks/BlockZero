@@ -42,9 +42,8 @@ class RunCfg(BaseModel):
     run_name: str = "centralised"
     miner_uid: int = 1
 
-
 class ModelCfg(BaseModel):
-    model_path: str = "Qwen/Qwen3-0.6B"
+    model_path: str = "deepseek-ai/deepseek-moe-16b-base" # although we are calling a large model here, but we would only be training a partial of it for each miner
     torch_compile: bool = True
     attn_implementation: AttnImpl = AttnImpl.sdpa
     precision: Precision = Precision.fp16_mixed
@@ -67,9 +66,10 @@ class MoECfg(BaseModel):
     noise: bool = False
     noise_std: float = 0.1
     num_experts: PositiveInt = 8
+    num_experts_per_tok: PositiveInt = 2
     partial_topk: PositiveInt = 1
     full_topk: PositiveInt = 2
-    aux_load_balance: bool = True
+    aux_load_balance: bool = False
     router_aux_loss_coef: float = 1.0
     partial_moe: bool = True
     num_worker_groups: PositiveInt = 2
@@ -175,7 +175,6 @@ class Config(BaseModel):
         if self.moe.expert_rotate_interval is None:
             self.moe.expert_rotate_interval = max(1, round(goi))
 
-        logger.info(self.__str__())
         return self
 
     # ---- String / JSON helpers ----
@@ -188,7 +187,7 @@ class Config(BaseModel):
         return self.model_dump(mode="python")
 
     def to_json(self, **kwargs) -> str:
-        return self.model_dump_json(**kwargs)
+        return self.model_dump_json(**kwargs, indent = 4)
     
     # ---- Lifecycle hooks ----
     def __init__(self, **data):
@@ -297,9 +296,9 @@ class Config(BaseModel):
         """
         if self.same_as(other):
             return False
-        self.run_name = self._bump_run_name(self.run_name)
+        self.run.run_name = self._bump_run_name(self.run.run_name)
         self._refresh_paths()
-        logger.info(f"Bumped run_name to {self.run_name} due to config differences.")
+        logger.info(f"Bumped run_name to {self.run.run_name} due to config differences.")
         return True
 
     # ---- Persistence ----
@@ -309,10 +308,10 @@ class Config(BaseModel):
 
         Creates the directory if it does not exist.
         """
-        os.makedirs(self.checkpoint_path, exist_ok=True)
-        target = os.path.join(self.checkpoint_path, "config.json")
+        os.makedirs(self.ckpt.checkpoint_path, exist_ok=True)
+        target = os.path.join(self.ckpt.checkpoint_path, "config.json")
         with fsspec.open(target, "w", encoding="utf-8") as f:
-            json.dump(self.dict(), f, indent=4)
+            f.write(self.to_json())
         logger.info(f"Wrote config to {target}")
 
 

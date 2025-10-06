@@ -12,7 +12,7 @@ fsspec==2024.6.1
 # ML stack
 # -----------------------------
 torch>=2.3.0       # install specific CUDA/CPU wheel from PyTorch website if needed
-transformers>=4.56.0
+transformers>=4.56.2
 accelerate==1.0.0
 datasets==3.0.0
 bitsandbytes==0.43.1; platform_system == "Linux"
@@ -64,3 +64,4 @@ types-PyYAML==6.0.12.20240808
 requests
 torch
 torchdata
+wandb

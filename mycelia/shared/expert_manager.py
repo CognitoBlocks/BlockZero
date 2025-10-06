@@ -18,7 +18,6 @@ Assumptions
 
 from __future__ import annotations
 
-import logging
 import random
 from typing import Dict, Iterable, List, Mapping, MutableMapping, Tuple
 
@@ -27,9 +26,9 @@ import torch.distributed as dist
 import torch.nn as nn
 
 from mycelia.shared.modeling_moe import get_layer_expert_id
+from mycelia.shared.logging import structlog
 
-logger = logging.getLogger("diloco.expert_manager")
-
+logger = structlog.getLogger(__name__)
 
 # ------------------------------------------------------------
 # Utilities
@@ -137,14 +136,19 @@ class ExpertManager:
     """
 
     def __init__(
-        self, rank: int, num_experts: int, num_worker_groups: int, model: nn.Module | None = None
+        self, num_experts: int, num_worker_groups: int, model: nn.Module | None = None
     ):
-        self.rank = rank
+        logger.info("em init")
         self.num_experts = int(num_experts)
         self.num_worker_groups = int(num_worker_groups)
+        
+        logger.info("em get expert layer")
         if model is not None:
+
+            logger.info("em get expert layer 1")
             self.expert_layers = self._discover_expert_layers(model)
         else:
+            logger.info("em get expert layer 2")
             self.expert_layers = None
 
     def set_expert_layers(self, model: nn.Module):
@@ -189,7 +193,7 @@ class ExpertManager:
 
         for layer, groups in self.expert_group_assignment.items():
             if layer == 0 or layer == max(self.expert_group_assignment):
-                logger.info(f"rank {self.rank} seed {seed} Expert group assignment for layer {layer}: {groups}")
+                logger.info(f"seed {seed} Expert group assignment for layer {layer}: {groups}")
 
     # ---- loading ----
     def _load_expert_assignments(self, my_group_id, state_dict) -> None:

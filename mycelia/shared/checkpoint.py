@@ -1,14 +1,13 @@
 import os
 import torch
 import fsspec
-import logging
 from copy import deepcopy
 from mycelia.config import Config
 from fsspec.generic import GenericFileSystem
 from torchdata.stateful_dataloader import StatefulDataLoader
+from mycelia.shared.logging import structlog
 
-logger = logging.getLogger("diloco.checkpoint")
-
+logger = structlog.getLogger(__name__)
 
 def get_resume_info(rank: int, config: Config) -> tuple[bool, int, str | None]:
     """
@@ -45,7 +44,6 @@ def get_resume_info(rank: int, config: Config) -> tuple[bool, int, str | None]:
         latest_ckpt = max(ckpt_files, key=lambda f: int(f.split("_")[-1]))
         logger.info(f"rank {rank}: Latest checkpoint found in {latest_ckpt}")
         return True, int(latest_ckpt.split("_")[-1]), latest_ckpt
-
 
 def save_checkpoint(
     checkpoint_path: str,

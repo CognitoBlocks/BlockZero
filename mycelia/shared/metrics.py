@@ -2,7 +2,7 @@
 Metric logging utilities.
 
 This module provides a small logger that:
-  1) Appends metrics to a local CSV at `config.metric_path`, harmonizing columns over time.
+  1) Appends metrics to a local CSV at `config.log.metric_path`, harmonizing columns over time.
   2) Optionally logs the same metrics to Weights & Biases (W&B) when `config.log_wandb=True`.
 
 Usage
@@ -25,7 +25,7 @@ import pandas as pd
 import torch
 import wandb
 
-from dimoe.config import Config
+from mycelia.config import Config
 
 logger = logging.getLogger("diloco.metrics")
 
@@ -46,22 +46,22 @@ class MetricLogger:
     """
 
     def __init__(self, config: Config, rank: int = 0, validation: bool = False) -> None:
-        self.csv_path: str = config.metric_path
-        self.log_wandb: bool = bool(config.log_wandb)
+        self.csv_path: str = config.log.metric_path
+        self.log_wandb: bool = bool(config.log.log_wandb)
         self.validation = validation
 
         # Ensure the metrics directory exists.
         metrics_dir = os.path.dirname(self.csv_path) or "."
         os.makedirs(metrics_dir, exist_ok=True)
 
-        run_name = f"[full] {config.run_name}" if validation else f"[partial] rank{rank}-{config.run_name}"
+        run_name = f"[full] {config.run.run_name}" if validation else f"[partial] rank{rank}-{config.run.run_name}"
         self.wandb_run: Optional[wandb.sdk.wandb_run.Run] = None
 
-        if config.wandb_resume:
+        if config.log.wandb_resume:
             if validation:
-                run_id = config.wandb_full_id
+                run_id = config.log.wandb_full_id
             else:
-                run_id = config.wandb_partial_id[rank]
+                run_id = config.log.wandb_partial_id[rank]
         else:
             run_id = None
 
@@ -69,9 +69,9 @@ class MetricLogger:
             try:
                 self.wandb_run = wandb.init(
                     entity="isabella_cl-cruciblelabs",
-                    project=f"subnet-expert-{config.wandb_project_name}",
+                    project=f"subnet-expert-{config.log.wandb_project_name}",
                     name=run_name,
-                    tags=[config.run_name],
+                    tags=[config.run.run_name],
                     id=run_id,
                     resume="allow",
                     config=config.__dict__,

@@ -1,4 +1,5 @@
-from ..shared import messaging, scoring, metrics
+from . import scoring
+from ..shared import messaging, metrics
 
 class Evaluator:
     def consume_for_round(self, round_id, timeout_s=600):

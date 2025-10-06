@@ -132,3 +132,10 @@ dmypy.json
 # OS
 .DS_Store
 Thumbs.db
+
+# *
+**.csv
+**.json
+**/wandb/**
+**.yaml
+**.pt
