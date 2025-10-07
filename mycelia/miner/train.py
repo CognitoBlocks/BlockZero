@@ -312,6 +312,7 @@ def train_worker(rank: int, world_size: int, config: Config) -> None:
 
                 # === inner optimizer ===
                 if is_inner_optimizer_step:
+                    logp("inner opt step", loss_batch, aux_loss_batch)
                     inner_scaler.unscale_(optimizer=inner_optimizer)
 
                     clip_grad_norm_(model.parameters(), 1.0)  # gradient clipping

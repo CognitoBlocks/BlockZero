@@ -16,6 +16,10 @@ from mycelia.shared.logging import structlog
 from mycelia.shared.expert_manager import ExpertManager, create_expert_groups 
 from mycelia.shared.modeling.modeling_mycelia import get_base_model  , partial_moe
 from mycelia.shared import blockchain
+from mycelia.shared.checkpoint import (
+    get_resume_info,
+    load_checkpoint,
+)
 from mycelia.shared.helper import *
 
 logger = structlog.get_logger(__name__)
@@ -50,6 +54,8 @@ def _default_model(rank: int, config: Config) -> nn.Module:
 
     model = model.to(config.model.device)
 
+    model.gradient_checkpointing_enable()
+    
     return model, em
 
 
