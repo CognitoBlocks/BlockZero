@@ -301,7 +301,7 @@ def train_worker(rank: int, world_size: int, config: Config) -> None:
                     outputs = model(**batch_device)
 
                     loss = outputs.loss / config.local_par.gradient_accumulation_steps
-                    aux_loss = outputs.aux_loss / config.local_par.gradient_accumulation_steps
+                    aux_loss = outputs.aux_loss / config.local_par.gradient_accumulation_steps if outputs.aux_loss is not None else torch.tensor(0)
 
                 loss_batch += loss.detach()
                 aux_loss_batch += aux_loss.detach()

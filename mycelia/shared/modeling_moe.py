@@ -60,50 +60,6 @@ from mycelia.shared.helper import *
 
 logger = structlog.get_logger(__name__)
 
-class Decoder(DeepseekV3DecoderLayer):
-
-    @deprecate_kwarg("past_key_value", new_name="past_key_values", version="4.58")
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
-        use_cache: Optional[bool] = False,
-        cache_position: Optional[torch.LongTensor] = None,
-        position_embeddings: Optional[tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
-        **kwargs: Unpack[TransformersKwargs],
-    ) -> torch.Tensor:
-        logger.info("A")
-        residual = hidden_states
-        logger.info("A1")
-        hidden_states = self.input_layernorm(hidden_states)
-        # Self Attention
-        logger.info("A2")
-        hidden_states, _ = self.self_attn(
-            hidden_states=hidden_states,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            use_cache=use_cache,
-            cache_position=cache_position,
-            position_embeddings=position_embeddings,
-            **kwargs,
-        )
-        logger.info("A3")
-        hidden_states = residual + hidden_states
-        logger.info("B")
-        # Fully Connected
-        residual = hidden_states
-        logger.info("C")
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        logger.info("D")
-        hidden_states = self.mlp(hidden_states)
-        logger.info("E")
-        hidden_states = residual + hidden_states
-        logger.info("F")
-        return hidden_states
-
 class TopkRouter(DeepseekV3TopkRouter):
     def __init__(self, config, available_experts = None):
         super().__init__(config)
@@ -257,8 +213,7 @@ class MyceliaMoE(DeepseekV3ForCausalLM):
         layers: List[nn.Module] = []
 
         for i in range(model_config.num_hidden_layers):
-            # layer = DeepseekV3DecoderLayer(model_config, layer_idx=i)
-            layer = Decoder(model_config, layer_idx=i)
+            layer = DeepseekV3DecoderLayer(model_config, layer_idx=i)
 
             layer.self_attn = DeepseekAttention(model_config)
             
@@ -721,6 +676,7 @@ def get_moe_model_config(config: Config, topk: int, org_model: nn.Module = None)
     base_config.output_router_logits = get_nested_attr(config,"moe.aux_load_balance", False)
     base_config.router_aux_loss_coef = get_nested_attr(config,"moe.router_aux_loss_coef", False)
     base_config.norm_topk_prob = True
+    base_config.max_position_embeddings = config.data.sequence_length
     
     return base_config
 

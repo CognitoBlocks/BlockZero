@@ -134,7 +134,7 @@ class DeepseekRotaryEmbedding(nn.Module):
         self._set_cos_sin_cache(
             seq_len=max_position_embeddings, device=self.inv_freq.device, dtype=torch.get_default_dtype()
         )
-        self.max_seq_len_cached = None
+        # self.max_seq_len_cached = None
 
 
     def _set_cos_sin_cache(self, seq_len, device, dtype):
