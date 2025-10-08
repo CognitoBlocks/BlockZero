@@ -14,9 +14,17 @@ import fsspec
 import torch
 from pydantic import BaseModel, Field, NonNegativeInt, PositiveInt, field_validator, model_validator
 
-from mycelia.shared.logging import structlog  
+from mycelia.shared.app_logging import structlog  
 
 logger = structlog.get_logger(__name__)
+
+def find_project_root() -> Path:
+    # Walk up until we see a repo/config marker
+    start = Path("./").expanduser().resolve(strict = True)
+    for p in [start, *start.parents]:
+        if (p / ".git").exists() or (p / "pyproject.toml").exists() or (p / "requirements.txt").exists():
+            return p
+    return start.parents[1]  # fallback: up one level from mycelia/
 
 # ---------------------------
 # Enums
@@ -41,6 +49,7 @@ class AttnImpl(str, Enum):
 class RunCfg(BaseModel):
     run_name: str = "centralised"
     miner_uid: int = 1
+    root_path: Path = find_project_root() 
 
 class ModelCfg(BaseModel):
     model_path: str = "deepseek-ai/deepseek-moe-16b-base" # although we are calling a large model here, but we would only be training a partial of it for each miner
@@ -105,7 +114,7 @@ class ScheduleCfg(BaseModel):
 
 class CheckpointCfg(BaseModel):
     resume_from_ckpt: bool = True
-    base_checkpoint_path: Path = Path("./checkpoints")
+    base_checkpoint_path: Path = Path("checkpoints")
     checkpoint_path: Optional[Path] = None
     checkpoint_interval: Optional[PositiveInt] = None
     full_validation_interval: Optional[PositiveInt] = None
@@ -118,7 +127,7 @@ class LoggingCfg(BaseModel):
     wandb_resume: bool = False
     wandb_full_id: str = "oo2vn2v4"
     wandb_partial_id: List[Optional[str]] = ["3q8mckj8"]
-    base_metric_path: Path = Path("./mycelia/metrics")
+    base_metric_path: Path = Path("metrics")
     metric_path: Optional[Path] = None
     metric_interval: Optional[PositiveInt] = None
 
@@ -157,12 +166,7 @@ class Config(BaseModel):
             g = math.ceil(self.data.batch_size / self.data.per_device_train_batch_size)
             self.local_par.gradient_accumulation_steps = max(1, int(g))
 
-        # 2) Derived paths from run_name
-        if self.ckpt.checkpoint_path is None:
-            self.ckpt.checkpoint_path = self.ckpt.base_checkpoint_path / self.run.run_name
 
-        if self.log.metric_path is None:
-            self.log.metric_path = self.log.base_metric_path / f"{self.run.run_name}.csv"
 
         # 3) Interval defaults relative to global_opt_interval
         goi = self.local_par.global_opt_interval
@@ -196,8 +200,7 @@ class Config(BaseModel):
         config exists and differs.
         """
         super().__init__(**data)
-
-        # Recompute dependent fields that rely on CUDA availability or run_name.
+        # Recompute dependent fields that rely on CUDA availability or run_name. 
         self._refresh_paths()
 
         # If an existing config exists, bump run_name when the configs don't match.
@@ -234,12 +237,14 @@ class Config(BaseModel):
 
         logger.info(f"loaded config {data}")
         return cls(**data)
-
-    # ---- Internal utilities ----
+    
     def _refresh_paths(self) -> None:
-        """Refresh paths that depend on `run_name`."""
-        self.ckpt.checkpoint_path = os.path.join(self.ckpt.base_checkpoint_path, self.run.run_name)
-        self.log.metric_path = os.path.join(self.log.base_metric_path, f"{self.run.run_name}.csv")
+        self.ckpt.base_checkpoint_path = self.run.root_path / self.ckpt.base_checkpoint_path
+        self.ckpt.checkpoint_path = self.ckpt.base_checkpoint_path / self.run.run_name
+        
+        self.log.base_metric_path = self.run.root_path / self.log.base_metric_path
+        self.log.metric_path = self.log.base_metric_path / f"{self.run.run_name}.csv"
+
 
     @staticmethod
     def _bump_run_name(name: str) -> str:
@@ -347,3 +352,4 @@ def parse_args():
         help="Path to JSON config file",
     )
     return parser.parse_args()
+
