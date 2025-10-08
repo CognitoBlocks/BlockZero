@@ -2,14 +2,14 @@ import os
 import torch
 import fsspec
 from copy import deepcopy
-from mycelia.config import Config
+from mycelia.config import MinerConfig
 from fsspec.generic import GenericFileSystem
 from torchdata.stateful_dataloader import StatefulDataLoader
 from mycelia.shared.app_logging import structlog
 
 logger = structlog.getLogger(__name__)
 
-def get_resume_info(rank: int, config: Config) -> tuple[bool, int, str | None]:
+def get_resume_info(rank: int, config: MinerConfig) -> tuple[bool, int, str | None]:
     """
     Retrieves the resume information for a given rank and checkpoint configuration.
 
@@ -183,7 +183,7 @@ def load_optimizer(checkpoint_path, optimizer):
 
 def load_checkpoint(
     checkpoint_path: str,
-    config: Config,
+    config: MinerConfig,
     rank: int | None,
     device: torch.device,
     model: torch.nn.Module | None = None,

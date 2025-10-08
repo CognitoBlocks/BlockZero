@@ -87,7 +87,7 @@ def evaluate_model(
                 outputs = model(**device_batch)
 
             loss_sum += float(outputs.loss.detach().item())
-            aux_loss_sum += float(outputs.aux_loss.detach().item()) if outputs.aux_loss is not None else 0
+            aux_loss_sum += float(outputs.aux_loss.detach().item()) if hasattr(outputs, "aux_loss") and outputs.aux_loss is not None else 0
 
             del outputs, device_batch
 

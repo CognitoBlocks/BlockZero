@@ -25,7 +25,7 @@ import pandas as pd
 import torch
 import wandb
 
-from mycelia.config import Config
+from mycelia.config import MinerConfig
 
 logger = logging.getLogger("diloco.metrics")
 
@@ -36,7 +36,7 @@ class MetricLogger:
 
     Parameters
     ----------
-    config : Config
+    config : MinerConfig
         Must provide:
           - metric_path: str (CSV file path)
           - log_wandb: bool
@@ -45,7 +45,7 @@ class MetricLogger:
           - model_path: str
     """
 
-    def __init__(self, config: Config, rank: int = 0, validation: bool = False) -> None:
+    def __init__(self, config: MinerConfig, rank: int = 0, validation: bool = False) -> None:
         self.csv_path: str = config.log.metric_path
         self.log_wandb: bool = bool(config.log.log_wandb)
         self.validation = validation

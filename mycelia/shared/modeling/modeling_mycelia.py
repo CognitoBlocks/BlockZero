@@ -53,7 +53,7 @@ from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3
 from transformers.utils.deprecation import deprecate_kwarg
 from transformers.modeling_outputs import MoeCausalLMOutputWithPast
 
-from mycelia.config import Config
+from mycelia.config import MinerConfig
 from mycelia.shared.app_logging import structlog  
 from mycelia.shared.modeling.modeling_deepseek import DeepseekAttention  
 from mycelia.shared.helper import *  
@@ -203,7 +203,7 @@ class MyceliaMoE(DeepseekV3ForCausalLM):
 
     def __init__(
         self,
-        config: Config,
+        config: MinerConfig,
         model_config: PretrainedConfig,
         my_group_id: Optional[int] = None,
         expert_group_assignment: Optional[Dict[int, Dict[int, List[int]]]] = None,
@@ -215,7 +215,7 @@ class MyceliaMoE(DeepseekV3ForCausalLM):
         for i in range(model_config.num_hidden_layers):
             layer = DeepseekV3DecoderLayer(model_config, layer_idx=i)
 
-            layer.self_attn = DeepseekAttention(model_config)
+            # layer.self_attn = DeepseekAttention(model_config)
             
             # Interleave MoE and dense layers (MoE on odd indices if interleave=True)
             if getattr(model_config, "interleave", True) and (i + 1) % model_config.decoder_sparse_step == 0:
@@ -241,120 +241,120 @@ class MyceliaMoE(DeepseekV3ForCausalLM):
 
         self.model.layers = nn.ModuleList(layers)
 
-    def forward(
-        self,
-        input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
-        inputs_embeds: Optional[torch.FloatTensor] = None,
-        labels: Optional[torch.LongTensor] = None,
-        use_cache: Optional[bool] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        output_router_logits: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-        cache_position: Optional[torch.LongTensor] = None,
-        logits_to_keep: Union[int, torch.Tensor] = 0,
-        **kwargs,
-    ) -> Union[tuple, MoeCausalLMOutputWithPast]:
-        r"""
-        labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-            Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
-            config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
-            (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+    # def forward(
+    #     self,
+    #     input_ids: Optional[torch.LongTensor] = None,
+    #     attention_mask: Optional[torch.Tensor] = None,
+    #     position_ids: Optional[torch.LongTensor] = None,
+    #     past_key_values: Optional[Cache] = None,
+    #     inputs_embeds: Optional[torch.FloatTensor] = None,
+    #     labels: Optional[torch.LongTensor] = None,
+    #     use_cache: Optional[bool] = None,
+    #     output_attentions: Optional[bool] = None,
+    #     output_hidden_states: Optional[bool] = None,
+    #     output_router_logits: Optional[bool] = None,
+    #     return_dict: Optional[bool] = None,
+    #     cache_position: Optional[torch.LongTensor] = None,
+    #     logits_to_keep: Union[int, torch.Tensor] = 0,
+    #     **kwargs,
+    # ) -> Union[tuple, MoeCausalLMOutputWithPast]:
+    #     r"""
+    #     labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+    #         Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
+    #         config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+    #         (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
 
-        Example:
+    #     Example:
 
-        ```python
-        >>> from transformers import AutoTokenizer, OlmoeForCausalLM
+    #     ```python
+    #     >>> from transformers import AutoTokenizer, OlmoeForCausalLM
 
-        >>> model = OlmoeForCausalLM.from_pretrained("allenai/OLMoE-1B-7B-0924")
-        >>> tokenizer = AutoTokenizer.from_pretrained("allenai/OLMoE-1B-7B-0924")
+    #     >>> model = OlmoeForCausalLM.from_pretrained("allenai/OLMoE-1B-7B-0924")
+    #     >>> tokenizer = AutoTokenizer.from_pretrained("allenai/OLMoE-1B-7B-0924")
 
-        >>> prompt = "Hey, are you conscious? Can you talk to me?"
-        >>> inputs = tokenizer(prompt, return_tensors="pt")
+    #     >>> prompt = "Hey, are you conscious? Can you talk to me?"
+    #     >>> inputs = tokenizer(prompt, return_tensors="pt")
 
-        >>> # Generate
-        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
-        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-        'Hey, are you conscious? Can you talk to me?\nI’m not sure if you’re conscious of this, but I’m'
-        ```
-        """
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_router_logits = (
-            output_router_logits if output_router_logits is not None else self.config.output_router_logits
-        )
+    #     >>> # Generate
+    #     >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
+    #     >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+    #     'Hey, are you conscious? Can you talk to me?\nI’m not sure if you’re conscious of this, but I’m'
+    #     ```
+    #     """
+    #     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
+    #     output_router_logits = (
+    #         output_router_logits if output_router_logits is not None else self.config.output_router_logits
+    #     )
 
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+    #     output_hidden_states = (
+    #         output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+    #     )
+    #     return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-        outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            output_router_logits=output_router_logits,
-            return_dict=return_dict,
-            cache_position=cache_position,
-        )
+    #     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
+    #     outputs = self.model(
+    #         input_ids=input_ids,
+    #         attention_mask=attention_mask,
+    #         position_ids=position_ids,
+    #         past_key_values=past_key_values,
+    #         inputs_embeds=inputs_embeds,
+    #         use_cache=use_cache,
+    #         output_attentions=output_attentions,
+    #         output_hidden_states=output_hidden_states,
+    #         output_router_logits=output_router_logits,
+    #         return_dict=return_dict,
+    #         cache_position=cache_position,
+    #     )
         
-        hidden_states = outputs[0]
-        # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
-        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        logits = self.lm_head(hidden_states[:, slice_indices, :])
+    #     hidden_states = outputs[0]
+    #     # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
+    #     slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
+    #     logits = self.lm_head(hidden_states[:, slice_indices, :])
 
-        loss = None
-        if labels is not None:
-            loss = self.loss_function(logits, labels, self.vocab_size, **kwargs)
+    #     loss = None
+    #     if labels is not None:
+    #         loss = self.loss_function(logits, labels, self.vocab_size, **kwargs)
 
-        aux_loss = None
-        if output_router_logits:
-            aux_loss_sum = 0
-            aux_count = 0
-            for r in outputs.router_logits if return_dict else outputs[-1]:
-                aux_loss_sum += load_balancing_loss_func(
-                    tuple([r]),
-                    attention_mask=attention_mask,
-                    num_experts=self.num_experts,
-                    top_k=self.num_experts_per_tok,
-                )
-                aux_count += 1
-            aux_loss = (aux_loss_sum / aux_count) - self.num_experts_per_tok
+    #     aux_loss = None
+    #     if output_router_logits:
+    #         aux_loss_sum = 0
+    #         aux_count = 0
+    #         for r in outputs.router_logits if return_dict else outputs[-1]:
+    #             aux_loss_sum += load_balancing_loss_func(
+    #                 tuple([r]),
+    #                 attention_mask=attention_mask,
+    #                 num_experts=self.num_experts,
+    #                 top_k=self.num_experts_per_tok,
+    #             )
+    #             aux_count += 1
+    #         aux_loss = (aux_loss_sum / aux_count) - self.num_experts_per_tok
 
-            if labels is not None:
-                loss += self.router_aux_loss_coef * aux_loss.to(
-                    loss.device
-                )  # make sure to reside in the same device
+    #         if labels is not None:
+    #             loss += self.router_aux_loss_coef * aux_loss.to(
+    #                 loss.device
+    #             )  # make sure to reside in the same device
 
-        if not return_dict:
-            output = (logits,) + outputs[1:]
-            if output_router_logits:
-                output = (aux_loss,) + output
-            return (loss,) + output if loss is not None else output
+    #     if not return_dict:
+    #         output = (logits,) + outputs[1:]
+    #         if output_router_logits:
+    #             output = (aux_loss,) + output
+    #         return (loss,) + output if loss is not None else output
 
-        return MoeCausalLMOutputWithPast(
-            loss=loss,
-            aux_loss=aux_loss,
-            logits=logits,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-            router_logits=outputs.router_logits if output_router_logits else None,
-        )
+    #     return MoeCausalLMOutputWithPast(
+    #         loss=loss,
+    #         aux_loss=aux_loss,
+    #         logits=logits,
+    #         past_key_values=outputs.past_key_values,
+    #         hidden_states=outputs.hidden_states,
+    #         attentions=outputs.attentions,
+    #         router_logits=outputs.router_logits if output_router_logits else None,
+    #     )
 
 # ---------------------------------------------------------------------
 # Loading helpers
 # ---------------------------------------------------------------------
 def get_base_model(
-    config: Config, expert_group_assignment: Dict[int, Dict[int, List[int]]] | None = None, noise: bool = False, full=False
+    config: MinerConfig, expert_group_assignment: Dict[int, Dict[int, List[int]]] | None = None, noise: bool = False, full=False
 ) -> Optional[LlamaForCausalLM | OlmoForCausalLM]:
     """
     Load a base Causal LM by `config.model.model_path` and optionally convert to MoE.
@@ -366,7 +366,16 @@ def get_base_model(
     """
     model = None
 
-    if "llama" in config.model.model_path.lower():
+    if config.model.foundation:
+        model_config = AutoConfig.from_pretrained(config.model.model_path , trust_remote_code=True) # TODO: need miner agreement
+        moe_config = get_moe_model_config(
+            config, 
+            config.moe.full_topk if full else config.moe.partial_topk, 
+            org_model_config = model_config
+        )
+        model = MyceliaMoE(config, moe_config, expert_group_assignment=expert_group_assignment)
+
+    elif "llama" in config.model.model_path.lower():
         llama_cfg = LlamaConfig.from_pretrained(config.model.model_path, attn_implementation=config.model.attn_implementation)
         model = LlamaForCausalLM.from_pretrained(config.model.model_path, config=llama_cfg)
 
@@ -376,24 +385,24 @@ def get_base_model(
     else:
         model = AutoModelForCausalLM.from_pretrained(config.model.model_path, trust_remote_code=True) #TODO: need miner agreement to trust remote code
 
-    if model is not None and get_nested_attr(config,"moe.dense_to_moe", False):
-        noise = get_nested_attr(config,"moe.noise", False) and noise
-        # logger.info(f"extract_model_from_shared_expert", noise = noise)
-        model = extract_model_from_shared_expert(
-            config,
-            model,
-            topk=config.moe.full_topk if full else config.moe.partial_topk,
-            noise=noise,
-            noise_std=get_nested_attr(config,"moe.noise_std", 0.02),
-            expert_group_assignment=expert_group_assignment,
-        )
+    # if model is not None and get_nested_attr(config,"moe.dense_to_moe", False):
+    #     noise = get_nested_attr(config,"moe.noise", False) and noise
+    #     # logger.info(f"extract_model_from_shared_expert", noise = noise)
+    #     model = extract_model_from_shared_expert(
+    #         config,
+    #         model,
+    #         topk=config.moe.full_topk if full else config.moe.partial_topk,
+    #         noise=noise,
+    #         noise_std=get_nested_attr(config,"moe.noise_std", 0.02),
+    #         expert_group_assignment=expert_group_assignment,
+    #     )
 
     if model is not None and get_nested_attr(config,"model.torch_compile", False):
         model = torch.compile(model)
 
     return model
 
-def get_base_tokenizer(config: Config):
+def get_base_tokenizer(config: MinerConfig):
     """
     Load the tokenizer for `config.model.model_path`.
 
@@ -433,7 +442,7 @@ def noise_injection(weight: torch.Tensor, noise_ratio: float = 0.5, init_std: fl
     return weight
 
 def extract_model_from_shared_expert(   
-    config: Config,
+    config: MinerConfig,
     model: nn.Module,
     topk: int,
     noise: bool = False,
@@ -446,7 +455,7 @@ def extract_model_from_shared_expert(
     )
 
     state_dict = model.state_dict()
-    moe_config = get_moe_model_config(config, topk, org_model = model)
+    moe_config = get_moe_model_config(config, topk, org_model_config = model.config)
 
     # 1) Find per-layer top expert index from gate.weight
     # TODO: change top expert selection based on sigmoid gate weight & may need to select multiple expert 
@@ -535,7 +544,7 @@ def extract_model_from_shared_expert(
     return model
 
 def dense_model_to_moe(
-    config: Config,
+    config: MinerConfig,
     dense_model: nn.Module,
     topk: int,
     noise: bool = False,
@@ -645,22 +654,21 @@ def dense_model_to_moe(
             pass
 
     # Start from a base OLMoE config, then copy overlapping fields from the dense config
-    moe_config = get_moe_model_config(config, topk, org_model = dense_model)
+    moe_config = get_moe_model_config(config, topk, org_model_config = dense_model.config)
 
     model = MyceliaMoE(config, moe_config, expert_group_assignment=expert_group_assignment)
     
     _missing, _unexpected = model.load_state_dict(moe_sd, strict=True)  # will raise if mismatch
     return model
 
-def get_moe_model_config(config: Config, topk: int, org_model: nn.Module = None) -> PretrainedConfig:
+def get_moe_model_config(config: MinerConfig, topk: int, org_model_config: AutoConfig = None) -> PretrainedConfig:
 
     # get the base config from qwen model 
     base_config = AutoConfig.from_pretrained("deepseek-ai/DeepSeek-V3") #TODO: need user permission
     # base_config = AutoConfig.from_pretrained(config.model.model_path, trust_remote_code=True) #TODO: need user permission
     
     # merge the existing model config into the base config
-    if org_model is not None:
-        org_model_config = org_model.config
+    if org_model_config is not None:
         for k, v in org_model_config.to_dict().items():
             setattr(base_config, k, v)
     
@@ -697,7 +705,7 @@ def get_layer_expert_id(layer_name: str) -> Tuple[Optional[int], Optional[int]]:
     return layer_id, expert_id
 
 def partial_moe(
-    config: Config,
+    config: MinerConfig,
     moe_model: MyceliaMoE,
     my_group_id: int,
     expert_group_assignment: Dict[int, Dict[int, List[int]]],
@@ -728,7 +736,7 @@ def partial_moe(
             del sd[k]
 
     topk = getattr(moe_model.config, "num_experts_per_tok", 2)
-    moe_config = get_moe_model_config(config, topk, moe_model)
+    moe_config = get_moe_model_config(config, topk, moe_model.config)
 
     partial = MyceliaMoE(
         config, moe_config, my_group_id=my_group_id, expert_group_assignment=expert_group_assignment, partial=True

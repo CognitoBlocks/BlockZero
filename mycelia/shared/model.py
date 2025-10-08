@@ -10,7 +10,7 @@ import requests
 import torch
 from torch import nn
 
-from mycelia.config import Config
+from mycelia.config import MinerConfig
 from mycelia.shared.app_logging import structlog  
 from mycelia.shared.expert_manager import ExpertManager, create_expert_groups 
 from mycelia.shared.modeling.modeling_mycelia import get_base_model  , partial_moe
@@ -23,7 +23,7 @@ from mycelia.shared.helper import *
 
 logger = structlog.get_logger(__name__)
 
-def _default_model(rank: int, config: Config) -> nn.Module:
+def _default_model(rank: int, config: MinerConfig) -> nn.Module:
     resume = False   
     start_step = 0
     latest_checkpoint_path = None
@@ -75,7 +75,7 @@ def load_base_model(rank: int, config: Optional[Config] = None, round_hint: Opti
     2) If available, ping and fetch current model.
     3) Else, initialize a default model.
     """
-    config = config or Config()
+    config = config or MinerConfig()
     api_base = _fetch_validator_endpoint_from_chain(round_hint)
 
     if api_base:

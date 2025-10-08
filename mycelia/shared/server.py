@@ -8,7 +8,7 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
-from mycelia.config import Config
+from mycelia.config import MinerConfig
 from mycelia.shared.checkpoint import (
     get_resume_info,
     load_checkpoint,
@@ -89,7 +89,7 @@ async def ping():
 async def get_checkpoint(authorization: Optional[str] = Header(default=None)):
     """GET to download the configured checkpoint immediately."""
     require_auth(authorization)
-    config = Config()
+    config = MinerConfig()
     resume, start_step, latest_checkpoint_path = get_resume_info(rank = 0, config = config)
 
     if not latest_checkpoint_path:

@@ -19,7 +19,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 
 from transformers import get_cosine_schedule_with_warmup, PreTrainedTokenizerBase
 
-from mycelia.config import Config, parse_args
+from mycelia.config import MinerConfig, parse_args
 from mycelia.shared.app_logging import structlog, configure_logging
 from mycelia.shared.metrics import MetricLogger
 from mycelia.shared.model import load_base_model 
@@ -47,7 +47,7 @@ configure_logging()
 logger = structlog.get_logger(__name__)
 
 
-def init_process(local_rank: int, config: Config, world_size: int, fn: callable, backend: str = "nccl") -> None:
+def init_process(local_rank: int, config: MinerConfig, world_size: int, fn: callable, backend: str = "nccl") -> None:
     """
     Initializes the process for distributed training.
 
@@ -200,7 +200,7 @@ def setup_training(
     )
 
 
-def train_worker(rank: int, world_size: int, config: Config) -> None:
+def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
     """
     The worker function for training in a distributed setting.
 
@@ -301,7 +301,8 @@ def train_worker(rank: int, world_size: int, config: Config) -> None:
                     outputs = model(**batch_device)
 
                     loss = outputs.loss / config.local_par.gradient_accumulation_steps
-                    aux_loss = outputs.aux_loss / config.local_par.gradient_accumulation_steps if outputs.aux_loss is not None else torch.tensor(0)
+                    # aux_loss = outputs.aux_loss / config.local_par.gradient_accumulation_steps if outputs.aux_loss is not None else torch.tensor(0)
+                    aux_loss = torch.tensor(0)
 
                 loss_batch += loss.detach()
                 aux_loss_batch += aux_loss.detach()
@@ -499,9 +500,9 @@ def run_distributed_training() -> None:
     args = parse_args()
 
     if args.path:
-        config = Config.from_json(args.path)
+        config = MinerConfig.from_json(args.path)
     else:
-        config = Config()
+        config = MinerConfig()
 
     mp.spawn(
         init_process,

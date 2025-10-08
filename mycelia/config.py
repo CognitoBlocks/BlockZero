@@ -35,24 +35,23 @@ class Precision(str, Enum):
     bf16 = "bf16"
     fp16_mixed = "fp16-mixed"
 
-
 class AttnImpl(str, Enum):
     sdpa = "sdpa"
     flash = "flash"
     eager = "eager"
-
 
 # ---------------------------
 # Sections
 # ---------------------------
 
 class RunCfg(BaseModel):
-    run_name: str = "centralised"
+    run_name: str = "foundation"
     miner_uid: int = 1
     root_path: Path = find_project_root() 
 
 class ModelCfg(BaseModel):
     model_path: str = "deepseek-ai/deepseek-moe-16b-base" # although we are calling a large model here, but we would only be training a partial of it for each miner
+    foundation: bool = True 
     torch_compile: bool = True
     attn_implementation: AttnImpl = AttnImpl.sdpa
     precision: Precision = Precision.fp16_mixed
@@ -114,12 +113,11 @@ class ScheduleCfg(BaseModel):
 
 class CheckpointCfg(BaseModel):
     resume_from_ckpt: bool = True
-    base_checkpoint_path: Path = Path("checkpoints")
+    base_checkpoint_path: Path = Path("checkpoints/miner")
     checkpoint_path: Optional[Path] = None
     checkpoint_interval: Optional[PositiveInt] = None
     full_validation_interval: Optional[PositiveInt] = None
     checkpoint_topk: PositiveInt = 20
-
 
 class LoggingCfg(BaseModel):
     log_wandb: bool = True
@@ -131,12 +129,10 @@ class LoggingCfg(BaseModel):
     metric_path: Optional[Path] = None
     metric_interval: Optional[PositiveInt] = None
 
-
 # ---------------------------
 # Top-level config
 # ---------------------------
-
-class Config(BaseModel):
+class MinerConfig(BaseModel):
     """
     Centralized training/eval configuration for mycelia runs.
 
@@ -220,7 +216,7 @@ class Config(BaseModel):
     @classmethod
     def from_json(cls, path: str) -> "Config":
         """
-        Load a Config from a JSON file.
+        Load a MinerConfig from a JSON file.
 
         Parameters
         ----------
@@ -229,8 +225,8 @@ class Config(BaseModel):
 
         Returns
         -------
-        Config
-            Instantiated Config object.
+        MinerConfig
+            Instantiated MinerConfig object.
         """
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
