@@ -11,8 +11,7 @@ import torch
 from torch import nn
 
 from mycelia.config import Config
-from mycelia.shared.checkpoint import get_resume_info
-from mycelia.shared.logging import structlog  
+from mycelia.shared.app_logging import structlog  
 from mycelia.shared.expert_manager import ExpertManager, create_expert_groups 
 from mycelia.shared.modeling.modeling_mycelia import get_base_model  , partial_moe
 from mycelia.shared import blockchain
@@ -40,17 +39,12 @@ def _default_model(rank: int, config: Config) -> nn.Module:
 
     model = get_base_model(config, noise=start_step == 0, expert_group_assignment=em.expert_group_assignment).to(config.model.device)
 
-    # model has to be loaded before partitioning into moe
-    if get_nested_attr(config,"ckpt.resume_from_ckpt", False) and resume and latest_checkpoint_path:
-        logger.info(
-            "rank %s setup training: resuming from %s (start_step=%s)", rank, latest_checkpoint_path, start_step
-        )
-        _ = load_checkpoint(
-            config=config, checkpoint_path=latest_checkpoint_path, model=model, rank=rank, device=config.model.device
-        )
-
     if get_nested_attr(config,"moe.partial_moe", False):
         model = partial_moe(config, model, config.moe.my_expert_group_id, em.expert_group_assignment)
+
+    if get_nested_attr(config,"ckpt.resume_from_ckpt", False) and resume and latest_checkpoint_path:
+        logger.info("rank %s setup training: resuming from %s (start_step=%s)", rank, latest_checkpoint_path, start_step)
+        load_checkpoint(config=config, checkpoint_path=latest_checkpoint_path, model=model, rank=rank, device=config.model.device)
 
     model = model.to(config.model.device)
 
@@ -73,60 +67,6 @@ def _fetch_validator_endpoint_from_chain(round_hint: Optional[str] = None) -> Op
         logger.warning("model.chain_lookup_failed", error=str(e))
         return None
 
-# TODO: fill function
-def _ping_validator_and_get_manifest(api_base: str, timeout: float = 5.0) -> Optional[dict]:
-    """
-    Ping validator and retrieve a model manifest:
-      { "artifact_uri": "s3://bucket/path/model.bin", "format": "state_dict", "sha256": "..." }
-    Or returns None if not ready.
-    """
-    try:
-        r = requests.get(f"{api_base}/v1/health", timeout=timeout)
-        r.raise_for_status()
-        # Optionally check response content (e.g., {"status":"ok"})
-        r = requests.get(f"{api_base}/v1/model/manifest", timeout=timeout)
-        if r.status_code == 200:
-            return r.json()
-        return None
-    except Exception as e:
-        logger.info("model.validator_unreachable", api_base=api_base, error=str(e))
-        return None
-
-# TODO: fill function
-def _download_artifact(manifest: dict, settings: Settings) -> bytes:
-    """
-    Download the model artifact. Supports:
-      - Direct bytes via validator
-      - Indirect via artifact_uri (S3/IPFS/local) using storage.py
-    """
-    if "artifact_bytes_url" in manifest:
-        url = manifest["artifact_bytes_url"]
-        logger.info("model.downloading_direct", url=url)
-        r = requests.get(url, timeout=30)
-        r.raise_for_status()
-        return r.content
-
-    uri = manifest.get("artifact_uri")
-    if not uri:
-        raise ValueError("Manifest missing 'artifact_uri' or 'artifact_bytes_url'")
-    logger.info("model.downloading_via_storage", uri=uri)
-    return get_bytes(uri)  # your storage backend should handle s3://, file://, ipfs://, etc.
-
-# TODO: fill function
-def _load_from_blob(blob: bytes, fmt: str, device: str) -> nn.Module:
-    """
-    Convert blob -> model instance.
-    Default assumes a Torch state_dict was saved via torch.save(state_dict).
-    """
-    buffer = io.BytesIO(blob)
-    state = torch.load(buffer, map_location="cpu")
-    model = _default_model()  # must match architecture used by validator
-    model.load_state_dict(state, strict=False)
-    dev = torch.device(device if torch.cuda.is_available() or "cuda" in device else "cpu")
-    model.to(dev)
-    model.eval()
-    return model
-
 
 def load_base_model(rank: int, config: Optional[Config] = None, round_hint: Optional[str] = None) -> Tuple[nn.Module, ExpertManager]:
     """
@@ -139,17 +79,8 @@ def load_base_model(rank: int, config: Optional[Config] = None, round_hint: Opti
     api_base = _fetch_validator_endpoint_from_chain(round_hint)
 
     if api_base:
-        manifest = _ping_validator_and_get_manifest(api_base)
-        if manifest:
-            try:
-                blob = _download_artifact(manifest, config)
-                model = _load_from_blob(blob, manifest.get("format", "state_dict"), config.model.device)
-                logger.info("model.loaded_from_validator", api_base=api_base)
-                return model
-            except Exception as e:
-                logger.warning("model.validator_load_failed", error=str(e))
+        pass
 
-    # Fallback
     return _default_model(rank = rank, config = config)
 
 # --- Helper: export/save current model to artifact (used by validator) ---
