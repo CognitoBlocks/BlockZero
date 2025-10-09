@@ -104,12 +104,10 @@ class ParallelismCfg(BaseModel):# parallelism for local training
             return int(torch.cuda.device_count())
         except Exception:
             return 0
-
 class ScheduleCfg(BaseModel):
     warmup_steps: PositiveInt = 600
     total_steps: PositiveInt = 88_000
     # Derived defaults for intervals set in Checkpoint/Logging via global_opt_interval
-
 
 class CheckpointCfg(BaseModel):
     resume_from_ckpt: bool = True
@@ -129,51 +127,50 @@ class LoggingCfg(BaseModel):
     metric_path: Optional[Path] = None
     metric_interval: Optional[PositiveInt] = None
 
+class ValidatorCheckpointCfg(CheckpointCfg):
+    base_checkpoint_path: Path = Path("checkpoints/validator")
+
+class ValidatorCfg(BaseModel):
+    eval_interval: int = 100 # blocks
+    miner_submission_path: Path = Path("checkpoints/validator/miner_submission")
 # ---------------------------
 # Top-level config
 # ---------------------------
-class MinerConfig(BaseModel):
+class BaseConfig(BaseModel):
     """
     Centralized training/eval configuration for mycelia runs.
-
-    - Inputs grouped into sections
-    - Derived fields computed lazily
-    - Run-name bumping if checkpoint dir exists
     """
     run: RunCfg = RunCfg()
     model: ModelCfg = ModelCfg()
-    data: DataCfg = DataCfg()
     moe: MoECfg = MoECfg()
-    opt: OptimizerCfg = OptimizerCfg()
-    local_par: ParallelismCfg = ParallelismCfg()
-    sched: ScheduleCfg = ScheduleCfg()
     ckpt: CheckpointCfg = CheckpointCfg()
+    sched: ScheduleCfg = ScheduleCfg()
     log: LoggingCfg = LoggingCfg()
-
+    data: DataCfg = DataCfg()
+    opt: OptimizerCfg = OptimizerCfg()
+    
     # -----------------------
     # Derivations & hygiene
     # -----------------------
 
     @model_validator(mode="after")
     def _derive_all(self):
-        # 1) Derived parallelism pieces that depend on data cfg
-        if self.local_par.gradient_accumulation_steps == 0:
-            # ceil(batch_size / per_device_train_batch_size)
-            g = math.ceil(self.data.batch_size / self.data.per_device_train_batch_size)
-            self.local_par.gradient_accumulation_steps = max(1, int(g))
+        
+        if hasattr(self, "local_par"):
+            if self.local_par.gradient_accumulation_steps == 0:
+                # ceil(batch_size / per_device_train_batch_size)
+                g = math.ceil(self.data.batch_size / self.data.per_device_train_batch_size)
+                self.local_par.gradient_accumulation_steps = max(1, int(g))
 
-
-
-        # 3) Interval defaults relative to global_opt_interval
-        goi = self.local_par.global_opt_interval
-        if self.ckpt.checkpoint_interval is None:
-            self.ckpt.checkpoint_interval = max(1, round(goi * 0.2))
-        if self.ckpt.full_validation_interval is None:
-            self.ckpt.full_validation_interval = max(1, round(goi * 0.2))
-        if self.log.metric_interval is None:
-            self.log.metric_interval = max(1, round(goi * 0.2))
-        if self.moe.expert_rotate_interval is None:
-            self.moe.expert_rotate_interval = max(1, round(goi))
+            goi = self.local_par.global_opt_interval
+            if self.ckpt.checkpoint_interval is None:
+                self.ckpt.checkpoint_interval = max(1, round(goi * 0.2))
+            if self.ckpt.full_validation_interval is None:
+                self.ckpt.full_validation_interval = max(1, round(goi * 0.2))
+            if self.log.metric_interval is None:
+                self.log.metric_interval = max(1, round(goi * 0.2))
+            if self.moe.expert_rotate_interval is None:
+                self.moe.expert_rotate_interval = max(1, round(goi))
 
         return self
 
@@ -349,3 +346,11 @@ def parse_args():
     )
     return parser.parse_args()
 
+
+class MinerConfig(BaseConfig):
+    local_par: ParallelismCfg = ParallelismCfg()
+
+class ValidatorConfig(BaseConfig):
+    vali: ValidatorCfg = ValidatorCfg()
+    ckpt: ValidatorCheckpointCfg = ValidatorCheckpointCfg()
+    
