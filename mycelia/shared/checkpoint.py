@@ -49,9 +49,9 @@ def get_resume_info(rank: int, config: MinerConfig) -> tuple[bool, int, str | No
 def save_checkpoint(
     checkpoint_path: str,
     model: torch.nn.Module,
-    inner_optimizer: torch.optim.Optimizer,
-    scheduler: torch.optim.lr_scheduler.LambdaLR,
     rank: int,
+    scheduler: torch.optim.lr_scheduler.LambdaLR | None = None,
+    inner_optimizer: torch.optim.Optimizer | None = None,
     outer_optimizer: torch.optim.Optimizer | None = None,
     inner_scaler: torch.amp.GradScaler | None = None,
     outer_scaler: torch.amp.GradScaler | None = None,
@@ -77,22 +77,24 @@ def save_checkpoint(
             torch.save(checkpoint, f)
 
     # === save optimizer ===
-    opt_checkpoint = {
-        "optimizer_state_dict": inner_optimizer.state_dict(),
-    }
+    if inner_optimizer is not None:
+        opt_checkpoint = {
+            "optimizer_state_dict": inner_optimizer.state_dict(),
+        }
 
-    target = os.path.join(checkpoint_path, f"inner_optimizer.pt")
-    if not os.path.exists(target):
-        with fsspec.open(target, "wb") as f:
-            torch.save(opt_checkpoint, f)
+        target = os.path.join(checkpoint_path, f"inner_optimizer.pt")
+        if not os.path.exists(target):
+            with fsspec.open(target, "wb") as f:
+                torch.save(opt_checkpoint, f)
 
-    opt_checkpoint = {
-        "optimizer_state_dict": outer_optimizer.state_dict(),
-    }
-    target = os.path.join(checkpoint_path, f"outer_optimizer.pt")
-    if not os.path.exists(target):
-        with fsspec.open(target, "wb") as f:
-            torch.save(opt_checkpoint, f)
+    if outer_optimizer is not None:
+        opt_checkpoint = {
+            "optimizer_state_dict": outer_optimizer.state_dict(),
+        }
+        target = os.path.join(checkpoint_path, f"outer_optimizer.pt")
+        if not os.path.exists(target):
+            with fsspec.open(target, "wb") as f:
+                torch.save(opt_checkpoint, f)
 
     # === save dataloader ===
     if data_loader is not None:
@@ -111,7 +113,7 @@ def save_checkpoint(
 
     # === save global state ===
     global_state_dict = {
-        "scheduler": scheduler.state_dict(),
+        "scheduler": scheduler.state_dict() if scheduler is not None else None,
         "loss": loss if loss is not None else 0,
     }
 
@@ -179,7 +181,6 @@ def load_optimizer(checkpoint_path, optimizer):
             full_name_to_param = full_name_to_param | _get_name_to_param(state_dict["optimizer_state_dict"])
 
     optimizer.load_state_dict(_update_state_dict(optimizer.state_dict(), full_name_to_param))
-
 
 def load_checkpoint(
     checkpoint_path: str,
@@ -252,7 +253,6 @@ def load_checkpoint(
         outer_scaler.load_state_dict(global_state_dict["outer_scaler_state_dict"])
 
     return global_state_dict["loss"]
-
 
 def filter_ckpt_files(f: str) -> bool:
     """

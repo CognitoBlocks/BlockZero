@@ -38,7 +38,7 @@ from mycelia.shared.expert_manager import (
     get_weight_sum,
     broadcast_weights,
 )
-from mycelia.miner.evaluate import (
+from mycelia.shared.evaluate import (
     evaluate_model,
 )
 
@@ -154,10 +154,11 @@ def get_status(
     config: MinerConfig,
     model: torch.nn.Module,
     step: int,
-    inner_opt_step: int,
     training_time: float,
     total_training_time: float,
-    inner_optimizer,
+    inner_optimizer: torch.optim.Optimizer | None = None,
+    inner_opt_step: int | None = None,
+    global_opt_step: int | None = None,
     loss_batch: torch.Tensor | None | Any = None,
     aux_loss_batch: torch.Tensor | None | Any = None,
 ) -> Dict[str, Any]:
@@ -166,19 +167,23 @@ def get_status(
     Times are reported in hours, throughput in tokens/second.
     """
 
-    total_batch_size = config.data.batch_size * config.local_par.world_size
-    total_samples = inner_opt_step * total_batch_size
-    total_tokens = total_samples * config.data.sequence_length
+    if inner_opt_step is None and global_opt_step is None: 
+        raise ValueError
+
+    if inner_opt_step is not None: 
+        total_batch_size = config.data.batch_size * config.local_par.world_size
+        total_samples = inner_opt_step * total_batch_size
+        total_tokens = total_samples * config.data.sequence_length
 
     _, expert_sum = get_weight_sum(model, shared=False)
 
     # Extract current learning rate (assume one param group or take first)
-    lr = next(iter(group["lr"] for group in inner_optimizer.param_groups))
-
+    
     metrics: Dict[str, Any] = {
         "step": step,
         "inner_opt_step": inner_opt_step,
-        "lr": lr,
+        "global_opt_step": global_opt_step,
+        "lr": next(iter(group["lr"] for group in inner_optimizer.param_groups)) if inner_optimizer is not None else None,
         "total_samples": total_samples,
         "total_tokens": total_tokens,
         "param_sum": expert_sum.detach().cpu(),
@@ -188,8 +193,12 @@ def get_status(
         metrics = metrics | {
             "inner_step_time_hours": training_time / 3600,
             "total_training_time_hours": total_training_time / 3600,
-            "tokens_per_second": (config.data.sequence_length * total_batch_size) / training_time,
         }
+        if inner_opt_step is not None:
+            metrics = metrics | {
+                "tokens_per_second": (config.data.sequence_length * total_batch_size) / training_time,
+            }
+
     if loss_batch is not None and loss_batch != 0:
         if aux_loss_batch is not None and aux_loss_batch != 0:
             metrics = metrics | {

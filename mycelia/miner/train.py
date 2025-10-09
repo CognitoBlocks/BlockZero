@@ -26,7 +26,7 @@ from mycelia.shared.model import load_base_model
 from mycelia.shared.modeling.modeling_mycelia import get_base_tokenizer, partial_moe
 from mycelia.shared.datasets import get_dataloader, HFStreamingTorchDataset
 from mycelia.miner.train_helper import free_cuda_models, get_status
-from mycelia.miner.evaluate import evaluate_model
+from mycelia.shared.evaluate import evaluate_model
 from mycelia.shared.checkpoint import (
     get_resume_info,
     save_checkpoint,
@@ -334,13 +334,13 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
             if is_inner_optimizer_step and inner_opt_step % max(round(config.local_par.global_opt_interval * 0.02), 1) == 0:
                 logp(f"optimizer step", loss_batch, aux_loss_batch)
                 metrics = get_status(
-                    config,
-                    model,
-                    step,
-                    inner_opt_step,
-                    training_time,
-                    total_training_time,
-                    inner_optimizer,
+                    config = config,
+                    model = model,
+                    step = step,
+                    inner_opt_step=inner_opt_step,
+                    training_time = training_time,
+                    total_training_time = total_training_time,
+                    inner_optimizer = inner_optimizer,
                     loss_batch=loss_batch,
                     aux_loss_batch=aux_loss_batch,
                 )
@@ -405,13 +405,13 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 logp(f"evaluation before log {val_metric}")
                 metrics = (
                     get_status(
-                        config,
-                        model,
-                        step,
-                        inner_opt_step,
-                        training_time,
-                        total_training_time,
-                        inner_optimizer,
+                        config = config,
+                        model = model,
+                        step = step,
+                        inner_opt_step = inner_opt_step,
+                        training_time = training_time,
+                        total_training_time = total_training_time,
+                        inner_optimizer = inner_optimizer,
                         loss_batch=loss_batch,
                         aux_loss_batch=aux_loss_batch,
                     )

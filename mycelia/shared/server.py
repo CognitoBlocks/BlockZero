@@ -100,22 +100,6 @@ async def get_checkpoint(authorization: Optional[str] = Header(default=None)):
     result = file_response_for(Path(latest_checkpoint_path), f"step{start_step}")
     return result
 
-# @app.post("/send-checkpoint")
-# async def send_checkpoint(body: SendBody, authorization: Optional[str] = Header(default=None)):
-#     """
-#     POST to optionally override the path/name and download the checkpoint.
-#     If no body is provided, the default CHECKPOINT_PATH is used.
-#     """
-#     require_auth(authorization)
-
-#     path_str = body.path or CHECKPOINT_PATH
-#     if not path_str:
-#         raise HTTPException(status_code=400, detail="No checkpoint path provided and CHECKPOINT_PATH not set")
-
-#     path = Path(path_str).expanduser().resolve()
-#     return file_response_for(path, body.download_name or CHECKPOINT_NAME)
-
-
 # Optional: simple index for convenience
 @app.get("/")
 async def index(request: Request):
