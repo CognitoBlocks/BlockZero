@@ -74,6 +74,7 @@ def evaluate_model(
     Dict[str, float]
         e.g., {"val_loss": 2.345}
     """
+    logger.info("evaluate model", step = step)
     model.eval()
     loss_sum: float = 0.0
     aux_loss_sum: float = 0.0

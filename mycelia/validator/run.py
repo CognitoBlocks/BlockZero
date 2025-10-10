@@ -1,5 +1,6 @@
 import os
 import gc
+import asyncio
 import time
 import logging
 import json
@@ -20,7 +21,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 
 from transformers import get_cosine_schedule_with_warmup, PreTrainedTokenizerBase
 
-from mycelia.config import MinerConfig, parse_args
+from mycelia.config import MinerConfig, ValidatorConfig, parse_args
 from mycelia.shared.app_logging import structlog, configure_logging
 from mycelia.shared.metrics import MetricLogger
 from mycelia.shared.model import load_base_model 
@@ -43,6 +44,8 @@ from mycelia.shared.expert_manager import (
     broadcast_weights,
 )
 from mycelia.shared.helper import *
+from mycelia.validator.aggregator import MinerScoreAggregator
+from mycelia.validator.evaluator import run_evaluation, gather_miner_info
 
 configure_logging()
 logger = structlog.get_logger(__name__)
@@ -256,6 +259,7 @@ def run(rank: int, world_size: int, config: MinerConfig) -> None:
     os.makedirs(config.ckpt.base_checkpoint_path, exist_ok=True)
     os.makedirs(config.ckpt.checkpoint_path, exist_ok=True)
     os.makedirs(config.log.base_metric_path, exist_ok=True)
+    os.makedirs(config.vali.miner_submission_path, exist_ok=True)
 
     # === set logging ===
     logger.info(config)
@@ -268,8 +272,8 @@ def run(rank: int, world_size: int, config: MinerConfig) -> None:
     # TODO: need to split the dataset per miner first, and then split more
     eval_dataloader = get_dataloader(
         config,
-        rank=config.local_par.world_size,
-        world_size=config.local_par.world_size + 1,
+        rank=0,
+        world_size=10,
         tokenizer=tokenizer,
     )
 
@@ -283,6 +287,9 @@ def run(rank: int, world_size: int, config: MinerConfig) -> None:
         em,
         train_dataloader,
     ) = setup_training(config, rank, device, tokenizer)
+
+    # === ===
+    aggregator = MinerScoreAggregator()
 
     # === training ===
     loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
@@ -314,17 +321,25 @@ def run(rank: int, world_size: int, config: MinerConfig) -> None:
 
                 logger.info(f"rank {rank} | gloabl_opt {global_opt_step} | {msg}")
 
-            # for each miner
-            # pull miner model
-            # make a copy of miner model + local model 
-            # evaluate and score miner model + local model 
+            asyncio.run(run_evaluation(
+                config = config,
+                step = global_opt_step,
+                device = model.device,
+                miners = gather_miner_info(),
+                # eval_dataloader = eval_dataloader,
+                aggregator = aggregator,
+                base_model = model,
+                tokenizer = tokenizer
+            ))
+
+            logp(msg = "eval result" + str(aggregator.uid_score_pairs()))
 
             # === Log metric ===
             logp(f"optimizer step", loss_batch, aux_loss_batch)
             metrics = get_status(
                 config = config,
                 model = model,
-                step = step,
+                step = global_opt_step,
                 inner_opt_step = None,
                 global_opt_step = global_opt_step,
                 training_time = training_time,
@@ -334,21 +349,20 @@ def run(rank: int, world_size: int, config: MinerConfig) -> None:
             )
             metric_logger.log(metrics, print_log=False)
 
-            # === global optimizer ===
-            logp(f"reached global opt barrier", loss_batch, aux_loss_batch)
-            run_global_optimization(
-                model = model,
-                global_model = global_model,
-                device = device,
-                rank = rank,
-                logp = logp,
-                outer_optimizer = outer_optimizer,
-            )
+            # # === global optimizer ===
+            # logp(f"reached global opt barrier", loss_batch, aux_loss_batch)
+            # run_global_optimization(
+            #     model = model,
+            #     global_model = global_model,
+            #     device = device,
+            #     rank = rank,
+            #     logp = logp,
+            #     outer_optimizer = outer_optimizer,
+            # )
 
             # === validation and log metric ===
-                
             logp(f"reached barrier, waiting for partial evaluation")
-            dist.barrier(device_ids=[rank])
+            # dist.barrier(device_ids=[rank])
 
             logp(f"start partial evaluation")
 
@@ -360,12 +374,12 @@ def run(rank: int, world_size: int, config: MinerConfig) -> None:
             metrics = (
                 get_status(
                     config = config,
-                    mdoel = model,
-                    step = step,
-                    inner_opt_step = None,
-                    global_opt_step = global_opt_step
+                    model = model,
+                    step = global_opt_step,
                     training_time = training_time,
                     total_training_time = total_training_time,
+                    inner_opt_step = None,
+                    global_opt_step = global_opt_step,
                     loss_batch=loss_batch,
                     aux_loss_batch=aux_loss_batch,
                 )
@@ -375,11 +389,11 @@ def run(rank: int, world_size: int, config: MinerConfig) -> None:
             metric_logger.log(metrics)
 
             logp(f"reached barrier, waiting for partial validation and metric logging to complete")
-            dist.barrier(device_ids=[rank])
+            # dist.barrier(device_ids=[rank])
 
             # === save checkpoint ===
             logp(f"saving checkpoint")
-            ckpt_path = os.path.join(config.ckpt.checkpoint_path, f"inner_opt_step_{int(inner_opt_step)}")
+            ckpt_path = os.path.join(config.ckpt.checkpoint_path, f"global_opt_step{int(global_opt_step)}")
 
             save_checkpoint(
                 checkpoint_path=ckpt_path,
@@ -399,7 +413,7 @@ def run(rank: int, world_size: int, config: MinerConfig) -> None:
                         logp(f"Deleted old checkpoints: {ckpt_deleted}")
             
             logp(f"reached barrier, waiting for complete checkpoint saving")
-            dist.barrier(device_ids=[rank])
+            # dist.barrier(device_ids=[rank])
 
             # === Clean up ===
             loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
@@ -407,7 +421,7 @@ def run(rank: int, world_size: int, config: MinerConfig) -> None:
             gc.collect()
             torch.cuda.empty_cache()
 
-            step += 1
+            global_opt_step += 1
 
     except Exception as E:
         logger.error("Quit training", exc_info=True)
@@ -416,3 +430,7 @@ def run(rank: int, world_size: int, config: MinerConfig) -> None:
 
         if rank == 0:
             torch.save(global_model.state_dict(), "mycelia_final.pt")
+
+if __name__ == "__main__":
+    config = ValidatorConfig()
+    run(0, 1, config)

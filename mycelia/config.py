@@ -118,7 +118,7 @@ class CheckpointCfg(BaseModel):
     checkpoint_topk: PositiveInt = 20
 
 class LoggingCfg(BaseModel):
-    log_wandb: bool = True
+    log_wandb: bool = False
     wandb_project_name: str = "test-moe"
     wandb_resume: bool = False
     wandb_full_id: str = "oo2vn2v4"
@@ -237,6 +237,9 @@ class BaseConfig(BaseModel):
         
         self.log.base_metric_path = self.run.root_path / self.log.base_metric_path
         self.log.metric_path = self.log.base_metric_path / f"{self.run.run_name}.csv"
+
+        if hasattr(self, "vali"):
+            self.vali.miner_submission_path = self.run.root_path / self.vali.miner_submission_path
 
 
     @staticmethod

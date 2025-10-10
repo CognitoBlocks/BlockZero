@@ -15,7 +15,7 @@ def human(n):
         n /= 1024
     return f"{n:.2f} PiB"
 
-def download(url: str, token: str, out: str, resume: bool = False, timeout: int = 30):
+def download_model(url: str, token: str, out: str, resume: bool = False, timeout: int = 30):
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     mode = "wb"
     start_at = 0
@@ -87,7 +87,7 @@ if __name__ == "__main__":
     args = p.parse_args()
 
     try:
-        download(args.url, args.token, args.output, resume=args.resume, timeout=args.timeout)
+        download_model(args.url, args.token, args.output, resume=args.resume, timeout=args.timeout)
     except requests.RequestException as e:
         sys.exit(f"Network error: {e}")
     except KeyboardInterrupt:

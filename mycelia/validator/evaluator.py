@@ -1,14 +1,185 @@
-from . import scoring
-from ..shared import messaging, metrics
+#!/usr/bin/env python3
+"""
+Async validator pipeline:
+1) gather miner info (mocked here)
+2) download models from miners (uses provided download(url, token, out, ...))
+3) push model jobs into an asyncio.Queue
+4) evaluator workers pop jobs, load models, call evaluate_model(...)
+5) aggregate scores with MinerScoreAggregator (resets on hotkey change)
 
-class Evaluator:
-    def consume_for_round(self, round_id, timeout_s=600):
-        for sub in messaging.consume_submissions(group=f"validator-{round_id}"):
-            if sub["round_id"] == round_id:
-                yield sub
+Swap out the MOCK sections with your real logic.
+"""
 
-    def score_submission(self, sub):
-        scores = scoring.evaluate_weights(sub["artifact_uri"], dataset_id="eval")
-        # update Prometheus
-        # metrics.validator_scores.observe(scores["primary_metric"])
-        return {"miner_id": sub["miner_id"], "scores": scores}
+from __future__ import annotations
+
+import asyncio
+import dataclasses
+import os
+import random
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+from mycelia.shared.client import download_model
+from mycelia.shared.evaluate import evaluate_model
+from mycelia.shared.app_logging import structlog, configure_logging
+from mycelia.shared.datasets import get_dataloader, HFStreamingTorchDataset
+
+logger = structlog.get_logger(__name__)
+
+import torch
+import torch.nn as nn
+
+# -----------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class MinerInfo:
+    uid: str
+    hotkey: str
+    url: str
+    token: str
+
+
+# -------------------------- Pipeline Config -----------------------------------
+MAX_CONCURRENT_DOWNLOADS = 4
+EVAL_WORKERS = 2
+DOWNLOAD_TIMEOUT_SEC = 60
+EVAL_MAX_BATCHES = 50
+# ------------------------------------------------------------------------------
+
+
+def gather_miner_info() -> List[MinerInfo]:
+    """
+    MOCK: Replace with real miner discovery.
+    """
+    miners = [
+        MinerInfo(uid="uid_001", hotkey="hk_A", url="http://localhost:8000/checkpoint", token="tokA"),
+        MinerInfo(uid="uid_002", hotkey="hk_B", url="http://localhost:8001/checkpoint", token="tokB"),
+    ]
+    return miners
+
+
+@dataclasses.dataclass
+class ModelJob:
+    uid: str
+    hotkey: str
+    model_path: str
+    step: int
+
+
+async def _download_one(miner: MinerInfo, out_dir: Path) -> Optional[Path]:
+    """
+    Calls blocking download(...) in a thread; returns local path or None on error.
+    """
+    out_path = out_dir / f"{miner.uid}_{miner.hotkey}.pt"
+    try:
+        await asyncio.to_thread(download_model, miner.url, miner.token, str(out_path), False, DOWNLOAD_TIMEOUT_SEC)
+        logger.info(f"Downloaded for uid={miner.uid}, hotkey={miner.hotkey} -> {out_path}")
+        return out_path
+    except Exception as e:
+        logger.exception(f"Download failed for uid={miner.uid}, hotkey={miner.hotkey}: {e}")
+        return None
+
+
+async def download_worker(
+    name: str,
+    miners_q: "asyncio.Queue[MinerInfo]",
+    jobs_q: "asyncio.Queue[ModelJob]",
+    out_dir: Path,
+    step: int,
+):
+    while True:
+        miner = await miners_q.get()
+        if miner is None:  # type: ignore
+            miners_q.task_done()
+            logger.debug(f"{name}: shutdown signal received.")
+            break
+        try:
+            local = await _download_one(miner, out_dir)
+            if local:
+                job = ModelJob(uid=miner.uid, hotkey=miner.hotkey, model_path=str(local), step=step)
+                await jobs_q.put(job)
+        finally:
+            miners_q.task_done()
+
+# TODO: replace with model merging instead of loading
+def load_model_from_path(path: str, base_model) -> nn.Module:
+    sd = torch.load(path, map_location=torch.device("cpu"))
+    base_model.load_state_dict(sd, strict = False)
+    return base_model
+    
+
+async def evaluator_worker(
+    name: str,
+    config, 
+    jobs_q: "asyncio.Queue[ModelJob]",
+    aggregator: MinerScoreAggregator,
+    device: "torch.device",
+    # eval_dataloader,
+    base_model: nn.Module,
+    tokenizer, 
+    max_eval_batches: int = EVAL_MAX_BATCHES,
+    rank: Optional[int] = None,
+):
+    while True:
+        job = await jobs_q.get()
+        if job is None:  # type: ignore
+            jobs_q.task_done()
+            logger.debug(f"{name}: shutdown signal received.")
+            break
+
+        try:
+            # Load model (potentially blocking) in a thread
+            model = await asyncio.to_thread(load_model_from_path, job.model_path, base_model)
+            eval_dataloader = await asyncio.to_thread(get_dataloader, config, tokenizer, 0, 10)
+            metrics = await asyncio.to_thread(
+                evaluate_model, job.step, model, eval_dataloader, device, max_eval_batches, rank
+            )
+            # choose a primary score (here 'accuracy'); adjust if your evaluate_model returns other keys
+            score = float(metrics.get("val_loss", 100))
+            aggregator.add_score(job.uid, job.hotkey, score)
+            logger.info(f"{name}: uid={job.uid} hotkey={job.hotkey} score={score:.4f} path={job.model_path}")
+        except Exception as e:
+            logger.exception(f"{name}: Evaluation failed for uid={job.uid}: {e}")
+        finally:
+            jobs_q.task_done()
+
+
+async def run_evaluation(config, step, device, miners, aggregator, base_model: nn.Module, tokenizer):
+    # Device & dataloader (MOCK). Replace eval_dataloader with a real one.
+    logger.info(f"Discovered {len(miners)} miners.")
+
+    miners_q: asyncio.Queue[MinerInfo] = asyncio.Queue()
+    jobs_q: asyncio.Queue[ModelJob] = asyncio.Queue()
+
+    # Enqueue miners
+    for m in miners:
+        await miners_q.put(m)
+
+    # Spin up download workers
+    dl_workers = [
+        asyncio.create_task(download_worker(f"downloader-{i+1}", miners_q, jobs_q, config.vali.miner_submission_path, step))
+        for i in range(MAX_CONCURRENT_DOWNLOADS)
+    ]
+
+    # Spin up evaluator workers
+    eval_workers = [
+        asyncio.create_task(evaluator_worker(f"evaluator-{i+1}", config, jobs_q, aggregator, device, base_model, tokenizer))
+        for i in range(EVAL_WORKERS)
+    ]
+
+    # Wait for all miners to be processed
+    await miners_q.join()
+    # Signal download workers to stop
+    for _ in dl_workers:
+        await miners_q.put(None)  # type: ignore
+    await asyncio.gather(*dl_workers)
+
+    # Wait for all jobs (evaluations) to complete
+    await jobs_q.join()
+    # Signal evaluator workers to stop
+    for _ in eval_workers:
+        await jobs_q.put(None)  # type: ignore
+    await asyncio.gather(*eval_workers)

@@ -184,10 +184,15 @@ def get_status(
         "inner_opt_step": inner_opt_step,
         "global_opt_step": global_opt_step,
         "lr": next(iter(group["lr"] for group in inner_optimizer.param_groups)) if inner_optimizer is not None else None,
-        "total_samples": total_samples,
-        "total_tokens": total_tokens,
         "param_sum": expert_sum.detach().cpu(),
     }
+
+    if inner_opt_step is not None:
+        metrics = metrics | {
+            "total_samples": total_samples,
+            "total_tokens": total_tokens,
+        }
+
 
     if training_time > 0 and total_training_time > 0:
         metrics = metrics | {
