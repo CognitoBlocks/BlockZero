@@ -22,6 +22,9 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 
 from transformers import get_cosine_schedule_with_warmup, PreTrainedTokenizerBase
 
+from hivemind.averaging import DecentralizedAverager 
+
+from mycelia.mock.validator.run import add_grad_noise
 from mycelia.config import MinerConfig, ValidatorConfig, parse_args
 from mycelia.shared.app_logging import structlog, configure_logging
 from mycelia.shared.metrics import MetricLogger
@@ -47,65 +50,11 @@ from mycelia.shared.expert_manager import (
 )
 from mycelia.shared.helper import *
 from mycelia.validator.aggregator import MinerScoreAggregator
-from mycelia.validator.evaluator import run_evaluation, gather_miner_info, MinerInfo
+from mycelia.validator.inter_validator_connection import connect_with_peers, build_averagers_from_buff, build_grad_buff_from_model, pack_grads, unpack_to_grads
+from mycelia.validator.evaluator import run_evaluation, gather_miner_info, MinerEvalJob, load_model_from_path
 
 configure_logging()
 logger = structlog.get_logger(__name__)
-
-
-def init_process(rank: int, config: MinerConfig, world_size: int, fn: callable, backend: str = "nccl") -> None:
-    """
-    Initializes the process for distributed training.
-
-    Args:
-        rank (int): The rank of the process.
-        world_size (int): The total number of processes.
-        fn (callable): The function to run for the process.
-        backend (str): The backend to use for distributed training.
-
-    Returns:
-        None
-    """
-    os.environ["MASTER_ADDR"] = "127.0.0.1"
-    os.environ["MASTER_PORT"] = str(config.port)
-
-    if rank == 0:
-        print(config)  # pretty JSON
-
-    torch.cuda.set_device(rank)
-
-    dist.init_process_group(
-        backend,
-        rank=rank,
-        world_size=world_size,
-        timeout=datetime.timedelta(seconds=3600),
-        device_id=torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu") if rank < world_size else None,
-    )
-
-    if config.eval_world_size >= 1:
-        opts = rpc.TensorPipeRpcBackendOptions(
-            init_method=f"tcp://{os.environ['MASTER_ADDR']}:{os.environ['MASTER_PORT']}",
-            num_worker_threads=16,  # tweak as needed
-        )
-
-        rpc.init_rpc(
-            name=("evaluator" if rank == config.world_size + config.eval_world_size - 1 else f"worker{rank}"),
-            rank=rank,
-            world_size=config.world_size + config.eval_world_size,
-            rpc_backend_options=opts,
-        )
-
-    if config.eval_world_size >= 1 and rank == config.world_size + config.eval_world_size - 1:
-        logger.info(f"adding evaluation {config.eval_world_size}")
-        # on evaluator rank only
-        _init_evaluator_rref(config, rank, num_groups=config.num_worker_groups)
-
-        # Evaluator rank
-        EVAL_INSTANCE = Evaluator(config, rank, num_groups=config.num_worker_groups)
-        # Block here until RPC shutdown (training workers will shut us down)
-        rpc.shutdown()
-        # Make sure background thread stops
-        EVAL_INSTANCE.stop()
 
 
 def cleanup() -> None:
@@ -115,7 +64,6 @@ def cleanup() -> None:
     Returns:
         None
     """
-    dist.destroy_process_group()
     torch.cuda.synchronize()
 
 
@@ -189,9 +137,36 @@ def setup_training(
         train_dataloader,
     )
 
-# TODO 
-# def renew
-# dataset, validator connection, miner connection
+async def aggregate_miner_gradient_change(
+        base_model: nn.Module,
+        global_model: nn.Module,
+        device: torch.device,
+        rank: int,
+        logp: callable,
+        outer_optimizer: torch.optim.Optimizer,
+        miner_jobs: List[MinerEvalJob],
+        score_aggregator: MinerScoreAggregator,        
+):
+    miner_models: Dict[str, nn.Module] = {}
+    for miner_job in miner_jobs:
+        if score_aggregator.is_in_top(uid = miner_job.uid, cutoff = 3, how = 'avg'): # TODO: change it to ema
+            miner_models[miner_job.uid] = await asyncio.to_thread(load_model_from_path, miner_job.model_path, base_model)
+
+    # each validator is only expected to validate 1 expert group at a time
+    for uid, miner_model in miner_models.items():
+        populate_global_grads_from_local(global_model, miner_model, weight = 1 / len(miner_models))
+
+def sync_grad_across_validators(
+    group_averagers: Dict[str | int, DecentralizedAverager],
+    group_grad_buff_meta: Dict[str | int, Any]
+):
+    for group_id, avg in group_averagers.items():
+        pack_grads(group_grad_buff_meta[group_id])
+        info = avg.step(gather={"group": group_id},  allow_retries = False)
+        unpack_to_grads(group_grad_buff_meta[group_id])
+        
+        logger.info(group_id, "->", ("averaged" if info else "no group"))
+    
 
 def run_global_optimization(
         model: nn.Module,
@@ -200,9 +175,9 @@ def run_global_optimization(
         rank: int,
         logp: callable,
         outer_optimizer: torch.optim.Optimizer,
-        miners: List[MinerInfo],
+        miner_jobs: List[MinerEvalJob],
+        score_aggregator: MinerScoreAggregator,
 ):
-    
     # --- sync + outer step ---
     # keep global model on device for syncing/stepping, then move back to CPU
     global_model.to(device)
@@ -210,11 +185,7 @@ def run_global_optimization(
     old_shared_name, old_shared_sum = get_weight_sum(model, shared=True)
     old_expert_name, old_expert_sum = get_weight_sum(model, shared=False)
 
-    # dist.barrier(device_ids=[rank])
     logp("start syncing shared weights")
-
-    populate_global_grads_from_every_local(config, global_model, miners)
-    # TODO: sync grad across validators
 
     outer_optimizer.step()
     outer_optimizer.zero_grad()
@@ -230,7 +201,6 @@ def run_global_optimization(
         f"outer optimizer step (shared) {old_shared_name}, {old_shared_sum:.8f} "
         f"-> {new_shared_name}, {new_shared_sum:.8f}"
     )
-    # dist.barrier(device_ids=[rank])
     logp(
         f"outer optimizer step (expert) {old_expert_name}, {old_expert_sum:.8f} "
         f"-> {new_expert_name}, {new_expert_sum:.8f}"
@@ -244,14 +214,6 @@ def run_global_optimization(
     gc.collect()
     torch.cuda.empty_cache()
 
-
-def populate_global_grads_from_every_local(config, global_model, miners):
-    for miner in miners: 
-        miner_model = copy.deepcopy(global_model) 
-        path =config.vali.miner_submission_path / f"{miner.uid}_{miner.hotkey}.pt"
-        sd = torch.load(path, map_location=torch.device("cpu"))['model_state_dict']
-        miner_model.load_state_dict(sd, strict = False)
-        populate_global_grads_from_local(global_model, miner_model, weight = 1 / len(miners))
 
 def run(rank: int, world_size: int, config: MinerConfig) -> None:
     """
@@ -283,7 +245,6 @@ def run(rank: int, world_size: int, config: MinerConfig) -> None:
     device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
     tokenizer = get_base_tokenizer(config)
 
-    # TODO: need to split the dataset per miner first, and then split more
     eval_dataloader = get_dataloader(
         config,
         rank=0,
@@ -302,8 +263,18 @@ def run(rank: int, world_size: int, config: MinerConfig) -> None:
         train_dataloader,
     ) = setup_training(config, rank, device, tokenizer)
 
-    # === ===
-    aggregator = MinerScoreAggregator()
+    # === set up score aggregator ===
+    score_aggregator = MinerScoreAggregator()
+
+    # === set up averager ===
+    group_grad_buff_meta = build_grad_buff_from_model(model = model, expert_group_assignment = em.expert_group_assignment)
+
+    dht = connect_with_peers()
+
+    group_averagers = build_averagers_from_buff(
+        group_buff_metas = group_grad_buff_meta, 
+        dht = dht
+    )
 
     # === training ===
     loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
@@ -335,24 +306,45 @@ def run(rank: int, world_size: int, config: MinerConfig) -> None:
 
                 logger.info(f"rank {rank} | gloabl_opt {global_opt_step} | {msg}")
 
-            # === Get miner ===
-            miners = gather_miner_info()
+            # # === Get miner ===
+            # miner_jobs = gather_miner_info()
 
-            # === Download miner model and evaluate the miners ===
-            asyncio.run(run_evaluation(
-                config = config,
-                step = global_opt_step,
-                device = model.device,
-                miners = miners,
-                aggregator = aggregator,
-                base_model = model,
-                tokenizer = tokenizer
-            ))
+            # # === Download miner model and evaluate the miners ===
+            # asyncio.run(run_evaluation(
+            #     config = config,
+            #     step = global_opt_step,
+            #     device = model.device,
+            #     miners = miner_jobs,
+            #     score_aggregator = score_aggregator,
+            #     base_model = model,
+            #     tokenizer = tokenizer
+            # ))
 
-            logp(msg = "eval result" + str(aggregator.uid_score_pairs()))
+            # logp(msg = "eval result" + str(score_aggregator.uid_score_pairs()))
+
+            # # === aggragate miner gradient change locally ===
+            # logp(f"aggregate miner gradient change", loss_batch, aux_loss_batch)
+            # asyncio.run(aggregate_miner_gradient_change(
+            #     base_model = model,
+            #     global_model = global_model,
+            #     device = device,
+            #     rank = rank,
+            #     logp = logp,
+            #     outer_optimizer = outer_optimizer,
+            #     miner_jobs = miner_jobs,
+            #     score_aggregator = score_aggregator
+            # ))
+
+            add_grad_noise(global_model, 20)
+
+            # === aggragate miner gradient change ===
+            logp(f"sync gradient across validators", loss_batch, aux_loss_batch)
+            sync_grad_across_validators(
+                group_averagers,
+                group_grad_buff_meta
+            )
 
             # === global optimizer ===
-            logp(f"reached global opt barrier", loss_batch, aux_loss_batch)
             run_global_optimization(
                 model = model,
                 global_model = global_model,
@@ -360,15 +352,12 @@ def run(rank: int, world_size: int, config: MinerConfig) -> None:
                 rank = rank,
                 logp = logp,
                 outer_optimizer = outer_optimizer,
-                miners = miners,
+                miner_jobs = miner_jobs,
+                score_aggregator = score_aggregator
             )
 
             # === validation and log metric ===
-            logp(f"reached barrier, waiting for partial evaluation")
-            # dist.barrier(device_ids=[rank])
-
             logp(f"start partial evaluation")
-
             val_metric = evaluate_model(
                 rank=rank, step=global_opt_step, model=model, eval_dataloader=eval_dataloader, device=device
             )
@@ -391,9 +380,6 @@ def run(rank: int, world_size: int, config: MinerConfig) -> None:
 
             metric_logger.log(metrics)
 
-            logp(f"reached barrier, waiting for partial validation and metric logging to complete")
-            # dist.barrier(device_ids=[rank])
-
             # === save checkpoint ===
             logp(f"saving checkpoint")
             ckpt_path = os.path.join(config.ckpt.checkpoint_path, f"global_opt_step_{int(global_opt_step)}")
@@ -415,9 +401,6 @@ def run(rank: int, world_size: int, config: MinerConfig) -> None:
                     if ckpt_deleted:
                         logp(f"Deleted old checkpoints: {ckpt_deleted}")
             
-            logp(f"reached barrier, waiting for complete checkpoint saving")
-            # dist.barrier(device_ids=[rank])
-
             # === Clean up ===
             loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
             aux_loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
@@ -430,6 +413,8 @@ def run(rank: int, world_size: int, config: MinerConfig) -> None:
         logger.error("Quit training", exc_info=True)
         cleanup()
         metric_logger.close()
+        for idx, a in group_averagers.items():
+            a.shutdown()
 
         if rank == 0:
             torch.save(global_model.state_dict(), "mycelia_final.pt")

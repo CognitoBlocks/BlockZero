@@ -252,6 +252,7 @@ def populate_global_grads_from_local(global_model: nn.Module, model: nn.Module, 
     for name, p in local_named.items():
         if shared_only and is_expert_param(name):
             continue
+        
         g = global_named.get(name)
         if g is None:
             logger.warning(f"Shared param '{name}' not found in global model; skipping.")

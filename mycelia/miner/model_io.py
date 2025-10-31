@@ -14,7 +14,7 @@ from requests.exceptions import RequestException, Timeout, ConnectionError as Re
 
 from mycelia.shared.checkpoint import get_resume_info        
 from mycelia.config import MinerConfig, parse_args           
-from mycelia.shared.client import submit_model, download_model           
+from mycelia.miner.client import submit_model, download_model           
 
 # -------------- Logging --------------
 LOG_LEVEL = os.getenv("CKPT_MGR_LOG", "INFO").upper()

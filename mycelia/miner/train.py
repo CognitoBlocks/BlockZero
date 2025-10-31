@@ -348,7 +348,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 )
                 metric_logger.log(metrics, print_log=False)
 
-            # === validation and log metric ===
+            # === local validation and log metric ===
             if is_inner_optimizer_step and inner_opt_step % config.log.metric_interval == 0:
                 
                 logp(f"reached barrier, waiting for partial evaluation")

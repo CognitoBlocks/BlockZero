@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from mycelia.shared.client import download_model
+from mycelia.miner.client import download_model
 from mycelia.shared.evaluate import evaluate_model
 from mycelia.shared.app_logging import structlog, configure_logging
 from mycelia.shared.datasets import get_dataloader, HFStreamingTorchDataset
@@ -32,8 +32,6 @@ import torch
 import torch.nn as nn
 
 # -----------------------------------------------------------------------------
-
-
 @dataclasses.dataclass(frozen=True)
 class MinerEvalJob:
     uid: str
@@ -106,7 +104,7 @@ async def evaluator_worker(
             jobs_q.task_done()
 
 
-async def run_evaluation(config, step, device, miners, aggregator, base_model: nn.Module, tokenizer):
+async def run_evaluation(config, step, device, miners, score_aggregator, base_model: nn.Module, tokenizer):
     # Device & dataloader (MOCK). Replace eval_dataloader with a real one.
     logger.info(f"Discovered {len(miners)} miners.")
     miners_q: asyncio.Queue[MinerEvalJob] = asyncio.Queue()
@@ -117,7 +115,7 @@ async def run_evaluation(config, step, device, miners, aggregator, base_model: n
 
     # Spin up evaluator workers
     eval_workers = [
-        asyncio.create_task(evaluator_worker(f"evaluator-{i+1}", config, miners_q, aggregator, device, base_model, tokenizer))
+        asyncio.create_task(evaluator_worker(f"evaluator-{i+1}", config, miners_q, score_aggregator, device, base_model, tokenizer))
         for i in range(EVAL_WORKERS)
     ]
 

@@ -21,7 +21,6 @@ from mycelia.shared.checkpoint import (
 
 from mycelia.config import MinerConfig, parse_args
 from mycelia.shared.app_logging import structlog, configure_logging
-from mycelia.shared.app_logging import configure_logging, structlog
 
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")

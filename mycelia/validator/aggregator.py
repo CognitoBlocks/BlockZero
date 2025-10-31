@@ -183,6 +183,37 @@ class MinerScoreAggregator:
                     raise ValueError('how must be one of: "latest", "sum", "avg"')
             return out
 
+    def is_in_top(
+        self,
+        uid: str,
+        cutoff: int = 3,
+        how: Literal["latest", "sum", "avg"] = "latest",
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+    ) -> bool:
+        """
+        Return True if the given uid's score is in the top 20 miners.
+        The ranking is determined using the specified 'how' metric:
+        - how="latest": most recent score
+        - how="sum": total score over [start, end]
+        - how="avg": average score over [start, end]
+        """
+        scores = self.uid_score_pairs(how=how, start=start, end=end)
+        if uid not in scores:
+            return False
+
+        # Sort all scores descending
+        sorted_scores = sorted(scores.values(), reverse=True)
+
+        # If there are fewer than 20 miners, all are "in top 20"
+        if len(sorted_scores) <= cutoff:
+            return True
+
+        # Find the cutoff score for the top 20
+        cutoff = sorted_scores[cutoff - 1]
+        return scores[uid] >= cutoff
+
+
     # ---------- Maintenance ----------
     def prune_older_than(self, older_than: timedelta, now: Optional[datetime] = None) -> None:
         if now is None:
@@ -204,7 +235,7 @@ class MinerScoreAggregator:
                 for uid, state in self._miners.items()
             }
         return json.dumps(payload)
-
+    
     @classmethod
     def from_json(cls, data: str) -> "MinerScoreAggregator":
         raw = json.loads(data)
