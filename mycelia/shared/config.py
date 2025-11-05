@@ -55,6 +55,10 @@ class ChainCfg(BaseModel):
     hotkey_name: str = 'template_hotkey_name'
     network: str = 'test'
 
+class CycleCfg(BaseModel):
+    validation_block: int = 300 # validators run a validation round everytime when sub.block % validation_block == 0   
+    submission_offset: int = 50 # validators start accepting miner submission when sub.block > (sub.block // validation_block + 1) * validation_block - submission_offset
+
 class RunCfg(BaseModel):
     run_name: str = "foundation"
     root_path: Path = find_project_root() 
@@ -163,7 +167,8 @@ class BaseConfig(BaseModel):
     log: LoggingCfg = LoggingCfg()
     data: DataCfg = DataCfg()
     opt: OptimizerCfg = OptimizerCfg()
-    
+    cycle: CycleCfg = CycleCfg()
+
     # -----------------------
     # Derivations & hygiene
     # -----------------------
@@ -269,13 +274,14 @@ class BaseConfig(BaseModel):
 
     def _fill_wallet_data(self):
         wallet = bittensor.wallet(name = self.chain.coldkey_name, hotkey = self.chain.hotkey_name)
+        subtensor = bittensor.subtensor(network = self.chain.network)
         try:
             self.chain.hotkey_ss58 = wallet.hotkey.ss58_address
             self.chain.coldkey_ss58 = wallet.coldkeypub.ss58_address
+            self.chain.uid = subtensor.metagraph(netuid = self.chain.netuid).hotkeys.index(self.chain.hotkey_ss58)
         except bittensor.KeyFileError as e:
             logger.warning(f"Cannot find the wallet key by name coldkey name: {self.chain.coldkey_name}, hotkey name: {self.chain.hotkey_name}, please make sure it has been set correctly if you are reloading from a config.json or use --hotkey_name & --coldkey_name when you are creating a config file from a template.", error=str(e))
-            return 
-        
+            return  
 
     @staticmethod
     def _bump_run_name(name: str) -> str:

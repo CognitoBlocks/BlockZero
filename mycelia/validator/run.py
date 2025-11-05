@@ -415,7 +415,7 @@ def run(rank: int, world_size: int, config: MinerConfig) -> None:
             commit_status(config, wallet, subtensor, ValidatorStatus(
                 model_hash = 'xxx',
                 model_version = global_opt_step,
-                next_validation_start = subtensor.block + 100,
+                expert_group = 1,
                 miner_seed = secrets.randbits(24) # this should reveal later
             ))
 
@@ -431,7 +431,8 @@ def run(rank: int, world_size: int, config: MinerConfig) -> None:
             # gc.collect()
             # torch.cuda.empty_cache()%
 
-            time.sleep(60)
+            time.sleep(60 * 5)
+
             global_opt_step += 1
 
     except Exception as E:

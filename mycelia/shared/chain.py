@@ -23,7 +23,7 @@ class WorkerStatus(BaseModel):
 class ValidatorStatus(BaseModel):
     model_hash: str = None
     model_version: int = None
-    next_validation_start: int = None #block 
+    expert_group: int = None #block 
     miner_seed: int = None
 
 class MinerStatus(BaseModel):

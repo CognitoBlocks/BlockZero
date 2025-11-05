@@ -40,7 +40,7 @@ def submit_model(
     url: str,
     token: str,
     model_path: str,
-    uid: int, 
+    uid: int,
     hotkey: str,
     step: int = 12000,
     timeout_s: int = 300,
@@ -70,7 +70,7 @@ def submit_model(
     except OSError as e:
         raise OSError(f"Failed to read file: {model_path}") from e
 
-    data = {"step": str(step), "checksum_sha256": checksum, "uid": uid, "hotkey": hotkey}
+    data = {"step": str(step), "checksum_sha256": checksum, 'uid': uid, "hotkey": hotkey}
     if extra_form:
         # stringify non-bytes for safety in form data
         for k, v in extra_form.items():

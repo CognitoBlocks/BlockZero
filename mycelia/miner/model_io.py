@@ -7,14 +7,17 @@ import hashlib
 import logging
 import signal
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Any
 
+from collections import Counter
+import bittensor 
 import requests
 from requests.exceptions import RequestException, Timeout, ConnectionError as ReqConnectionError
 
 import bittensor 
-from mycelia.shared.chain import serve_axon, get_status
-from mycelia.shared.checkpoint import get_resume_info
+from mycelia.shared.chain import serve_axon, get_status, commit_status, MinerStatus
+from mycelia.shared.evaluate import get_validator_miner_assignment
+from mycelia.shared.checkpoint import get_resume_info, delete_old_checkpoints
 from mycelia.shared.config import MinerConfig, parse_args           
 from mycelia.miner.client import submit_model, download_model           
 from mycelia.shared.app_logging import structlog, configure_logging
@@ -22,14 +25,39 @@ from mycelia.shared.app_logging import structlog, configure_logging
 configure_logging()
 logger = structlog.get_logger(__name__)
 
-def _should_submit() -> bool:
-    return False
+
+def should_submit(
+    config: MinerConfig,
+    subtensor: bittensor.Subtensor,
+    last_submission_block: int,
+):    
+    submission_start_block = (subtensor.block // config.cycle.validation_block + 1) * config.cycle.validation_block - config.cycle.submission_offset
+    logger.info(submission_start_block = submission_start_block, current_block = subtensor.block, last_submission_block = last_submission_block)
+
+    return (subtensor.block > submission_start_block) and (subtensor.block - last_submission_block > config.cycle.validation_block - config.cycle.submission_offset) 
+    
+def search_submission_destination(
+    wallet: bittensor.wallet,
+    config: MinerConfig, 
+    subtensor: bittensor.Subtensor
+) -> bittensor.Axon:
+    
+    validator_miner_assignment = get_validator_miner_assignment(config, subtensor)
+    
+    for validator, miners in validator_miner_assignment.items():
+        if wallet.hotkey.ss58_address in miners:
+            assigned_validator_hotkey = validator
+            break
+
+    metagraph = subtensor.metagraph(netuid = config.chain.netuid)
+    uid = metagraph.hotkeys.index(assigned_validator_hotkey)
+    return metagraph.axons[uid]
 
 def scan_for_new_model(
     current_model_version: int,
     current_model_hash: str,
-    config,
-    subtensor
+    config: MinerConfig,
+    subtensor: bittensor.subtensor,
 ) -> Tuple[bool, List[dict]]:
     """
     Returns:
@@ -121,10 +149,18 @@ def setup_chain_worker(
     return wallet, subtensor
 
 def main(config):
+
+    config.write()
+
     wallet, subtensor = setup_chain_worker(config)
 
     current_model_version = 0
     current_model_hash = 'xxx'
+    last_submission_block = 0
+
+    commit_status(config, wallet, subtensor, MinerStatus(
+        expert_group = 1,
+    ))
 
     while True:
         try:
@@ -133,6 +169,8 @@ def main(config):
                 current_model_version, current_model_hash, config, subtensor
             )
 
+            logger.info('check for download', should_download = should_download)
+            
             if should_download and download_metas:
                 download_success = False
                 retries = 0
@@ -141,6 +179,9 @@ def main(config):
 
                 while (not download_success) and (retries < max_retries):
                     for download_meta in download_metas:
+                        
+                        logger.info('downloading from candidate... ', download_meta)
+                        
                         # Resolve URL if not provided; fall back to ip/port + default route
                         url = download_meta.get("url")
                         if not url:
@@ -148,16 +189,15 @@ def main(config):
                             port = download_meta.get("port")
                             # Best-effort defaults; customize if your API differs
                             protocol = getattr(getattr(config, "miner", object()), "protocol", "http")
-                            route = getattr(getattr(config, "miner", object()), "download_route", "/model")
                             if ip and port:
-                                url = f"{protocol}://{ip}:{port}{route}"
+                                url =f"{protocol}://{ip}:{port}/get-checkpoint"
                             else:
                                 logger.warning("Skipping meta without URL or ip:port: %s", download_meta)
                                 continue
 
                         # Output path (reload each attempt so block height is fresh)
                         out_path = Path(config.miner.validator_checkpoint_path) / (
-                            f"server_uid{download_meta.get('uid')}_block{subtensor.block}.pt"
+                            f"validator_{download_meta.get('uid')}_version_{download_meta.get('model_version')}block_{subtensor.block}.pt"
                         )
 
                         logger.info("Checking for new checkpoint from validator %s ...", download_meta.get("uid"))
@@ -183,37 +223,38 @@ def main(config):
                 if not download_success:
                     logger.error("❌ All download attempts failed after %d retries.", retries)
 
+            delete_old_checkpoints(config.miner.validator_checkpoint_path , config.ckpt.checkpoint_topk)
 
-            # # --------- SUBMISSION PHASE ---------
-            # # Your code: resume, start_step, latest_checkpoint_path = get_resume_info(rank=0, config=config)
-            # resume, start_step, latest_checkpoint_path = get_resume_info(rank=0, config=config)
-            # latest_checkpoint_path = Path(latest_checkpoint_path)
-            # model_file = latest_checkpoint_path / "model.pt"
+            # --------- SUBMISSION PHASE ---------
+            resume, start_step, latest_checkpoint_path = get_resume_info(rank=0, config=config)
 
-            # if not model_file.is_file():
-            #     log.debug("No model found at %s; skipping submit", model_file)
+            if should_submit(config, subtensor, last_submission_block):
+                destination_axon = search_submission_destination(
+                    wallet = wallet,
+                    config = config,
+                    subtensor = subtensor
+                )
+                
+                submit_model(
+                    url=f"http://{destination_axon.ip}:{destination_axon.port}/submit-checkpoint",
+                    token="",
+                    step = 0,
+                    uid = config.chain.uid,
+                    hotkey = config.chain.hotkey_ss58,
+                    model_path=f"{latest_checkpoint_path}/model.pt",
+                )
+
+                last_submission_block = subtensor.block
             
-            # else:
-            #     if _should_submit():
-            #         log.info("Submitting checkpoint: step=%s path=%s", start_step, model_file)
-            #         submit_model(
-            #             url=SUBMIT_URL,
-            #             token=SUBMIT_TOKEN,
-            #             step = 0,
-            #             uid = config.chain.uid,
-            #             hotkey = config.chain.hotkey,
-            #             model_path=str(model_file),
-            #         )
-            #         backoff = 1.0
-            #     else:
-            #         log.debug("Not time to submit yet (step=%s, last_step=%s)")
+            else:
+                logger.debug("Not time to submit yet (step=%s, last_step=%s)")
 
         except (Timeout, ReqConnectionError) as e:
-            log.warning("Network issue: %s", e)
+            logger.warning("Network issue: %s", e)
         except RequestException as e:
-            log.warning("HTTP error: %s", e)
+            logger.warning("HTTP error: %s", e)
         except Exception as e:
-            log.exception("Unexpected error in loop: %s", e)
+            logger.exception("Unexpected error in loop: %s", e)
 
         time.sleep(60 * 5)
 
