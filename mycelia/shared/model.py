@@ -46,9 +46,6 @@ def _default_model(rank: int, config: MinerConfig) -> nn.Module:
         model = partial_moe(config, model, config.moe.my_expert_group_id, em.expert_group_assignment)
 
     if get_nested_attr(config, "ckpt.resume_from_ckpt", False) and resume and latest_checkpoint_path:
-        logger.info(
-            "rank %s setup training: resuming from %s (start_step=%s)", rank, latest_checkpoint_path, start_step
-        )
         load_checkpoint(
             config=config, checkpoint_path=latest_checkpoint_path, model=model, rank=rank, device=config.model.device
         )

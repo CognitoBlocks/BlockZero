@@ -281,8 +281,6 @@ class BaseConfig(BaseModel):
         """
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-
-        logger.info(f"loaded config {data}")
         return cls(**data)
 
     def _refresh_paths(self) -> None:

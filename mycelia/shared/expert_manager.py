@@ -137,17 +137,12 @@ class ExpertManager:
     """
 
     def __init__(self, num_experts: int, num_worker_groups: int, model: nn.Module | None = None):
-        logger.info("em init")
         self.num_experts = int(num_experts)
         self.num_worker_groups = int(num_worker_groups)
 
-        logger.info("em get expert layer")
         if model is not None:
-
-            logger.info("em get expert layer 1")
             self.expert_layers = self._discover_expert_layers(model)
         else:
-            logger.info("em get expert layer 2")
             self.expert_layers = None
 
     def set_expert_layers(self, model: nn.Module):

@@ -123,7 +123,8 @@ def main(config):
             start_submit = False
             while not start_submit:
                 start_submit, block_till = should_submit_model(config, subtensor, last_submission_block)
-                time.sleep(12)
+                if block_till > 0:
+                    time.sleep(block_till * 12)
 
             destination_axon = search_model_submission_destination(wallet=wallet, config=config, subtensor=subtensor)
 

@@ -14,7 +14,7 @@ logger = structlog.get_logger(__name__)
 
 
 def get_init_peer_id():
-    return ["/ip4/127.0.0.1/tcp/39493/p2p/12D3KooWKU2mSoTw8d4y3DGCqQwFNKNsjcaZ55pPXEPH7aAHZcBB"]
+    return ['/ip4/127.0.0.1/tcp/41001/p2p/12D3KooWJbtD23NdFUF7wFCFx6Jz2QTW7C6jM9LmGFgpe4cW4s4Y']
 
 
 def connect_with_peers():
@@ -71,6 +71,7 @@ def build_buff_from_params(params):
     total = sum(numels)
     flat_grad = torch.zeros(total, device="cpu")  # or cuda
 
+    logger.info("buld buff total", total)
     return {"params": params, "numels": numels, "offsets": offsets, "buff": flat_grad}
 
 
@@ -93,6 +94,7 @@ def unpack_to_grads(buff_meta):
 
 # --- getting averager ---
 
+from hivemind.averaging.allreduce import AveragingMode
 
 def build_grad_buff_from_model(
     model: nn.Module,
@@ -113,10 +115,8 @@ def build_grad_buff_from_model(
     expert_group_to_names = {group_id: [] for group_id, _ in list(expert_group_assignment.values())[0].items()}
 
     for name, p in name_to_tensor.items():
-        logger.info(name)
         layer_id, expert_id = get_layer_expert_id(name)
         if layer_id and expert_id is not None:
-            logger.info(name, layer_id, expert_id)
             for group_id, expert_ids in expert_group_assignment[layer_id].items():
                 if expert_id in expert_ids:
                     expert_group_to_names[group_id].append(name)
@@ -155,17 +155,17 @@ def build_averagers_from_buff(
     group_averagers: Dict[str | int, DecentralizedAverager] = {}
     for group_id, buff_meta in group_buff_metas.items():
         prefix = f"{prefix_base}/group{group_id}"
-        logger.info("build avg - shared", prefix=prefix)
         group_averagers[group_id] = DecentralizedAverager(
             averaged_tensors=[buff_meta["buff"]],
             dht=dht,
             start=True,
             prefix=prefix,
             target_group_size=target_group_size,
-            min_group_size=min_group_size,
-            averaging_alpha=averaging_alpha,
+            # min_group_size=min_group_size,
+            # averaging_alpha=averaging_alpha,
             allreduce_timeout=120,
             client_mode=False,
         )
+        logger.info("build hivemind averager - shared", prefix=prefix, mode=group_averagers[group_id].mode, client_mode = group_averagers[group_id].client_mode)
 
     return group_averagers

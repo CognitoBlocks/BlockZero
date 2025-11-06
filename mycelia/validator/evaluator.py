@@ -49,10 +49,10 @@ EVAL_MAX_BATCHES = 50
 # ------------------------------------------------------------------------------
 
 
-def load_model_from_path(path: str, base_model) -> nn.Module:
+def load_model_from_path(path: str, base_model, device: torch.device) -> nn.Module:
     sd = torch.load(path, map_location=torch.device("cpu"))["model_state_dict"]
     base_model.load_state_dict(sd, strict=False)
-    return base_model
+    return base_model.to(device)
 
 
 async def evaluator_worker(
@@ -61,7 +61,6 @@ async def evaluator_worker(
     jobs_q: "asyncio.Queue[MinerEvalJob]",
     aggregator: MinerScoreAggregator,
     device: "torch.device",
-    # eval_dataloader,
     base_model: nn.Module,
     tokenizer,
     max_eval_batches: int = EVAL_MAX_BATCHES,
@@ -76,7 +75,7 @@ async def evaluator_worker(
 
         try:
             # Load model (potentially blocking) in a thread
-            model = await asyncio.to_thread(load_model_from_path, job.model_path, base_model)
+            model = await asyncio.to_thread(load_model_from_path, job.model_path, base_model, device)
             eval_dataloader = await asyncio.to_thread(get_dataloader, config, tokenizer, 0, 10)
             metrics = await asyncio.to_thread(
                 evaluate_model, job.step, model, eval_dataloader, device, max_eval_batches, rank
@@ -84,7 +83,7 @@ async def evaluator_worker(
             # choose a primary score (here 'accuracy'); adjust if your evaluate_model returns other keys
             score = float(metrics.get("val_loss", 100))
             aggregator.add_score(job.uid, job.hotkey, score)
-            logger.info(f"{name}: uid={job.uid} hotkey={job.hotkey} score={score:.4f} path={job.model_path}")
+            logger.info(f"{name}: uid={job.uid} score={score:.4f}z path={job.model_path}")
 
             del eval_dataloader
 
@@ -96,7 +95,7 @@ async def evaluator_worker(
 
 async def run_evaluation(config, step, device, miners, score_aggregator, base_model: nn.Module, tokenizer):
     # Device & dataloader (MOCK). Replace eval_dataloader with a real one.
-    logger.info(f"Discovered {len(miners)} miners.")
+    logger.info(f"discovered {len(miners)} miners.")
     miners_q: asyncio.Queue[MinerEvalJob] = asyncio.Queue()
 
     # Enqueue miners
@@ -116,5 +115,6 @@ async def run_evaluation(config, step, device, miners, score_aggregator, base_mo
 
     # Signal evaluator workers to stop
     for _ in eval_workers:
-        await jobs_q.put(None)  # type: ignore
+        await miners_q.put(None) 
+    
     await asyncio.gather(*eval_workers)

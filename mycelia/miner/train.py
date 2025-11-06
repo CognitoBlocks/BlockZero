@@ -176,9 +176,6 @@ def setup_training(config, rank: int, device: torch.device, tokenizer: PreTraine
 
     # === load checkpoint (if any) ===
     if get_nested_attr(config, "resume_from_ckpt", False) and resume and latest_checkpoint_path:
-        # logger.info(
-        #     "rank %s setup training: resuming from %s (start_step=%s)", rank, latest_checkpoint_path, start_step
-        # )
         _ = load_checkpoint(
             config=config,
             checkpoint_path=latest_checkpoint_path,
@@ -224,7 +221,6 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
         config.write()
 
     # === set logging ===
-    logger.info(config)
     metric_logger = MetricLogger(config, rank)
 
     # === mis ===

@@ -110,12 +110,13 @@ def setup_training(config, rank: int, device: torch.device, tokenizer: PreTraine
         resume, start_step, latest_checkpoint_path = get_resume_info(rank, config)
 
     # === model & Experts manager ===
-    model, em = load_base_model(rank, config)
-    model = model.to(device)
-    global_model = copy.deepcopy(model).cpu()
+    logger.info(f"rank {rank} setup training - load model and expert manager")
+    base_model, em = load_base_model(rank, config)
+    base_model = base_model.to(device)
+    global_model = copy.deepcopy(base_model).cpu()
 
     # === optimizers ===
-    logger.info(f" rank {rank} optimizer")
+    logger.info(f"rank {rank} setup training - load optimizer")
     outer_optimizer = torch.optim.SGD(
         global_model.named_parameters(),
         lr=config.opt.outer_lr,
@@ -123,22 +124,19 @@ def setup_training(config, rank: int, device: torch.device, tokenizer: PreTraine
         nesterov=True,
     )
 
-    # === scheduler === (for inner optimizer)
-    logger.info(f" rank {rank} scheduler")
-
     # === scaler ===
+    logger.info(f"rank {rank} setup training - load scaler")
     outer_scaler = torch.amp.GradScaler(
         "cuda", enabled=(get_nested_attr(config, "model.precision", "") == "fp16-mixed")
     )
 
     # === dataloader ===
+    logger.info(f"rank {rank} setup training - load dataloader")
     train_dataloader = get_dataloader(config, rank=rank, world_size=config.data.world_size, tokenizer=tokenizer)
 
     # === load checkpoint (if any) ===
+    logger.info(f"rank {rank} setup training - load past checkpoint")
     if get_nested_attr(config, "resume_from_ckpt", False) and resume and latest_checkpoint_path:
-        # logger.info(
-        #     "rank %s setup training: resuming from %s (start_step=%s)", rank, latest_checkpoint_path, start_step
-        # )
         _ = load_checkpoint(
             config=config,
             checkpoint_path=latest_checkpoint_path,
@@ -149,9 +147,9 @@ def setup_training(config, rank: int, device: torch.device, tokenizer: PreTraine
             data_loader=train_dataloader,
         )
 
-    logger.info(f"rank {rank} setup_training: success!")
+    logger.info(f"rank {rank} setup_training - completed successfully!")
     return (
-        model,
+        base_model,
         global_model,
         outer_optimizer,
         outer_scaler,
@@ -166,7 +164,6 @@ async def aggregate_miner_gradient_change(
     global_model: nn.Module,
     device: torch.device,
     rank: int,
-    logp: callable,
     outer_optimizer: torch.optim.Optimizer,
     miner_jobs: List[MinerEvalJob],
     score_aggregator: MinerScoreAggregator,
@@ -175,7 +172,7 @@ async def aggregate_miner_gradient_change(
     for miner_job in miner_jobs:
         if score_aggregator.is_in_top(uid=miner_job.uid, cutoff=3, how="avg"):  # TODO: change it to ema
             miner_models[miner_job.uid] = await asyncio.to_thread(
-                load_model_from_path, miner_job.model_path, base_model
+                load_model_from_path, miner_job.model_path, base_model, device
             )
 
     # each validator is only expected to validate 1 expert group at a time
@@ -187,8 +184,15 @@ def sync_grad_across_validators(
     group_averagers: Dict[str | int, DecentralizedAverager], group_grad_buff_meta: Dict[str | int, Any]
 ):
     for group_id, avg in group_averagers.items():
+
+        if avg.total_size <= 0:
+            logger.info("skip averager", mode=avg.mode, client_mode = avg.client_mode, total_size = avg.total_size)
+            continue
+
+        logger.info("using averager", mode=avg.mode, client_mode = avg.client_mode, total_size = avg.total_size)
+
         pack_grads(group_grad_buff_meta[group_id])
-        info = avg.step(gather={"group": group_id}, allow_retries=False)
+        info = avg.step(allow_retries=False)
         unpack_to_grads(group_grad_buff_meta[group_id])
 
         logger.info(group_id, "->", ("averaged" if info else "no group"))
@@ -199,7 +203,6 @@ def run_global_optimization(
     global_model: nn.Module,
     device: torch.device,
     rank: int,
-    logp: callable,
     outer_optimizer: torch.optim.Optimizer,
     miner_jobs: List[MinerEvalJob],
     score_aggregator: MinerScoreAggregator,
@@ -211,7 +214,7 @@ def run_global_optimization(
     old_shared_name, old_shared_sum = get_weight_sum(model, shared=True)
     old_expert_name, old_expert_sum = get_weight_sum(model, shared=False)
 
-    logp("start syncing shared weights")
+    logger.info("start syncing shared weights")
 
     outer_optimizer.step()
     outer_optimizer.zero_grad()
@@ -223,11 +226,11 @@ def run_global_optimization(
     new_shared_name, new_shared_sum = get_weight_sum(model, shared=True)
     new_expert_name, new_expert_sum = get_weight_sum(model, shared=False)
 
-    logp(
+    logger.info(
         f"outer optimizer step (shared) {old_shared_name}, {old_shared_sum:.8f} "
         f"-> {new_shared_name}, {new_shared_sum:.8f}"
     )
-    logp(
+    logger.info(
         f"outer optimizer step (expert) {old_expert_name}, {old_expert_sum:.8f} "
         f"-> {new_expert_name}, {new_expert_sum:.8f}"
     )
@@ -264,7 +267,6 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
     os.makedirs(config.vali.miner_submission_path, exist_ok=True)
 
     # === set logging ===
-    logger.info(config)
     metric_logger = MetricLogger(config, rank)
 
     # === mis ===
@@ -280,7 +282,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
 
     # === set up training ===
     (
-        model,
+        base_model,
         global_model,
         outer_optimizer,
         outer_scaler,
@@ -295,7 +297,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
     score_aggregator = MinerScoreAggregator()
 
     # === set up averager ===
-    group_grad_buff_meta = build_grad_buff_from_model(model=model, expert_group_assignment=em.expert_group_assignment)
+    group_grad_buff_meta = build_grad_buff_from_model(model=base_model, expert_group_assignment=em.expert_group_assignment)
 
     dht = connect_with_peers()
 
@@ -331,20 +333,6 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             # for each inner_opt_step, we run local optimization; gradient_accumulation_steps = 1 real step
             # for each global_opt_interval number of inner_opt_step, we synchronise weight from different ddp worker, and then run global optimization
 
-            def logp(
-                msg: str, loss_batch: torch.Tensor | None = None, aux_loss_batch: torch.Tensor | None = None
-            ) -> None:
-                if aux_loss_batch is not None:
-                    msg = f"aux loss_batch {aux_loss_batch:.4f} | {msg}"
-
-                if loss_batch is not None:
-                    if aux_loss_batch is not None:
-                        msg = f"loss_batch {loss_batch-aux_loss_batch:.4f} | {msg}"
-                    else:
-                        msg = f"loss_batch {loss_batch:.4f} | {msg}"
-
-                logger.info(f"rank {rank} | gloabl_opt {global_opt_step} | {msg}")
-
             # === Get miner ===
             start_validation = False
             while not start_validation:
@@ -355,82 +343,81 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             miner_jobs = gather_validation_job(config, subtensor, step=global_opt_step)
             logger.info("gathered miner job", global_opt_step=global_opt_step, miner_jobs=miner_jobs)
 
-            # # === Download miner model and evaluate the miners ===
-            # asyncio.run(run_evaluation(
-            #     config = config,
-            #     step = global_opt_step,
-            #     device = model.device,
-            #     miners = miner_jobs,
-            #     score_aggregator = score_aggregator,
-            #     base_model = model,
-            #     tokenizer = tokenizer
-            # ))
+            # === Get miner model and evaluate the miners ===
+            asyncio.run(run_evaluation(
+                config = config,
+                step = global_opt_step,
+                device = base_model.device,
+                miners = miner_jobs,
+                score_aggregator = score_aggregator,
+                base_model = base_model,
+                tokenizer = tokenizer
+            ))
 
-            # logp(msg = "eval result" + str(score_aggregator.uid_score_pairs()))
+            logger.info("eval result", scores = score_aggregator.uid_score_pairs())
 
-            # # === aggragate miner gradient change locally ===
-            # logp(f"aggregate miner gradient change", loss_batch, aux_loss_batch)
-            # asyncio.run(aggregate_miner_gradient_change(
-            #     base_model = model,
-            #     global_model = global_model,
-            #     device = device,
-            #     rank = rank,
-            #     logp = logp,
-            #     outer_optimizer = outer_optimizer,
-            #     miner_jobs = miner_jobs,
-            #     score_aggregator = score_aggregator
-            # ))
+            # === aggragate miner gradient change locally ===
+            logger.info(f"aggregate miner gradient change")
+            asyncio.run(aggregate_miner_gradient_change(
+                base_model = base_model,
+                global_model = global_model,
+                device = torch.device('cpu'), # all gradient aggregation done on cpu
+                rank = rank,
+                outer_optimizer = outer_optimizer,
+                miner_jobs = miner_jobs,
+                score_aggregator = score_aggregator
+            ))
 
-            # # === aggragate miner gradient change ===
-            # logp(f"sync gradient across validators", loss_batch, aux_loss_batch)
-            # sync_grad_across_validators(
-            #     group_averagers,
-            #     group_grad_buff_meta
-            # )
+            # === aggragate miner gradient change ===
+            logger.info(f"sync gradient across validators")
+            sync_grad_across_validators(
+                group_averagers,
+                group_grad_buff_meta
+            )
 
-            # # === global optimizer ===
-            # run_global_optimization(
-            #     model = model,
-            #     global_model = global_model,
-            #     device = device,
-            #     rank = rank,
-            #     logp = logp,
-            #     outer_optimizer = outer_optimizer,
-            #     miner_jobs = miner_jobs,
-            #     score_aggregator = score_aggregator
-            # )
+            # === global optimizer ===
+            logger.info(f"sync gradient across validators")
+            run_global_optimization(
+                model = base_model,
+                global_model = global_model,
+                device = device,
+                rank = rank,
+                outer_optimizer = outer_optimizer,
+                miner_jobs = miner_jobs,
+                score_aggregator = score_aggregator
+            )
 
-            # # === validation and log metric ===
-            # logp(f"start local evaluation")
-            # val_metric = evaluate_model(
-            #     rank=rank, step=global_opt_step, model=model, eval_dataloader=eval_dataloader, device=device
-            # )
+            # === validation and log metric ===
+            logger.info(f"start local evaluation")
+            val_metric = evaluate_model(
+                rank=rank, step=global_opt_step, model=global_model, eval_dataloader=eval_dataloader, device=device
+            )
 
-            # logp(f"evaluation before log {val_metric}")
-            # metrics = (
-            #     get_status(
-            #         config = config,
-            #         model = model,
-            #         step = global_opt_step,
-            #         training_time = training_time,
-            #         total_training_time = total_training_time,
-            #         inner_opt_step = None,
-            #         global_opt_step = global_opt_step,
-            #         loss_batch=loss_batch,
-            #         aux_loss_batch=aux_loss_batch,
-            #     )
-            #     | val_metric
-            # )
+            logger.info(f"evaluation before log {val_metric}")
+            metrics = (
+                get_status(
+                    config = config,
+                    model = base_model,
+                    step = global_opt_step,
+                    training_time = training_time,
+                    total_training_time = total_training_time,
+                    inner_opt_step = None,
+                    global_opt_step = global_opt_step,
+                    loss_batch=loss_batch,
+                    aux_loss_batch=aux_loss_batch,
+                )
+                | val_metric
+            )
 
-            # metric_logger.log(metrics)
+            metric_logger.log(metrics)
 
             # === save checkpoint ===
-            logp(f"saving checkpoint")
+            logger.info(f"saving checkpoint")
             ckpt_path = os.path.join(config.ckpt.checkpoint_path, f"global_opt_step_{int(global_opt_step)}")
 
             save_checkpoint(
                 checkpoint_path=ckpt_path,
-                model=model,
+                model=base_model,
                 outer_optimizer=outer_optimizer,
                 loss=loss_batch.item(),
                 outer_scaler=outer_scaler,
@@ -456,7 +443,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                 if config.ckpt.checkpoint_topk is not None:
                     ckpt_deleted = delete_old_checkpoints(config.ckpt.checkpoint_path, config.ckpt.checkpoint_topk)
                     if ckpt_deleted:
-                        logp(f"Deleted old checkpoints: {ckpt_deleted}")
+                        logger.info(f"Deleted old checkpoints: {ckpt_deleted}")
 
             # # === Clean up ===
             # loss_batch = torch.tensor(0, dtype=torch.float32, device=device)

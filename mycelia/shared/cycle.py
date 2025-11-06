@@ -358,7 +358,7 @@ def gather_validation_job(config: ValidatorConfig, subtensor: bittensor.Subtenso
         ):
             miner_jobs.append(
                 MinerEvalJob(
-                    uid=submission_meta["uid"], hotkey=submission_meta["hotkey"], model_path=file_name, step=step
+                    uid=submission_meta["uid"], hotkey=submission_meta["hotkey"], model_path= config.vali.miner_submission_path / file_name, step=step
                 )
             )
 

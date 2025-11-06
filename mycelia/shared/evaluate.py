@@ -81,6 +81,7 @@ def evaluate_model(
         e.g., {"val_loss": 2.345}
     """
     logger.info("evaluate model", step=step)
+    model.to(device)
     model.eval()
     loss_sum: float = 0.0
     aux_loss_sum: float = 0.0
