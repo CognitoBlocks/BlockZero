@@ -22,7 +22,7 @@ from transformers import get_cosine_schedule_with_warmup, PreTrainedTokenizerBas
 from mycelia.shared.config import MinerConfig, parse_args
 from mycelia.shared.app_logging import structlog, configure_logging
 from mycelia.shared.metrics import MetricLogger
-from mycelia.shared.model import load_base_model 
+from mycelia.shared.model import load_base_model
 from mycelia.shared.modeling.modeling_mycelia import get_base_tokenizer, partial_moe
 from mycelia.shared.datasets import get_dataloader, HFStreamingTorchDataset
 from mycelia.miner.train_helper import free_cuda_models, get_status
@@ -46,7 +46,8 @@ from mycelia.shared.helper import *
 configure_logging()
 logger = structlog.get_logger(__name__)
 
-# this is for local DP only 
+
+# this is for local DP only
 def init_process(local_rank: int, config: MinerConfig, world_size: int, fn: callable, backend: str = "nccl") -> None:
     """
     Initializes the process for distributed training.
@@ -73,7 +74,11 @@ def init_process(local_rank: int, config: MinerConfig, world_size: int, fn: call
         rank=local_rank,
         world_size=world_size,
         timeout=datetime.timedelta(seconds=3600),
-        device_id=torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu") if local_rank < world_size else None,
+        device_id=(
+            torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+            if local_rank < world_size
+            else None
+        ),
     )
 
     fn(local_rank, world_size, config)
@@ -90,9 +95,7 @@ def cleanup() -> None:
     torch.cuda.synchronize()
 
 
-def setup_training(
-    config, rank: int, device: torch.device, tokenizer: PreTrainedTokenizerBase
-) -> Tuple[
+def setup_training(config, rank: int, device: torch.device, tokenizer: PreTrainedTokenizerBase) -> Tuple[
     torch.nn.Module,  # model
     torch.nn.Module,  # global_model
     torch.optim.Optimizer,  # inner_optimizer
@@ -134,7 +137,7 @@ def setup_training(
     resume = False
     start_step = 0
     latest_checkpoint_path = None
-    if get_nested_attr(config,"ckpt.resume_from_ckpt", False):
+    if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
         resume, start_step, latest_checkpoint_path = get_resume_info(rank, config)
 
     # === model & Experts manager ===
@@ -161,14 +164,18 @@ def setup_training(
     )
 
     # === scaler ===
-    inner_scaler = torch.amp.GradScaler("cuda", enabled=(get_nested_attr(config, "model.precision", "") == "fp16-mixed"))
-    outer_scaler = torch.amp.GradScaler("cuda", enabled=(get_nested_attr(config, "model.precision", "") == "fp16-mixed"))
+    inner_scaler = torch.amp.GradScaler(
+        "cuda", enabled=(get_nested_attr(config, "model.precision", "") == "fp16-mixed")
+    )
+    outer_scaler = torch.amp.GradScaler(
+        "cuda", enabled=(get_nested_attr(config, "model.precision", "") == "fp16-mixed")
+    )
 
     # === dataloader ===
     train_dataloader = get_dataloader(config, rank=rank, world_size=config.data.world_size, tokenizer=tokenizer)
 
     # === load checkpoint (if any) ===
-    if get_nested_attr(config,"resume_from_ckpt", False) and resume and latest_checkpoint_path:
+    if get_nested_attr(config, "resume_from_ckpt", False) and resume and latest_checkpoint_path:
         # logger.info(
         #     "rank %s setup training: resuming from %s (start_step=%s)", rank, latest_checkpoint_path, start_step
         # )
@@ -256,7 +263,9 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
     inner_optimizer.zero_grad()
     outer_optimizer.zero_grad()
     try:
-        for step, batch in enumerate(iterable=train_dataloader, start=start_step * config.local_par.gradient_accumulation_steps):
+        for step, batch in enumerate(
+            iterable=train_dataloader, start=start_step * config.local_par.gradient_accumulation_steps
+        ):
             # for each step, we run 1 backward
             # for each inner_opt_step, we run local optimization; gradient_accumulation_steps = 1 real step
             # for each global_opt_interval number of inner_opt_step, we synchronise weight from different ddp worker, and then run global optimization
@@ -278,7 +287,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
             inner_opt_step = step // config.local_par.gradient_accumulation_steps
             is_inner_optimizer_step = step % config.local_par.gradient_accumulation_steps == 0
             is_start_step = step == start_step * config.local_par.gradient_accumulation_steps
-            
+
             # === Training and inner optimization ===
             if (
                 not is_start_step
@@ -333,16 +342,19 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                     training_start_time = None
 
             # === Log metric ===
-            if is_inner_optimizer_step and inner_opt_step % max(round(config.local_par.global_opt_interval * 0.02), 1) == 0:
+            if (
+                is_inner_optimizer_step
+                and inner_opt_step % max(round(config.local_par.global_opt_interval * 0.02), 1) == 0
+            ):
                 logp(f"optimizer step", loss_batch, aux_loss_batch)
                 metrics = get_status(
-                    config = config,
-                    model = model,
-                    step = step,
+                    config=config,
+                    model=model,
+                    step=step,
                     inner_opt_step=inner_opt_step,
-                    training_time = training_time,
-                    total_training_time = total_training_time,
-                    inner_optimizer = inner_optimizer,
+                    training_time=training_time,
+                    total_training_time=total_training_time,
+                    inner_optimizer=inner_optimizer,
                     loss_batch=loss_batch,
                     aux_loss_batch=aux_loss_batch,
                 )
@@ -350,7 +362,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
 
             # === local validation and log metric ===
             if is_inner_optimizer_step and inner_opt_step % config.log.metric_interval == 0:
-                
+
                 logp(f"reached barrier, waiting for partial evaluation")
                 dist.barrier(device_ids=[rank])
 
@@ -363,13 +375,13 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 logp(f"evaluation before log {val_metric}")
                 metrics = (
                     get_status(
-                        config = config,
-                        model = model,
-                        step = step,
-                        inner_opt_step = inner_opt_step,
-                        training_time = training_time,
-                        total_training_time = total_training_time,
-                        inner_optimizer = inner_optimizer,
+                        config=config,
+                        model=model,
+                        step=step,
+                        inner_opt_step=inner_opt_step,
+                        training_time=training_time,
+                        total_training_time=total_training_time,
+                        inner_optimizer=inner_optimizer,
                         loss_batch=loss_batch,
                         aux_loss_batch=aux_loss_batch,
                     )
@@ -400,7 +412,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                     inner_scaler=inner_scaler,
                     outer_scaler=outer_scaler,
                     data_loader=train_dataloader,
-                    save_global_state= rank == 0,
+                    save_global_state=rank == 0,
                     rank=rank,
                 )
 
@@ -409,12 +421,16 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                         ckpt_deleted = delete_old_checkpoints(config.ckpt.checkpoint_path, config.ckpt.checkpoint_topk)
                         if ckpt_deleted:
                             logp(f"Deleted old checkpoints: {ckpt_deleted}")
-                
+
                 logp(f"reached barrier, waiting for complete checkpoint saving")
                 dist.barrier(device_ids=[rank])
 
             # === reload model ===
-            if is_inner_optimizer_step and config.moe.rotate_expert and inner_opt_step % config.moe.expert_rotate_interval == 0:
+            if (
+                is_inner_optimizer_step
+                and config.moe.rotate_expert
+                and inner_opt_step % config.moe.expert_rotate_interval == 0
+            ):
                 dist.barrier(device_ids=[rank])  # make sure everything is saved and everyone is ready to load
                 logp("freeing cuda memory")
                 free_cuda_models(models=[model, global_model], optimizers=[inner_optimizer], devices=[device])
@@ -467,6 +483,7 @@ def run_distributed_training() -> None:
         args=(config, config.local_par.world_size, train_worker),
         nprocs=config.local_par.world_size,
     )
+
 
 if __name__ == "__main__":
     run_distributed_training()

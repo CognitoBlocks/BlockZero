@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 import uvicorn
 
-import bittensor 
+import bittensor
 from fastapi import FastAPI, HTTPException, Header, Request, File, UploadFile, Form
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
@@ -30,7 +30,8 @@ logger = structlog.get_logger(__name__)
 app = FastAPI(title="Checkpoint Sender", version="1.0.0")
 
 # ---- Settings via environment variables ----
-AUTH_TOKEN = os.getenv("AUTH_TOKEN")            # optional bearer token for auth
+AUTH_TOKEN = os.getenv("AUTH_TOKEN")  # optional bearer token for auth
+
 
 # ---- Helpers ----
 def require_auth(authorization: Optional[str]) -> None:
@@ -44,7 +45,7 @@ def require_auth(authorization: Optional[str]) -> None:
 
 
 def file_response_for(path: Path, download_name: Optional[str] = None) -> FileResponse:
-    logger.info("file response for", path = path)
+    logger.info("file response for", path=path)
     if not path.exists() or not path.is_file():
         logger.info("file response for, path dosent exist", path.exists(), path.is_file())
         raise HTTPException(status_code=404, detail="Checkpoint not found")
@@ -69,12 +70,14 @@ def file_response_for(path: Path, download_name: Optional[str] = None) -> FileRe
         headers=headers,
     )
 
+
 # Optional: centralize where uploads go (env var overrides default)
 def get_upload_root() -> Path:
     root = os.getenv("CHECKPOINT_INBOX", "/var/lib/validator/checkpoints/incoming")
     p = Path(root).expanduser().resolve()
     p.mkdir(parents=True, exist_ok=True)
     return p
+
 
 # ---- Schemas ----
 class SendBody(BaseModel):
@@ -88,6 +91,7 @@ class SendBody(BaseModel):
 async def _startup():
     configure_logging()  # <— configure ONCE
     structlog.get_logger(__name__).info("startup_ok")
+
 
 # ---- Routes ----
 @app.get("/")
@@ -109,6 +113,7 @@ async def index(request: Request):
         }
     )
 
+
 @app.get("/ping")
 async def ping():
     """Health check."""
@@ -117,24 +122,26 @@ async def ping():
     logger.info("ping")  # <— this will now print
     return {"status": "ok"}
 
+
 @app.get("/status")
 async def status():
-    # respond to what is the current status of validator, the newest model id 
+    # respond to what is the current status of validator, the newest model id
     pass
 
-# miners / client get model from validator 
+
+# miners / client get model from validator
 @app.get("/get-checkpoint")
 async def get_checkpoint(authorization: Optional[str] = Header(default=None)):
     """GET to download the configured checkpoint immediately."""
     logger.info(f"checkpoint, A")
     require_auth(authorization)
     logger.info(f"checkpoint, B")
-    resume, start_step, latest_checkpoint_path = get_resume_info(rank = 0, config = config)
+    resume, start_step, latest_checkpoint_path = get_resume_info(rank=0, config=config)
     logger.info(f"checkpoint, C", latest_checkpoint_path)
 
     if not latest_checkpoint_path:
         raise HTTPException(status_code=500, detail="CHECKPOINT_PATH env var is not set")
-    
+
     latest_checkpoint_path = os.path.join(latest_checkpoint_path, f"model.pt")
     logger.info(f"checkpoint, last {latest_checkpoint_path}")
     result = file_response_for(Path(latest_checkpoint_path), f"step{start_step}")
@@ -218,15 +225,15 @@ if __name__ == "__main__":
     args = parse_args()
 
     global config
-    global subtensor 
+    global subtensor
 
     if args.path:
         config = ValidatorConfig.from_path(args.path)
     else:
         config = ValidatorConfig()
 
-    config.write() 
-    
-    subtensor = bittensor.subtensor(network = config.chain.network) 
+    config.write()
 
-    uvicorn.run(app, host=config.chain.ip, port=config.chain.port)  
+    subtensor = bittensor.subtensor(network=config.chain.network)
+
+    uvicorn.run(app, host=config.chain.ip, port=config.chain.port)

@@ -24,14 +24,14 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers import get_cosine_schedule_with_warmup, PreTrainedTokenizerBase
 
 import bittensor
-from hivemind.averaging import DecentralizedAverager 
+from hivemind.averaging import DecentralizedAverager
 
 from mycelia.mock.validator.run import add_grad_noise
 from mycelia.shared.chain import commit_status, ValidatorStatus
 from mycelia.shared.config import MinerConfig, ValidatorConfig, parse_args
 from mycelia.shared.app_logging import structlog, configure_logging
 from mycelia.shared.metrics import MetricLogger
-from mycelia.shared.model import load_base_model 
+from mycelia.shared.model import load_base_model
 from mycelia.shared.modeling.modeling_mycelia import get_base_tokenizer, partial_moe
 from mycelia.shared.datasets import get_dataloader, HFStreamingTorchDataset
 from mycelia.miner.train_helper import free_cuda_models, get_status
@@ -54,7 +54,13 @@ from mycelia.shared.expert_manager import (
 from mycelia.shared.helper import *
 from mycelia.shared.chain import serve_axon
 from mycelia.validator.aggregator import MinerScoreAggregator
-from mycelia.validator.inter_validator_connection import connect_with_peers, build_averagers_from_buff, build_grad_buff_from_model, pack_grads, unpack_to_grads
+from mycelia.validator.inter_validator_connection import (
+    connect_with_peers,
+    build_averagers_from_buff,
+    build_grad_buff_from_model,
+    pack_grads,
+    unpack_to_grads,
+)
 from mycelia.validator.evaluator import run_evaluation, MinerEvalJob, load_model_from_path
 from mycelia.shared.cycle import gather_validation_job, should_start_validation
 
@@ -72,21 +78,19 @@ def cleanup() -> None:
     """
     torch.cuda.synchronize()
 
-def setup_chain_worker(
-    config
-):
-    wallet = bittensor.wallet(name = config.chain.coldkey_name, hotkey = config.chain.hotkey_name)
-    subtensor = bittensor.subtensor(network = config.chain.network) 
+
+def setup_chain_worker(config):
+    wallet = bittensor.wallet(name=config.chain.coldkey_name, hotkey=config.chain.hotkey_name)
+    subtensor = bittensor.subtensor(network=config.chain.network)
     serve_axon(
-        config = config,
-        wallet = wallet,
-        subtensor = subtensor,
+        config=config,
+        wallet=wallet,
+        subtensor=subtensor,
     )
     return wallet, subtensor
 
-def setup_training(
-    config, rank: int, device: torch.device, tokenizer: PreTrainedTokenizerBase
-) -> Tuple[
+
+def setup_training(config, rank: int, device: torch.device, tokenizer: PreTrainedTokenizerBase) -> Tuple[
     torch.nn.Module,  # model
     torch.nn.Module,  # global_model
     torch.optim.Optimizer,  # outer_optimizer
@@ -102,7 +106,7 @@ def setup_training(
     resume = False
     start_step = 0
     latest_checkpoint_path = None
-    if get_nested_attr(config,"ckpt.resume_from_ckpt", False):
+    if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
         resume, start_step, latest_checkpoint_path = get_resume_info(rank, config)
 
     # === model & Experts manager ===
@@ -123,13 +127,15 @@ def setup_training(
     logger.info(f" rank {rank} scheduler")
 
     # === scaler ===
-    outer_scaler = torch.amp.GradScaler("cuda", enabled=(get_nested_attr(config, "model.precision", "") == "fp16-mixed"))
+    outer_scaler = torch.amp.GradScaler(
+        "cuda", enabled=(get_nested_attr(config, "model.precision", "") == "fp16-mixed")
+    )
 
     # === dataloader ===
     train_dataloader = get_dataloader(config, rank=rank, world_size=config.data.world_size, tokenizer=tokenizer)
 
     # === load checkpoint (if any) ===
-    if get_nested_attr(config,"resume_from_ckpt", False) and resume and latest_checkpoint_path:
+    if get_nested_attr(config, "resume_from_ckpt", False) and resume and latest_checkpoint_path:
         # logger.info(
         #     "rank %s setup training: resuming from %s (start_step=%s)", rank, latest_checkpoint_path, start_step
         # )
@@ -154,45 +160,49 @@ def setup_training(
         train_dataloader,
     )
 
+
 async def aggregate_miner_gradient_change(
-        base_model: nn.Module,
-        global_model: nn.Module,
-        device: torch.device,
-        rank: int,
-        logp: callable,
-        outer_optimizer: torch.optim.Optimizer,
-        miner_jobs: List[MinerEvalJob],
-        score_aggregator: MinerScoreAggregator,        
+    base_model: nn.Module,
+    global_model: nn.Module,
+    device: torch.device,
+    rank: int,
+    logp: callable,
+    outer_optimizer: torch.optim.Optimizer,
+    miner_jobs: List[MinerEvalJob],
+    score_aggregator: MinerScoreAggregator,
 ):
     miner_models: Dict[str, nn.Module] = {}
     for miner_job in miner_jobs:
-        if score_aggregator.is_in_top(uid = miner_job.uid, cutoff = 3, how = 'avg'): # TODO: change it to ema
-            miner_models[miner_job.uid] = await asyncio.to_thread(load_model_from_path, miner_job.model_path, base_model)
+        if score_aggregator.is_in_top(uid=miner_job.uid, cutoff=3, how="avg"):  # TODO: change it to ema
+            miner_models[miner_job.uid] = await asyncio.to_thread(
+                load_model_from_path, miner_job.model_path, base_model
+            )
 
     # each validator is only expected to validate 1 expert group at a time
     for uid, miner_model in miner_models.items():
-        populate_global_grads_from_local(global_model, miner_model, weight = 1 / len(miner_models))
+        populate_global_grads_from_local(global_model, miner_model, weight=1 / len(miner_models))
+
 
 def sync_grad_across_validators(
-    group_averagers: Dict[str | int, DecentralizedAverager],
-    group_grad_buff_meta: Dict[str | int, Any]
+    group_averagers: Dict[str | int, DecentralizedAverager], group_grad_buff_meta: Dict[str | int, Any]
 ):
     for group_id, avg in group_averagers.items():
         pack_grads(group_grad_buff_meta[group_id])
-        info = avg.step(gather={"group": group_id},  allow_retries = False)
+        info = avg.step(gather={"group": group_id}, allow_retries=False)
         unpack_to_grads(group_grad_buff_meta[group_id])
-        
+
         logger.info(group_id, "->", ("averaged" if info else "no group"))
-    
+
+
 def run_global_optimization(
-        model: nn.Module,
-        global_model: nn.Module,
-        device: torch.device,
-        rank: int,
-        logp: callable,
-        outer_optimizer: torch.optim.Optimizer,
-        miner_jobs: List[MinerEvalJob],
-        score_aggregator: MinerScoreAggregator,
+    model: nn.Module,
+    global_model: nn.Module,
+    device: torch.device,
+    rank: int,
+    logp: callable,
+    outer_optimizer: torch.optim.Optimizer,
+    miner_jobs: List[MinerEvalJob],
+    score_aggregator: MinerScoreAggregator,
 ):
     # --- sync + outer step ---
     # keep global model on device for syncing/stepping, then move back to CPU
@@ -229,6 +239,7 @@ def run_global_optimization(
     del new_expert_name, new_expert_sum
     gc.collect()
     torch.cuda.empty_cache()
+
 
 def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
     """
@@ -277,31 +288,33 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
         em,
         train_dataloader,
     ) = setup_training(config, rank, device, tokenizer)
-    
+
     global_opt_step = start_step
 
     # === set up score aggregator ===
     score_aggregator = MinerScoreAggregator()
 
     # === set up averager ===
-    group_grad_buff_meta = build_grad_buff_from_model(model = model, expert_group_assignment = em.expert_group_assignment)
+    group_grad_buff_meta = build_grad_buff_from_model(model=model, expert_group_assignment=em.expert_group_assignment)
 
     dht = connect_with_peers()
 
-    group_averagers = build_averagers_from_buff(
-        group_buff_metas = group_grad_buff_meta, 
-        dht = dht
-    )
+    group_averagers = build_averagers_from_buff(group_buff_metas=group_grad_buff_meta, dht=dht)
 
     # === set up chain worker ===
     wallet, subtensor = setup_chain_worker(config)
-    
-    commit_status(config, wallet, subtensor, ValidatorStatus(
-        model_hash = 'xxx',
-        model_version = global_opt_step,
-        expert_group = 1,
-        miner_seed = secrets.randbits(24) # this should reveal later
-    ))
+
+    commit_status(
+        config,
+        wallet,
+        subtensor,
+        ValidatorStatus(
+            model_hash="xxx",
+            model_version=global_opt_step,
+            expert_group=1,
+            miner_seed=secrets.randbits(24),  # this should reveal later
+        ),
+    )
 
     # === training ===
     loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
@@ -311,9 +324,9 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
     training_start_time = None
 
     outer_optimizer.zero_grad()
-    
+
     try:
-        while True: 
+        while True:
             # for each step, we run 1 backward
             # for each inner_opt_step, we run local optimization; gradient_accumulation_steps = 1 real step
             # for each global_opt_interval number of inner_opt_step, we synchronise weight from different ddp worker, and then run global optimization
@@ -335,14 +348,12 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             # === Get miner ===
             start_validation = False
             while not start_validation:
-                start_validation, block_till = should_start_validation(config, subtensor) 
+                start_validation, block_till = should_start_validation(config, subtensor)
                 if block_till > 0:
                     time.sleep((block_till) * 12)
 
-            miner_jobs = gather_validation_job(
-                config, subtensor, step = global_opt_step
-            )
-            logger.info('gathered miner job', global_opt_step = global_opt_step, miner_jobs = miner_jobs)
+            miner_jobs = gather_validation_job(config, subtensor, step=global_opt_step)
+            logger.info("gathered miner job", global_opt_step=global_opt_step, miner_jobs=miner_jobs)
 
             # # === Download miner model and evaluate the miners ===
             # asyncio.run(run_evaluation(
@@ -424,24 +435,29 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                 loss=loss_batch.item(),
                 outer_scaler=outer_scaler,
                 data_loader=train_dataloader,
-                save_global_state= rank == 0,
+                save_global_state=rank == 0,
                 rank=rank,
             )
 
             # === Comit to chain for new model ===
-            commit_status(config, wallet, subtensor, ValidatorStatus(
-                model_hash = 'xxx',
-                model_version = global_opt_step,
-                expert_group = 1,
-                miner_seed = secrets.randbits(24) # this should reveal later
-            ))
+            commit_status(
+                config,
+                wallet,
+                subtensor,
+                ValidatorStatus(
+                    model_hash="xxx",
+                    model_version=global_opt_step,
+                    expert_group=1,
+                    miner_seed=secrets.randbits(24),  # this should reveal later
+                ),
+            )
 
             if rank == 0:
                 if config.ckpt.checkpoint_topk is not None:
                     ckpt_deleted = delete_old_checkpoints(config.ckpt.checkpoint_path, config.ckpt.checkpoint_topk)
                     if ckpt_deleted:
                         logp(f"Deleted old checkpoints: {ckpt_deleted}")
-            
+
             # # === Clean up ===
             # loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
             # aux_loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
@@ -461,6 +477,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
 
         if rank == 0:
             torch.save(global_model.state_dict(), "mycelia_final.pt")
+
 
 if __name__ == "__main__":
     args = parse_args()

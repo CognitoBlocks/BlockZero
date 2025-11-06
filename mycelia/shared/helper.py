@@ -4,5 +4,3 @@ def get_nested_attr(obj, attr_chain, default=None):
         if obj is None:
             return default
     return obj
-
-

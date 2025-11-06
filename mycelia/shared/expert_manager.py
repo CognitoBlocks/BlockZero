@@ -30,6 +30,7 @@ from mycelia.shared.app_logging import structlog
 
 logger = structlog.getLogger(__name__)
 
+
 # ------------------------------------------------------------
 # Utilities
 # ------------------------------------------------------------
@@ -135,13 +136,11 @@ class ExpertManager:
         Mapping of layer -> (group_id -> expert IDs in that group).
     """
 
-    def __init__(
-        self, num_experts: int, num_worker_groups: int, model: nn.Module | None = None
-    ):
+    def __init__(self, num_experts: int, num_worker_groups: int, model: nn.Module | None = None):
         logger.info("em init")
         self.num_experts = int(num_experts)
         self.num_worker_groups = int(num_worker_groups)
-        
+
         logger.info("em get expert layer")
         if model is not None:
 
@@ -230,7 +229,9 @@ def _named_params(model: nn.Module) -> Dict[str, nn.Parameter]:
     return dict(model.named_parameters())
 
 
-def populate_global_grads_from_local(global_model: nn.Module, model: nn.Module, shared_only: bool = False, weight: float = 0.2) -> None:
+def populate_global_grads_from_local(
+    global_model: nn.Module, model: nn.Module, shared_only: bool = False, weight: float = 0.2
+) -> None:
     """
     Average the differences for *shared* (non-expert) parameters across all ranks.
 
@@ -252,7 +253,7 @@ def populate_global_grads_from_local(global_model: nn.Module, model: nn.Module, 
     for name, p in local_named.items():
         if shared_only and is_expert_param(name):
             continue
-        
+
         g = global_named.get(name)
         if g is None:
             logger.warning(f"Shared param '{name}' not found in global model; skipping.")
@@ -263,6 +264,7 @@ def populate_global_grads_from_local(global_model: nn.Module, model: nn.Module, 
             g.grad = diff * weight
         else:
             g.grad += diff * weight
+
 
 def sync_weights(rank: int, global_model: nn.Module, shared_only: bool = False) -> None:
     if not dist.is_available() or not dist.is_initialized():

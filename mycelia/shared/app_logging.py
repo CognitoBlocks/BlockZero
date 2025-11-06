@@ -16,7 +16,7 @@ def configure_logging() -> None:
       LOG_UTC=1  (timestamp in UTC)
     """
     level = "INFO"
-    fmt   = "pretty"
+    fmt = "pretty"
     use_utc = True
 
     # # 1) stdlib baseline so third-party libs (uvicorn, requests) show up
@@ -39,7 +39,7 @@ def configure_logging() -> None:
         processors = common + [
             structlog.dev.ConsoleRenderer(
                 colors=True,
-                pad_event=28,      # adjust to your taste
+                pad_event=28,  # adjust to your taste
                 exception_formatter=structlog.dev.rich_traceback,  # nicer tracebacks if 'rich' installed
             )
         ]
@@ -50,6 +50,7 @@ def configure_logging() -> None:
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
+
 
 # Module-level logger you can import directly
 structlog.configure_once(

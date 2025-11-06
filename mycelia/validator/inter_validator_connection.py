@@ -1,10 +1,10 @@
-import fnmatch 
+import fnmatch
 from typing import List, Tuple, Dict, Any
-import torch 
-import torch.nn as nn 
+import torch
+import torch.nn as nn
 
 import hivemind
-from hivemind.averaging import DecentralizedAverager 
+from hivemind.averaging import DecentralizedAverager
 
 from mycelia.shared.modeling.modeling_mycelia import get_layer_expert_id
 from mycelia.shared.app_logging import structlog, configure_logging
@@ -12,18 +12,21 @@ from mycelia.shared.app_logging import structlog, configure_logging
 
 logger = structlog.get_logger(__name__)
 
+
 def get_init_peer_id():
-    return ['/ip4/127.0.0.1/tcp/39493/p2p/12D3KooWKU2mSoTw8d4y3DGCqQwFNKNsjcaZ55pPXEPH7aAHZcBB']
+    return ["/ip4/127.0.0.1/tcp/39493/p2p/12D3KooWKU2mSoTw8d4y3DGCqQwFNKNsjcaZ55pPXEPH7aAHZcBB"]
 
 
 def connect_with_peers():
-    initial_peer_ids: List[str] =  get_init_peer_id()
-    dht = hivemind.DHT(start = True, initial_peers=initial_peer_ids)
+    initial_peer_ids: List[str] = get_init_peer_id()
+    dht = hivemind.DHT(start=True, initial_peers=initial_peer_ids)
     return dht
 
 
 # --- expert group selection helpers ---
-def names_for_expert(model: nn.Module, eid, expert_name_fmt: str, include_buffers: bool) -> List[Tuple[str, torch.Tensor]]:
+def names_for_expert(
+    model: nn.Module, eid, expert_name_fmt: str, include_buffers: bool
+) -> List[Tuple[str, torch.Tensor]]:
     """Collect all tensors whose names start with the expert module prefix."""
     prefix = expert_name_fmt.format(eid=eid)
     out = []
@@ -32,6 +35,7 @@ def names_for_expert(model: nn.Module, eid, expert_name_fmt: str, include_buffer
             out.append((name, tensor))
     return out
 
+
 def iter_named_grads(model: nn.Module):
     """
     Yield (name, grad_tensor) for all model parameters that have gradients.
@@ -39,13 +43,15 @@ def iter_named_grads(model: nn.Module):
     for n, p in model.named_parameters():
         if p.requires_grad and p.grad is None:
             p.grad = torch.zeros_like(p)
-        
+
         yield n, p.grad
+
 
 def name_selected(name, include_globs, exclude_globs):
     inc_ok = (not include_globs) or any(fnmatch.fnmatch(name, pat) for pat in include_globs)
     exc_ok = not any(fnmatch.fnmatch(name, pat) for pat in exclude_globs)
     return inc_ok and exc_ok
+
 
 def select_tensors(model, include_globs=(), exclude_globs=()):
     # deterministic order across peers: sort by name!
@@ -55,39 +61,38 @@ def select_tensors(model, include_globs=(), exclude_globs=()):
             chosen.append(tensor)
     return chosen
 
+
 # --- packaging gradient buff ---
-def build_buff_from_params(
-   params     
-):
-    numels  = [p.numel() for p in params]
+def build_buff_from_params(params):
+    numels = [p.numel() for p in params]
     offsets = [0]
-    for n in numels[:-1]: offsets.append(offsets[-1] + n)
-    total   = sum(numels)
+    for n in numels[:-1]:
+        offsets.append(offsets[-1] + n)
+    total = sum(numels)
     flat_grad = torch.zeros(total, device="cpu")  # or cuda
 
-    return {
-        'params': params,
-        'numels': numels,
-        'offsets': offsets,
-        'buff': flat_grad
-    }
+    return {"params": params, "numels": numels, "offsets": offsets, "buff": flat_grad}
+
 
 def pack_grads(buff_meta):
     with torch.no_grad():
-        for p, off, n in zip(buff_meta['params'], buff_meta['offsets'], buff_meta['numels']):
+        for p, off, n in zip(buff_meta["params"], buff_meta["offsets"], buff_meta["numels"]):
             g = p.grad if p.grad is not None else torch.zeros_like(p)
-            buff_meta['buff'][off:off+n].copy_(g.view(-1))
+            buff_meta["buff"][off : off + n].copy_(g.view(-1))
+
 
 def unpack_to_grads(buff_meta):
     with torch.no_grad():
-        for p, off, n in zip(buff_meta['params'], buff_meta['offsets'], buff_meta['numels']):
-            view = buff_meta['buff'][off:off+n].view_as(p).to(p.device)
+        for p, off, n in zip(buff_meta["params"], buff_meta["offsets"], buff_meta["numels"]):
+            view = buff_meta["buff"][off : off + n].view_as(p).to(p.device)
             if p.grad is None:
                 p.grad = view.clone()
             else:
                 p.grad.copy_(view)
 
+
 # --- getting averager ---
+
 
 def build_grad_buff_from_model(
     model: nn.Module,
@@ -109,7 +114,7 @@ def build_grad_buff_from_model(
 
     for name, p in name_to_tensor.items():
         logger.info(name)
-        layer_id, expert_id = get_layer_expert_id(name) 
+        layer_id, expert_id = get_layer_expert_id(name)
         if layer_id and expert_id is not None:
             logger.info(name, layer_id, expert_id)
             for group_id, expert_ids in expert_group_assignment[layer_id].items():
@@ -120,14 +125,15 @@ def build_grad_buff_from_model(
     group_buff_metas: Dict[str | int, Any] = {}
     for group_id in expert_group_to_names.keys():
         tensors_for_group = [name_to_tensor[name] for name in expert_group_to_names[group_id]]
-        group_buff_metas[group_id] = build_buff_from_params(params = tensors_for_group)
+        group_buff_metas[group_id] = build_buff_from_params(params=tensors_for_group)
 
     expert_owned_names = [name for names in expert_group_to_names.values() for name in names]
     non_expert_names = [n for n, _t in all_named if n not in expert_owned_names]
     non_expert_tensors = [name_to_tensor[n] for n in non_expert_names]
-    group_buff_metas['shared'] = build_buff_from_params(non_expert_tensors)
+    group_buff_metas["shared"] = build_buff_from_params(non_expert_tensors)
 
     return group_buff_metas
+
 
 def build_averagers_from_buff(
     group_buff_metas: Dict[int | str, Dict[str, torch.Tensor]],
@@ -146,12 +152,12 @@ def build_averagers_from_buff(
       - We sort tensor names to keep a deterministic order across peers.
     """
 
-    group_averagers: Dict[str | int , DecentralizedAverager] = {}
-    for group_id, buff_meta in group_buff_metas.items(): 
+    group_averagers: Dict[str | int, DecentralizedAverager] = {}
+    for group_id, buff_meta in group_buff_metas.items():
         prefix = f"{prefix_base}/group{group_id}"
-        logger.info('build avg - shared', prefix = prefix)
+        logger.info("build avg - shared", prefix=prefix)
         group_averagers[group_id] = DecentralizedAverager(
-            averaged_tensors=[buff_meta['buff']],
+            averaged_tensors=[buff_meta["buff"]],
             dht=dht,
             start=True,
             prefix=prefix,
@@ -159,7 +165,7 @@ def build_averagers_from_buff(
             min_group_size=min_group_size,
             averaging_alpha=averaging_alpha,
             allreduce_timeout=120,
-            client_mode = False,
+            client_mode=False,
         )
 
     return group_averagers

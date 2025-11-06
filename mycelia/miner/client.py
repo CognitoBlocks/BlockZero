@@ -17,12 +17,14 @@ from requests.exceptions import RequestException, Timeout, ConnectionError as Re
 
 CHUNK = 1024 * 1024  # 1 MiB
 
+
 def human(n):
-    for unit in ["B","KiB","MiB","GiB","TiB"]:
+    for unit in ["B", "KiB", "MiB", "GiB", "TiB"]:
         if n < 1024:
             return f"{n:.2f} {unit}"
         n /= 1024
     return f"{n:.2f} PiB"
+
 
 _CHUNK = 1024 * 1024  # 1 MiB
 
@@ -70,7 +72,7 @@ def submit_model(
     except OSError as e:
         raise OSError(f"Failed to read file: {model_path}") from e
 
-    data = {"step": str(step), "checksum_sha256": checksum, 'uid': uid, "hotkey": hotkey}
+    data = {"step": str(step), "checksum_sha256": checksum, "uid": uid, "hotkey": hotkey}
     if extra_form:
         # stringify non-bytes for safety in form data
         for k, v in extra_form.items():
@@ -132,11 +134,12 @@ def submit_model(
         # If we got here, we plan to retry
         attempt += 1
         if attempt <= retries:
-            sleep_s = backoff ** attempt
+            sleep_s = backoff**attempt
             time.sleep(sleep_s)
 
     # Exhausted retries
     raise RuntimeError(f"Upload failed after {retries + 1} attempts: {last_exc}")
+
 
 def download_model(url: str, token: str, out: str | Path, resume: bool = False, timeout: int = 30):
     headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -199,6 +202,7 @@ def download_model(url: str, token: str, out: str | Path, resume: bool = False, 
         else:
             bar = f"{human(downloaded)}"
         print(f"\rDone:       {bar} in {elapsed:.1f}s @ {human(rate)}/s")
+
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Download a checkpoint with optional bearer auth.")

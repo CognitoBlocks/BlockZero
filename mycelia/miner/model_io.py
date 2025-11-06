@@ -1,4 +1,3 @@
-
 import os
 import sys
 import time
@@ -10,20 +9,27 @@ from pathlib import Path
 from typing import Optional, Tuple, List, Any
 
 from collections import Counter
-import bittensor 
+import bittensor
 import requests
 from requests.exceptions import RequestException, Timeout, ConnectionError as ReqConnectionError
 
-import bittensor 
+import bittensor
 from mycelia.shared.chain import serve_axon, get_status, commit_status, MinerStatus
 from mycelia.shared.checkpoint import get_resume_info, delete_old_checkpoints
-from mycelia.shared.config import MinerConfig, parse_args           
-from mycelia.miner.client import submit_model, download_model           
+from mycelia.shared.config import MinerConfig, parse_args
+from mycelia.miner.client import submit_model, download_model
 from mycelia.shared.app_logging import structlog, configure_logging
-from mycelia.shared.cycle import setup_chain_worker, scan_for_new_model, should_submit_model, search_model_submission_destination, get_validator_miner_assignment
+from mycelia.shared.cycle import (
+    setup_chain_worker,
+    scan_for_new_model,
+    should_submit_model,
+    search_model_submission_destination,
+    get_validator_miner_assignment,
+)
 
 configure_logging()
 logger = structlog.get_logger(__name__)
+
 
 def main(config):
 
@@ -32,12 +38,17 @@ def main(config):
     wallet, subtensor = setup_chain_worker(config)
 
     current_model_version = 0
-    current_model_hash = 'xxx'
+    current_model_hash = "xxx"
     last_submission_block = 0
 
-    commit_status(config, wallet, subtensor, MinerStatus(
-        expert_group = 1,
-    ))
+    commit_status(
+        config,
+        wallet,
+        subtensor,
+        MinerStatus(
+            expert_group=1,
+        ),
+    )
 
     while True:
         try:
@@ -46,8 +57,8 @@ def main(config):
                 current_model_version, current_model_hash, config, subtensor
             )
 
-            logger.info('check for download', should_download = should_download)
-            
+            logger.info("check for download", should_download=should_download)
+
             if should_download and download_metas:
                 download_success = False
                 retries = 0
@@ -56,9 +67,9 @@ def main(config):
 
                 while (not download_success) and (retries < max_retries):
                     for download_meta in download_metas:
-                        
-                        logger.info('downloading from candidate... ', download_meta)
-                        
+
+                        logger.info("downloading from candidate... ", download_meta)
+
                         # Resolve URL if not provided; fall back to ip/port + default route
                         url = download_meta.get("url")
                         if not url:
@@ -67,7 +78,7 @@ def main(config):
                             # Best-effort defaults; customize if your API differs
                             protocol = getattr(getattr(config, "miner", object()), "protocol", "http")
                             if ip and port:
-                                url =f"{protocol}://{ip}:{port}/get-checkpoint"
+                                url = f"{protocol}://{ip}:{port}/get-checkpoint"
                             else:
                                 logger.warning("Skipping meta without URL or ip:port: %s", download_meta)
                                 continue
@@ -84,8 +95,12 @@ def main(config):
                             download_success = True
                             current_model_version = download_meta["model_version"]
                             current_model_hash = download_meta["model_hash"]
-                            logger.info("✅ Downloaded checkpoint to %s (version=%s, hash=%s)",
-                                        out_path, current_model_version, current_model_hash)
+                            logger.info(
+                                "✅ Downloaded checkpoint to %s (version=%s, hash=%s)",
+                                out_path,
+                                current_model_version,
+                                current_model_hash,
+                            )
                             break
                         except Exception as e:
                             logger.warning("Download failed from %s (uid=%s): %s", url, download_meta.get("uid"), e)
@@ -100,33 +115,28 @@ def main(config):
                 if not download_success:
                     logger.error("❌ All download attempts failed after %d retries.", retries)
 
-            delete_old_checkpoints(config.miner.validator_checkpoint_path , config.ckpt.checkpoint_topk)
+            delete_old_checkpoints(config.miner.validator_checkpoint_path, config.ckpt.checkpoint_topk)
 
             # --------- SUBMISSION PHASE ---------
             resume, start_step, latest_checkpoint_path = get_resume_info(rank=0, config=config)
 
             start_submit = False
             while not start_submit:
-                start_submit, block_till = should_submit_model(config, subtensor, last_submission_block) 
+                start_submit, block_till = should_submit_model(config, subtensor, last_submission_block)
                 time.sleep(12)
 
-            destination_axon = search_model_submission_destination(
-                wallet = wallet,
-                config = config,
-                subtensor = subtensor
-            )
-            
+            destination_axon = search_model_submission_destination(wallet=wallet, config=config, subtensor=subtensor)
+
             submit_model(
                 url=f"http://{destination_axon.ip}:{destination_axon.port}/submit-checkpoint",
                 token="",
-                step = 0,
-                uid = config.chain.uid,
-                hotkey = config.chain.hotkey_ss58,
+                step=0,
+                uid=config.chain.uid,
+                hotkey=config.chain.hotkey_ss58,
                 model_path=f"{latest_checkpoint_path}/model.pt",
             )
 
             last_submission_block = subtensor.block
-        
 
         except (Timeout, ReqConnectionError) as e:
             logger.warning("Network issue: %s", e)
@@ -136,7 +146,6 @@ def main(config):
             logger.exception("Unexpected error in loop: %s", e)
 
         time.sleep(60)
-
 
 
 if __name__ == "__main__":

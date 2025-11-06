@@ -117,7 +117,9 @@ def get_dataloader(
     # Select split
     split_name = "train" if train else "validation"
     if split_name not in ds:
-        raise ValueError(f"Dataset split '{split_name}' not found for {config.data.dataset_name}:{config.data.data_dir}")
+        raise ValueError(
+            f"Dataset split '{split_name}' not found for {config.data.dataset_name}:{config.data.data_dir}"
+        )
 
     split = ds[split_name]
 

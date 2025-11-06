@@ -10,66 +10,67 @@ from pathlib import Path
 from typing import Optional, Tuple, List, Any, Dict
 
 from collections import Counter
-import bittensor 
+import bittensor
 import requests
 from requests.exceptions import RequestException, Timeout, ConnectionError as ReqConnectionError
 
-import bittensor 
+import bittensor
 from mycelia.shared.chain import serve_axon, get_status, commit_status, MinerStatus
 from mycelia.shared.checkpoint import get_resume_info, delete_old_checkpoints
-from mycelia.shared.config import MinerConfig, parse_args, BaseConfig, ValidatorConfig  
-from mycelia.miner.client import submit_model, download_model           
+from mycelia.shared.config import MinerConfig, parse_args, BaseConfig, ValidatorConfig
+from mycelia.miner.client import submit_model, download_model
 from mycelia.shared.app_logging import structlog, configure_logging
 from mycelia.validator.evaluator import MinerEvalJob
 
 configure_logging()
 logger = structlog.get_logger(__name__)
 
+
 def should_submit_model(
     config: MinerConfig,
     subtensor: bittensor.Subtensor,
     last_submission_block: int,
-) -> Tuple[bool, int]:     
+) -> Tuple[bool, int]:
     schedule = get_validation_schedule(config, subtensor)
     phase_status = get_phase_status(schedule, subtensor.block)
-    should_submit = phase_status == 'submission' and (subtensor.block - last_submission_block > config.cycle.submission_rate_limit) 
-    block_till = schedule['submission_start_block'] - subtensor.block 
+    should_submit = phase_status == "submission" and (
+        subtensor.block - last_submission_block > config.cycle.submission_rate_limit
+    )
+    block_till = schedule["submission_start_block"] - subtensor.block
     if block_till < 0 and should_submit == False:
-        block_till += config.cycle.validation_period 
-    logger.info("should_submit_model", should_start = should_submit, block_till = block_till)
+        block_till += config.cycle.validation_period
+    logger.info("should_submit_model", should_start=should_submit, block_till=block_till)
     return should_submit, block_till
 
-def should_start_validation(
-    config: ValidatorConfig,
-    subtensor: bittensor.Subtensor
-) -> Tuple[bool, int]:
-    
+
+def should_start_validation(config: ValidatorConfig, subtensor: bittensor.Subtensor) -> Tuple[bool, int]:
+
     schedule = get_validation_schedule(config, subtensor)
     phase_status = get_phase_status(schedule, subtensor.block)
-    should_start = phase_status == 'validating'
-    block_till = schedule['interval_start_block'] - subtensor.block  
+    should_start = phase_status == "validating"
+    block_till = schedule["interval_start_block"] - subtensor.block
     if block_till < 0 and should_start == False:
         block_till += config.cycle.validation_period
-        
-    logger.info("should_start_validation", should_start = should_start, block_till = block_till)
-    return phase_status == 'validating', block_till
-    
+
+    logger.info("should_start_validation", should_start=should_start, block_till=block_till)
+    return phase_status == "validating", block_till
+
+
 def search_model_submission_destination(
-    wallet: bittensor.wallet,
-    config: MinerConfig, 
-    subtensor: bittensor.Subtensor
+    wallet: bittensor.wallet, config: MinerConfig, subtensor: bittensor.Subtensor
 ) -> bittensor.Axon:
-    
+
     validator_miner_assignment = get_validator_miner_assignment(config, subtensor)
-    
+
     for validator, miners in validator_miner_assignment.items():
         if wallet.hotkey.ss58_address in miners:
             assigned_validator_hotkey = validator
             break
 
-    metagraph = subtensor.metagraph(netuid = config.chain.netuid)
+    metagraph = subtensor.metagraph(netuid=config.chain.netuid)
     uid = metagraph.hotkeys.index(assigned_validator_hotkey)
     return metagraph.axons[uid]
+
 
 def scan_for_new_model(
     current_model_version: int,
@@ -126,11 +127,7 @@ def scan_for_new_model(
     hash_counts = Counter(mh for (_mv, mh, _uid, _ip, _port) in newer_candidates)
     majority_hash, _count = hash_counts.most_common(1)[0]
 
-    filtered = [
-        (mv, mh, uid, ip, port)
-        for (mv, mh, uid, ip, port) in newer_candidates
-        if mh == majority_hash
-    ]
+    filtered = [(mv, mh, uid, ip, port) for (mv, mh, uid, ip, port) in newer_candidates if mh == majority_hash]
     if not filtered:
         return False, []
 
@@ -153,17 +150,17 @@ def scan_for_new_model(
 
     return should_download, download_meta
 
-def setup_chain_worker(
-    config
-):
-    wallet = bittensor.wallet(name = config.chain.coldkey_name, hotkey = config.chain.hotkey_name)
-    subtensor = bittensor.subtensor(network = config.chain.network) 
+
+def setup_chain_worker(config):
+    wallet = bittensor.wallet(name=config.chain.coldkey_name, hotkey=config.chain.hotkey_name)
+    subtensor = bittensor.subtensor(network=config.chain.network)
     serve_axon(
-        config = config,
-        wallet = wallet,
-        subtensor = subtensor,
+        config=config,
+        wallet=wallet,
+        subtensor=subtensor,
     )
     return wallet, subtensor
+
 
 def h256_int(*parts: Any) -> int:
     """Deterministic 256-bit hash -> int."""
@@ -172,6 +169,7 @@ def h256_int(*parts: Any) -> int:
         m.update(str(p).encode("utf-8"))
         m.update(b"\x00")  # separator
     return int.from_bytes(m.digest(), "big")
+
 
 def assign_miners_to_validators(
     validators: Dict[str, Any],  # {validator_id: seed}
@@ -226,6 +224,7 @@ def assign_miners_to_validators(
 
     return assignment
 
+
 def get_validator_miner_assignment(config: BaseConfig, subtensor: bittensor.Subtensor):
     status = get_status(config, subtensor)
 
@@ -238,19 +237,23 @@ def get_validator_miner_assignment(config: BaseConfig, subtensor: bittensor.Subt
     }
 
     miners: List[str] = [
-        hk for hk, e in status.items()
+        hk
+        for hk, e in status.items()
         if isinstance(e.get("status"), MinerStatus)
         and getattr(e["status"], "expert_group", None) == config.moe.my_expert_group_id
     ]
 
-    return assign_miners_to_validators(validator_seeds, miners) # type: ignore
+    return assign_miners_to_validators(validator_seeds, miners)  # type: ignore
 
-def get_validation_schedule(config: BaseConfig, subtensor: bittensor.Subtensor, block = None, last = False) -> Dict[str, int]:
+
+def get_validation_schedule(
+    config: BaseConfig, subtensor: bittensor.Subtensor, block=None, last=False
+) -> Dict[str, int]:
 
     if block == None:
         block = subtensor.block
 
-    if last: 
+    if last:
         block = block - config.cycle.validation_period
 
     interval_start_block = (block // config.cycle.validation_period) * config.cycle.validation_period + 1
@@ -259,16 +262,17 @@ def get_validation_schedule(config: BaseConfig, subtensor: bittensor.Subtensor, 
     validation_end_block = interval_start_block + config.cycle.validation_offset
 
     return {
-        'interval_start_block': interval_start_block,
-        'interval_end_block': interval_end_block,
-        'submission_start_block': submission_start_block,
-        'validation_end_block': validation_end_block
-    }  
+        "interval_start_block": interval_start_block,
+        "interval_end_block": interval_end_block,
+        "submission_start_block": submission_start_block,
+        "validation_end_block": validation_end_block,
+    }
+
 
 def get_phase_status(schedule: dict, block: int) -> str:
     """
     Determine current phase based on block schedule.
-    
+
     Returns:
         str: one of ["training", "submission", "waiting"]
     """
@@ -285,6 +289,7 @@ def get_phase_status(schedule: dict, block: int) -> str:
         return "submission"
     else:
         return "not_regcognised"
+
 
 def parse_dynamic_filename(filename: str) -> dict:
     """
@@ -320,6 +325,7 @@ def parse_dynamic_filename(filename: str) -> dict:
 
     return meta
 
+
 def load_submission_files(folder: str = "miner_submission"):
     """
     Scans a folder for .pt files and returns:
@@ -336,29 +342,23 @@ def load_submission_files(folder: str = "miner_submission"):
 
     return files_dict
 
-def gather_validation_job(
-        config: ValidatorConfig,
-        subtensor: bittensor.Subtensor,
-        step: int
-) -> List[MinerEvalJob]:
 
-    validation_schedule = get_validation_schedule(config, subtensor, last = True)
+def gather_validation_job(config: ValidatorConfig, subtensor: bittensor.Subtensor, step: int) -> List[MinerEvalJob]:
+
+    validation_schedule = get_validation_schedule(config, subtensor, last=True)
     validator_miner_assignment = get_validator_miner_assignment(config, subtensor)
-    miner_assignment = validator_miner_assignment[config.chain.hotkey_ss58] 
+    miner_assignment = validator_miner_assignment[config.chain.hotkey_ss58]
     miner_submission_files = load_submission_files(str(config.vali.miner_submission_path))
 
     miner_jobs = []
     for file_name, submission_meta in miner_submission_files.items():
         if (
-            submission_meta['hotkey'] in miner_assignment 
-            and get_phase_status(validation_schedule, submission_meta['block']) == 'submission'
+            submission_meta["hotkey"] in miner_assignment
+            and get_phase_status(validation_schedule, submission_meta["block"]) == "submission"
         ):
             miner_jobs.append(
                 MinerEvalJob(
-                    uid = submission_meta['uid'],
-                    hotkey = submission_meta['hotkey'],
-                    model_path = file_name,
-                    step = step
+                    uid=submission_meta["uid"], hotkey=submission_meta["hotkey"], model_path=file_name, step=step
                 )
             )
 

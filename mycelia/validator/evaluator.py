@@ -31,6 +31,7 @@ logger = structlog.get_logger(__name__)
 import torch
 import torch.nn as nn
 
+
 # -----------------------------------------------------------------------------
 @dataclasses.dataclass(frozen=True)
 class MinerEvalJob:
@@ -47,20 +48,22 @@ DOWNLOAD_TIMEOUT_SEC = 60
 EVAL_MAX_BATCHES = 50
 # ------------------------------------------------------------------------------
 
+
 def load_model_from_path(path: str, base_model) -> nn.Module:
-    sd = torch.load(path, map_location=torch.device("cpu"))['model_state_dict']
-    base_model.load_state_dict(sd, strict = False)
-    return base_model 
+    sd = torch.load(path, map_location=torch.device("cpu"))["model_state_dict"]
+    base_model.load_state_dict(sd, strict=False)
+    return base_model
+
 
 async def evaluator_worker(
     name: str,
-    config, 
+    config,
     jobs_q: "asyncio.Queue[MinerEvalJob]",
     aggregator: MinerScoreAggregator,
     device: "torch.device",
     # eval_dataloader,
     base_model: nn.Module,
-    tokenizer, 
+    tokenizer,
     max_eval_batches: int = EVAL_MAX_BATCHES,
     rank: Optional[int] = None,
 ):
@@ -82,9 +85,9 @@ async def evaluator_worker(
             score = float(metrics.get("val_loss", 100))
             aggregator.add_score(job.uid, job.hotkey, score)
             logger.info(f"{name}: uid={job.uid} hotkey={job.hotkey} score={score:.4f} path={job.model_path}")
-            
+
             del eval_dataloader
-        
+
         except Exception as e:
             logger.exception(f"{name}: Evaluation failed for uid={job.uid}: {e}")
         finally:
@@ -102,7 +105,9 @@ async def run_evaluation(config, step, device, miners, score_aggregator, base_mo
 
     # Spin up evaluator workers
     eval_workers = [
-        asyncio.create_task(evaluator_worker(f"evaluator-{i+1}", config, miners_q, score_aggregator, device, base_model, tokenizer))
+        asyncio.create_task(
+            evaluator_worker(f"evaluator-{i+1}", config, miners_q, score_aggregator, device, base_model, tokenizer)
+        )
         for i in range(EVAL_WORKERS)
     ]
 

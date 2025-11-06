@@ -49,6 +49,7 @@ logger = structlog.getLogger(__name__)
 
 tqdm(disable=True, total=0)
 
+
 @torch.no_grad
 def evaluate_model(
     step: int,
@@ -79,7 +80,7 @@ def evaluate_model(
     Dict[str, float]
         e.g., {"val_loss": 2.345}
     """
-    logger.info("evaluate model", step = step)
+    logger.info("evaluate model", step=step)
     model.eval()
     loss_sum: float = 0.0
     aux_loss_sum: float = 0.0
@@ -93,7 +94,11 @@ def evaluate_model(
                 outputs = model(**device_batch)
 
             loss_sum += float(outputs.loss.detach().item())
-            aux_loss_sum += float(outputs.aux_loss.detach().item()) if hasattr(outputs, "aux_loss") and outputs.aux_loss is not None else 0
+            aux_loss_sum += (
+                float(outputs.aux_loss.detach().item())
+                if hasattr(outputs, "aux_loss") and outputs.aux_loss is not None
+                else 0
+            )
 
             del outputs, device_batch
 
@@ -101,6 +106,3 @@ def evaluate_model(
                 break
 
     return {"val_loss": (loss_sum - aux_loss_sum) / batch_step, "val_aux_loss": aux_loss_sum / batch_step}
-
-
-

@@ -9,6 +9,7 @@ from mycelia.shared.app_logging import structlog
 
 logger = structlog.getLogger(__name__)
 
+
 def get_resume_info(rank: int, config: MinerConfig | ValidatorConfig) -> tuple[bool, int, str | None]:
     """
     Retrieves the resume information for a given rank and checkpoint configuration.
@@ -45,6 +46,7 @@ def get_resume_info(rank: int, config: MinerConfig | ValidatorConfig) -> tuple[b
         latest_ckpt = max(ckpt_files, key=lambda f: int(f.split("_")[-1]))
         logger.info(f"rank {rank}: Latest checkpoint found in {latest_ckpt}")
         return True, int(latest_ckpt.split("_")[-1]), latest_ckpt
+
 
 def save_checkpoint(
     checkpoint_path: str,
@@ -134,6 +136,7 @@ def save_checkpoint(
     del opt_checkpoint
     del global_state_dict
 
+
 def load_optimizer(checkpoint_path, optimizer):
     def _get_name_to_id(optimizer_state_dict):
         param_name = [pid for g in optimizer_state_dict["param_groups"] for pid in g["param_names"]]
@@ -181,6 +184,7 @@ def load_optimizer(checkpoint_path, optimizer):
             full_name_to_param = full_name_to_param | _get_name_to_param(state_dict["optimizer_state_dict"])
 
     optimizer.load_state_dict(_update_state_dict(optimizer.state_dict(), full_name_to_param))
+
 
 def load_checkpoint(
     checkpoint_path: str,
@@ -253,6 +257,7 @@ def load_checkpoint(
         outer_scaler.load_state_dict(global_state_dict["outer_scaler_state_dict"])
 
     return global_state_dict["loss"]
+
 
 def filter_ckpt_files(f: str) -> bool:
     """

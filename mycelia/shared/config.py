@@ -19,13 +19,15 @@ from mycelia.shared.app_logging import structlog, configure_logging
 configure_logging()
 logger = structlog.get_logger(__name__)
 
+
 def find_project_root() -> Path:
     # Walk up until we see a repo/config marker
-    start = Path("./").expanduser().resolve(strict = True)
+    start = Path("./").expanduser().resolve(strict=True)
     for p in [start, *start.parents]:
         if (p / ".git").exists() or (p / "pyproject.toml").exists() or (p / "requirements.txt").exists():
             return p
     return start.parents[1]  # fallback: up one level from mycelia/
+
 
 # ---------------------------
 # Enums
@@ -35,10 +37,12 @@ class Precision(str, Enum):
     bf16 = "bf16"
     fp16_mixed = "fp16-mixed"
 
+
 class AttnImpl(str, Enum):
     sdpa = "sdpa"
     flash = "flash"
     eager = "eager"
+
 
 # ---------------------------
 # Sections
@@ -50,27 +54,38 @@ class ChainCfg(BaseModel):
     coldkey_ss58: str = ""
     ip: str = "0.0.0.0"
     port: int = 8000
-    role: str = 'miner' # ['miner', 'validator']
-    coldkey_name: str = 'template_coldkey_name'
-    hotkey_name: str = 'template_hotkey_name'
-    network: str = 'test'
+    role: str = "miner"  # ['miner', 'validator']
+    coldkey_name: str = "template_coldkey_name"
+    hotkey_name: str = "template_hotkey_name"
+    network: str = "test"
+
 
 class CycleCfg(BaseModel):
-    validation_period: int = 30 # validators run a validation round everytime when sub.block % validation_period == 0   
-    validation_offset: int = 15 # 3mins  # validation and model update happens from validation_period to validation_period + validation_offset  
-    submission_offset: int = 15 # 3mins # miner submission happens from validation_period - submission_offset to validation_period 
-    submission_rate_limit:int = 15
+    validation_period: int = 30  # validators run a validation round everytime when sub.block % validation_period == 0
+    validation_offset: int = (
+        15  # 3mins  # validation and model update happens from validation_period to validation_period + validation_offset
+    )
+    submission_offset: int = (
+        15  # 3mins # miner submission happens from validation_period - submission_offset to validation_period
+    )
+    submission_rate_limit: int = 15
+
+
 class RunCfg(BaseModel):
     run_name: str = "foundation"
-    root_path: Path = find_project_root() 
+    root_path: Path = find_project_root()
+
 
 class ModelCfg(BaseModel):
-    model_path: str = "deepseek-ai/deepseek-moe-16b-base" # although we are calling a large model here, but we would only be training a partial of it for each miner
-    foundation: bool = True 
+    model_path: str = (
+        "deepseek-ai/deepseek-moe-16b-base"  # although we are calling a large model here, but we would only be training a partial of it for each miner
+    )
+    foundation: bool = True
     torch_compile: bool = True
     attn_implementation: AttnImpl = AttnImpl.sdpa
     precision: Precision = Precision.fp16_mixed
     device: str = "cuda"
+
 
 class DataCfg(BaseModel):
     dataset_name: str = "allenai/c4"
@@ -78,8 +93,9 @@ class DataCfg(BaseModel):
     batch_size: PositiveInt = 512
     sequence_length: PositiveInt = 1024
     per_device_train_batch_size: PositiveInt = 5
-    world_size: int = 10 #TODO
-    rank: int = 1 #TODO
+    world_size: int = 10  # TODO
+    rank: int = 1  # TODO
+
 
 class MoECfg(BaseModel):
     my_expert_group_id: int = 1
@@ -98,18 +114,19 @@ class MoECfg(BaseModel):
     rotate_expert: bool = False
     expert_rotate_interval: Optional[PositiveInt] = None
 
+
 class OptimizerCfg(BaseModel):
     lr: float = 2e-5
     outer_lr: float = 0.7
     outer_momentum: float = 0.9
 
 
-class ParallelismCfg(BaseModel):# parallelism for local training
+class ParallelismCfg(BaseModel):  # parallelism for local training
     gradient_accumulation_steps: PositiveInt = 100
     global_opt_interval: PositiveInt = 100
     world_size: PositiveInt = 2
     port: PositiveInt = 29500
-    ip_address: str = "127.0.0.1" 
+    ip_address: str = "127.0.0.1"
 
     @staticmethod
     def _cuda_device_count_safe() -> int:
@@ -117,11 +134,13 @@ class ParallelismCfg(BaseModel):# parallelism for local training
             return int(torch.cuda.device_count())
         except Exception:
             return 0
-        
+
+
 class ScheduleCfg(BaseModel):
     warmup_steps: PositiveInt = 600
     total_steps: PositiveInt = 88_000
     # Derived defaults for intervals set in Checkpoint/Logging via global_opt_interval
+
 
 class CheckpointCfg(BaseModel):
     resume_from_ckpt: bool = True
@@ -130,6 +149,7 @@ class CheckpointCfg(BaseModel):
     checkpoint_interval: Optional[PositiveInt] = None
     full_validation_interval: Optional[PositiveInt] = None
     checkpoint_topk: PositiveInt = 5
+
 
 class LoggingCfg(BaseModel):
     log_wandb: bool = False
@@ -141,16 +161,20 @@ class LoggingCfg(BaseModel):
     metric_path: Optional[Path] = None
     metric_interval: Optional[PositiveInt] = None
 
+
 class ValidatorCheckpointCfg(CheckpointCfg):
     base_checkpoint_path: Path = Path("checkpoints/validator")
 
+
 class ValidatorCfg(BaseModel):
-    eval_interval: int = 100 # blocks
+    eval_interval: int = 100  # blocks
     miner_submission_path: Path = Path("checkpoints/validator/miner_submission")
 
+
 class MinerCfg(BaseModel):
-    eval_interval: int = 100 # blocks
+    eval_interval: int = 100  # blocks
     validator_checkpoint_path: Path = Path("checkpoints/miner/validator_checkpoint")
+
 
 # ---------------------------
 # Top-level config
@@ -159,6 +183,7 @@ class BaseConfig(BaseModel):
     """
     Centralized training/eval configuration for mycelia runs.
     """
+
     run: RunCfg = RunCfg()
     chain: ChainCfg = ChainCfg()
     model: ModelCfg = ModelCfg()
@@ -176,7 +201,7 @@ class BaseConfig(BaseModel):
 
     @model_validator(mode="after")
     def _derive_all(self):
-        
+
         if hasattr(self, "local_par"):
             if self.local_par.gradient_accumulation_steps == 0:
                 # ceil(batch_size / per_device_train_batch_size)
@@ -205,8 +230,8 @@ class BaseConfig(BaseModel):
         return self.model_dump(mode="python")
 
     def to_json(self, **kwargs) -> str:
-        return self.model_dump_json(**kwargs, indent = 4)
-    
+        return self.model_dump_json(**kwargs, indent=4)
+
     # ---- Lifecycle hooks ----
     def __init__(self, **data):
         """
@@ -215,7 +240,7 @@ class BaseConfig(BaseModel):
         """
         super().__init__(**data)
         self._fill_wallet_data()
-        # Recompute dependent fields that rely on CUDA availability or run_name. 
+        # Recompute dependent fields that rely on CUDA availability or run_name.
         self._refresh_paths()
 
         # If an existing config exists, bump run_name when the configs don't match.
@@ -236,7 +261,7 @@ class BaseConfig(BaseModel):
         os.makedirs(self.ckpt.base_checkpoint_path, exist_ok=True)
         os.makedirs(self.ckpt.checkpoint_path, exist_ok=True)
         os.makedirs(self.log.base_metric_path, exist_ok=True)
-        if hasattr(self, 'miner'):
+        if hasattr(self, "miner"):
             os.makedirs(self.miner.validator_checkpoint_path, exist_ok=True)
 
     @classmethod
@@ -259,30 +284,35 @@ class BaseConfig(BaseModel):
 
         logger.info(f"loaded config {data}")
         return cls(**data)
-    
+
     def _refresh_paths(self) -> None:
-        self.ckpt.base_checkpoint_path = self.run.root_path / self.ckpt.base_checkpoint_path 
-        self.ckpt.checkpoint_path = self.ckpt.base_checkpoint_path / self.chain.coldkey_name / self.chain.hotkey_name / self.run.run_name
-        
+        self.ckpt.base_checkpoint_path = self.run.root_path / self.ckpt.base_checkpoint_path
+        self.ckpt.checkpoint_path = (
+            self.ckpt.base_checkpoint_path / self.chain.coldkey_name / self.chain.hotkey_name / self.run.run_name
+        )
+
         self.log.base_metric_path = self.run.root_path / self.log.base_metric_path
         self.log.metric_path = self.log.base_metric_path / f"{self.run.run_name}.csv"
 
         if hasattr(self, "vali"):
             self.vali.miner_submission_path = self.run.root_path / self.vali.miner_submission_path
-        
+
         if hasattr(self, "miner"):
             self.miner.validator_checkpoint_path = self.run.root_path / self.miner.validator_checkpoint_path
 
     def _fill_wallet_data(self):
-        wallet = bittensor.wallet(name = self.chain.coldkey_name, hotkey = self.chain.hotkey_name)
-        subtensor = bittensor.subtensor(network = self.chain.network)
+        wallet = bittensor.wallet(name=self.chain.coldkey_name, hotkey=self.chain.hotkey_name)
+        subtensor = bittensor.subtensor(network=self.chain.network)
         try:
             self.chain.hotkey_ss58 = wallet.hotkey.ss58_address
             self.chain.coldkey_ss58 = wallet.coldkeypub.ss58_address
-            self.chain.uid = subtensor.metagraph(netuid = self.chain.netuid).hotkeys.index(self.chain.hotkey_ss58)
+            self.chain.uid = subtensor.metagraph(netuid=self.chain.netuid).hotkeys.index(self.chain.hotkey_ss58)
         except bittensor.KeyFileError as e:
-            logger.warning(f"Cannot find the wallet key by name coldkey name: {self.chain.coldkey_name}, hotkey name: {self.chain.hotkey_name}, please make sure it has been set correctly if you are reloading from a config.json or use --hotkey_name & --coldkey_name when you are creating a config file from a template.", error=str(e))
-            return  
+            logger.warning(
+                f"Cannot find the wallet key by name coldkey name: {self.chain.coldkey_name}, hotkey name: {self.chain.hotkey_name}, please make sure it has been set correctly if you are reloading from a config.json or use --hotkey_name & --coldkey_name when you are creating a config file from a template.",
+                error=str(e),
+            )
+            return
 
     @staticmethod
     def _bump_run_name(name: str) -> str:
@@ -314,7 +344,7 @@ class BaseConfig(BaseModel):
         if isinstance(a, dict) and isinstance(b, dict):
             a_keys, b_keys = set(a.keys()), set(b.keys())
             missing = a_keys - b_keys
-            extra   = b_keys - a_keys
+            extra = b_keys - a_keys
             if missing:
                 logger.info(f"Keys present in self but missing in other at '{path}': {missing}")
                 ok = False
@@ -411,14 +441,17 @@ def parse_args():
     )
     return parser.parse_args()
 
+
 class MinerConfig(BaseConfig):
     miner: MinerCfg = MinerCfg()
     local_par: ParallelismCfg = ParallelismCfg()
 
+
 class ValidatorConfig(BaseConfig):
     vali: ValidatorCfg = ValidatorCfg()
     ckpt: ValidatorCheckpointCfg = ValidatorCheckpointCfg()
-    
+
+
 if __name__ == "__main__":
     args = parse_args()
 
@@ -426,18 +459,18 @@ if __name__ == "__main__":
 
         config_dict = {}
         if args.run_name:
-            config_dict['run'] = {'run_name': args.run_name}
+            config_dict["run"] = {"run_name": args.run_name}
 
         if args.hotkey_name:
-            config_dict['chain'] = {'hotkey_name': args.hotkey_name}
-        
-        if args.coldkey_name:
-            if 'chain' not in config_dict:
-                config_dict['chain'] = {}
-            config_dict['chain']['coldkey_name'] = args.coldkey_name
+            config_dict["chain"] = {"hotkey_name": args.hotkey_name}
 
-        if args.get_template == 'validator':
+        if args.coldkey_name:
+            if "chain" not in config_dict:
+                config_dict["chain"] = {}
+            config_dict["chain"]["coldkey_name"] = args.coldkey_name
+
+        if args.get_template == "validator":
             ValidatorConfig(**config_dict).write()
-        
-        if args.get_template == 'miner':
-            MinerConfig(**config_dict).write() 
+
+        if args.get_template == "miner":
+            MinerConfig(**config_dict).write()

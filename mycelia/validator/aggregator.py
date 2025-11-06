@@ -14,6 +14,7 @@ def _utc_now() -> datetime:
 @dataclass
 class MinerSeries:
     """Holds a single miner's (timestamp, score) points, kept sorted by time."""
+
     points: List[Tuple[datetime, float]] = field(default_factory=list)
 
     def add(self, ts: datetime, score: float) -> None:
@@ -21,7 +22,7 @@ class MinerSeries:
             raise ValueError("Timestamp must be timezone-aware (e.g., UTC).")
         i = bisect.bisect_left(self.points, (ts, float("-inf")))
         if i < len(self.points) and self.points[i][0] == ts:
-            self.points[i] = (ts, score)   # overwrite same-ts
+            self.points[i] = (ts, score)  # overwrite same-ts
         else:
             self.points.insert(i, (ts, score))
 
@@ -68,6 +69,7 @@ class MinerScoreAggregator:
     Aggregates miners' scores over time keyed by uid, and tracks each miner's current hotkey.
     REQUIREMENT: if a uid's hotkey changes, that uid's score history resets.
     """
+
     def __init__(self):
         self._miners: Dict[str, MinerState] = {}  # uid -> MinerState
         self._lock = threading.RLock()
@@ -112,10 +114,7 @@ class MinerScoreAggregator:
 
     # ---------- Retrieval ----------
     def get_history(
-        self,
-        uid: str,
-        start: Optional[datetime] = None,
-        end: Optional[datetime] = None
+        self, uid: str, start: Optional[datetime] = None, end: Optional[datetime] = None
     ) -> List[Tuple[datetime, float]]:
         with self._lock:
             s = self._miners.get(uid)
@@ -146,7 +145,9 @@ class MinerScoreAggregator:
         start = now - window
         return self.avg_over(uid, start, now)
 
-    def ema(self, uid: str, alpha: float = 0.2, start: Optional[datetime] = None, end: Optional[datetime] = None) -> float:
+    def ema(
+        self, uid: str, alpha: float = 0.2, start: Optional[datetime] = None, end: Optional[datetime] = None
+    ) -> float:
         if not (0 < alpha <= 1):
             raise ValueError("alpha must be in (0, 1].")
         pts = self.get_history(uid, start, end)
@@ -213,7 +214,6 @@ class MinerScoreAggregator:
         cutoff = sorted_scores[cutoff - 1]
         return scores[uid] >= cutoff
 
-
     # ---------- Maintenance ----------
     def prune_older_than(self, older_than: timedelta, now: Optional[datetime] = None) -> None:
         if now is None:
@@ -235,7 +235,7 @@ class MinerScoreAggregator:
                 for uid, state in self._miners.items()
             }
         return json.dumps(payload)
-    
+
     @classmethod
     def from_json(cls, data: str) -> "MinerScoreAggregator":
         raw = json.loads(data)

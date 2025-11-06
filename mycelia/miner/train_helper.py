@@ -167,10 +167,10 @@ def get_status(
     Times are reported in hours, throughput in tokens/second.
     """
 
-    if inner_opt_step is None and global_opt_step is None: 
+    if inner_opt_step is None and global_opt_step is None:
         raise ValueError
 
-    if inner_opt_step is not None: 
+    if inner_opt_step is not None:
         total_batch_size = config.data.batch_size * config.local_par.world_size
         total_samples = inner_opt_step * total_batch_size
         total_tokens = total_samples * config.data.sequence_length
@@ -178,12 +178,14 @@ def get_status(
     _, expert_sum = get_weight_sum(model, shared=False)
 
     # Extract current learning rate (assume one param group or take first)
-    
+
     metrics: Dict[str, Any] = {
         "step": step,
         "inner_opt_step": inner_opt_step,
         "global_opt_step": global_opt_step,
-        "lr": next(iter(group["lr"] for group in inner_optimizer.param_groups)) if inner_optimizer is not None else None,
+        "lr": (
+            next(iter(group["lr"] for group in inner_optimizer.param_groups)) if inner_optimizer is not None else None
+        ),
         "param_sum": expert_sum.detach().cpu(),
     }
 
@@ -192,7 +194,6 @@ def get_status(
             "total_samples": total_samples,
             "total_tokens": total_tokens,
         }
-
 
     if training_time > 0 and total_training_time > 0:
         metrics = metrics | {
