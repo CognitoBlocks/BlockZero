@@ -39,7 +39,7 @@ def is_expert_param(name: str) -> bool:
     return "expert" in name  # customize if needed (e.g., "experts.")
 
 
-def split_into_groups(lst: List[int], num_groups: int, seed: int | None = 123) -> Dict[int, List[int]]:
+def split_into_groups(lst: List[int], num_groups: int, shuffle: bool = False, seed: int | None = 123) -> Dict[int, List[int]]:
     """
     Deterministically split a list of items into `num_groups` interleaved buckets.
 
@@ -64,14 +64,17 @@ def split_into_groups(lst: List[int], num_groups: int, seed: int | None = 123) -
     if num_groups <= 0:
         raise ValueError("num_groups must be >= 1")
 
-    shuffled = lst[:]
-    if seed is not None:
-        rnd = random.Random(seed)
-        rnd.shuffle(shuffled)
+    if shuffle:
+        shuffled = lst[:]
+        if seed is not None:
+            rnd = random.Random(seed)
+            rnd.shuffle(shuffled)
 
-    return {i: shuffled[i::num_groups] for i in range(num_groups)}
+        return {i: shuffled[i::num_groups] for i in range(num_groups)}
 
-
+    else:
+        return { i: lst[i * (len(lst)//num_groups) : (i + 1) * (len(lst)//num_groups)] for i in range(num_groups) }
+    
 def create_expert_groups(
     my_rank: int, rank_group_assignment: Mapping[int, Iterable[int]]
 ) -> Tuple[int, Dict[int, dist.ProcessGroup]]:

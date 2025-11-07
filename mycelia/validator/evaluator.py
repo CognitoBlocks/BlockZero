@@ -95,7 +95,6 @@ async def evaluator_worker(
 
 async def run_evaluation(config, step, device, miners, score_aggregator, base_model: nn.Module, tokenizer):
     # Device & dataloader (MOCK). Replace eval_dataloader with a real one.
-    logger.info(f"discovered {len(miners)} miners.")
     miners_q: asyncio.Queue[MinerEvalJob] = asyncio.Queue()
 
     # Enqueue miners

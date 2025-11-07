@@ -18,6 +18,7 @@ from mycelia.shared.config import MinerConfig, ValidatorConfig
 from mycelia.shared.checkpoint import (
     get_resume_info,
     load_checkpoint,
+    delete_old_checkpoints_by_hotkey
 )
 
 from mycelia.shared.config import MinerConfig, parse_args
@@ -211,6 +212,8 @@ async def submit_checkpoint(
         raise HTTPException(status_code=400, detail="Checksum mismatch")
 
     logger.info(f"Stored checkpoint for step={step} at {dest_path} ({bytes_written} bytes) sha256={computed}")
+
+    ckpt_deleted = delete_old_checkpoints_by_hotkey(config.ckpt.checkpoint_path)
 
     return {
         "status": "ok",

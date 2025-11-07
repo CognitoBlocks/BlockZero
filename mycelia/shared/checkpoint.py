@@ -1,11 +1,17 @@
 import os
 import torch
 import fsspec
+
+from pathlib import Path
+import re
+import os
+
 from copy import deepcopy
 from mycelia.shared.config import MinerConfig, ValidatorConfig
 from fsspec.generic import GenericFileSystem
 from torchdata.stateful_dataloader import StatefulDataLoader
 from mycelia.shared.app_logging import structlog
+from mycelia.shared.helper import parse_dynamic_filename
 
 logger = structlog.getLogger(__name__)
 
@@ -259,9 +265,13 @@ def load_checkpoint(
     return global_state_dict["loss"]
 
 
-def filter_ckpt_files(f: str) -> bool:
+def extract_version_from_file_name(f: str) -> int | None:
     """
     Filters checkpoint files based on specific criteria.
+
+    Ignores file extensions (e.g. .pt, .pth, .tar.pt).
+    Returns True only if the filename (without extension)
+    ends with an underscore followed by an integer.
 
     Args:
         f (str): The filename to check.
@@ -269,11 +279,22 @@ def filter_ckpt_files(f: str) -> bool:
     Returns:
         bool: True if the file meets the criteria, False otherwise.
     """
+    # Remove any file extensions (handles cases like .pt, .pth, .tar.pt)
+    stem = Path(f).stem
+
+    # Some files may have multiple dots; keep stripping until only the base remains
+    while "." in stem:
+        stem = Path(stem).stem
+
+    # Split by underscore and check last token
+    parts = stem.split("_")
+    if not parts:
+        return None
+
     try:
-        int(f.split("_")[-1])
-        return True
+        return int(parts[-1])
     except ValueError:
-        return False
+        return None
 
 
 def delete_old_checkpoints(checkpoint_path: str, topk: int) -> list[str]:
@@ -288,11 +309,72 @@ def delete_old_checkpoints(checkpoint_path: str, topk: int) -> list[str]:
         list[str]: A list of deleted checkpoint filenames.
     """
     fs = GenericFileSystem()
-    ckpt_files = [f for f in fs.ls(checkpoint_path, detail=False) if filter_ckpt_files(f)]
-    ckpt_files.sort(key=lambda x: int(x.split("_")[-1]))
+    # Remove None values and sort by the trailing block number in filename
+    ckpt_files = {
+        f: v
+        for f, v in ((f, extract_version_from_file_name(f)) for f in fs.ls(checkpoint_path, detail=False))
+        if v is not None
+    }
 
+    # Sort by the integer after the last underscore
+    sorted_ckpt_files = sorted(
+        ckpt_files.items(),
+        key=lambda x: -x[1]
+    )
+    
     ckpt_deleted = []
-    for ckpt_file in ckpt_files[:-topk]:
+    for ckpt_file in sorted_ckpt_files[:-topk]:
         fs.rm(ckpt_file, recursive=True)
         ckpt_deleted.append(ckpt_file)
     return ckpt_deleted
+
+
+def delete_old_checkpoints_by_hotkey(folder_path : Path):
+    """
+    Deletes all non-latest submission files coming from the same hotkey.
+    Keeps only the file with the highest block number per hotkey.
+
+    Requires: parse_dynamic_filename(filename: str) -> dict
+    """
+    if not folder_path.exists():
+        raise FileNotFoundError(f"Folder not found: {folder_path.resolve()}")
+
+    # Step 1: Group files by hotkey
+    submissions_by_hotkey = {}
+    for file_path in folder_path.glob("*.pt"):
+        meta = parse_dynamic_filename(file_path.name)
+        if "hotkey" not in meta or "block" not in meta:
+            print(f"⚠️ Skipping malformed filename: {file_path.name}")
+            continue
+
+        hotkey = meta["hotkey"]
+        block = meta["block"]
+
+        # Track the latest submission per hotkey
+        if hotkey not in submissions_by_hotkey:
+            submissions_by_hotkey[hotkey] = []
+        submissions_by_hotkey[hotkey].append((block, file_path))
+
+    # Step 2: For each hotkey, keep only the highest block file
+    deleted_files = []
+    for hotkey, entries in submissions_by_hotkey.items():
+        # Sort by block number descending (latest first)
+        entries.sort(key=lambda x: x[0], reverse=True)
+
+        # Keep the first (latest) one, delete the rest
+        for block, file_path in entries[1:]:
+            try:
+                os.remove(file_path)
+                deleted_files.append(file_path.name)
+            except Exception as e:
+                print(f"❌ Failed to delete {file_path.name}: {e}")
+
+    # Step 3: Log result
+    if deleted_files:
+        logger.info(f"🧹 Deleted {len(deleted_files)} outdated submission(s):", deleted_files)
+        for f in deleted_files:
+            print(f"   - {f}")
+    else:
+        logger.info("✅ No outdated submissions found.")
+
+    return deleted_files

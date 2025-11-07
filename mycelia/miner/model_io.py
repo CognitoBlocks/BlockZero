@@ -85,7 +85,7 @@ def main(config):
 
                         # Output path (reload each attempt so block height is fresh)
                         out_path = Path(config.miner.validator_checkpoint_path) / (
-                            f"validator_{download_meta.get('uid')}_version_{download_meta.get('model_version')}block_{subtensor.block}.pt"
+                            f"uid_{download_meta.get('uid')}_hotkey_{download_meta.get('hotkey')}_version_{download_meta.get('model_version')}_block_{subtensor.block}.pt"
                         )
 
                         logger.info("Checking for new checkpoint from validator %s ...", download_meta.get("uid"))

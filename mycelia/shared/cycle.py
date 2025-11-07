@@ -20,6 +20,7 @@ from mycelia.shared.checkpoint import get_resume_info, delete_old_checkpoints
 from mycelia.shared.config import MinerConfig, parse_args, BaseConfig, ValidatorConfig
 from mycelia.miner.client import submit_model, download_model
 from mycelia.shared.app_logging import structlog, configure_logging
+from mycelia.shared.helper import parse_dynamic_filename
 from mycelia.validator.evaluator import MinerEvalJob
 
 configure_logging()
@@ -52,7 +53,6 @@ def should_start_validation(config: ValidatorConfig, subtensor: bittensor.Subten
     if block_till < 0 and should_start == False:
         block_till += config.cycle.validation_period
 
-    logger.info("should_start_validation", should_start=should_start, block_till=block_till)
     return phase_status == "validating", block_till
 
 
@@ -118,22 +118,23 @@ def scan_for_new_model(
             uid = get_uid(neuron_obj)
             ip = neuron_obj.axon_info.ip
             port = neuron_obj.axon_info.port
-            newer_candidates.append((mv, mh, uid, ip, port))
+            hotkey = neuron_obj.hotkey
+            newer_candidates.append((mv, mh, uid, ip, port, hotkey))
 
     if not newer_candidates:
         return False, []
 
     # 2) majority filter by model_hash among the newer candidates
-    hash_counts = Counter(mh for (_mv, mh, _uid, _ip, _port) in newer_candidates)
+    hash_counts = Counter(mh for (_mv, mh, _uid, _ip, _port, hotkey) in newer_candidates)
     majority_hash, _count = hash_counts.most_common(1)[0]
 
-    filtered = [(mv, mh, uid, ip, port) for (mv, mh, uid, ip, port) in newer_candidates if mh == majority_hash]
+    filtered = [(mv, mh, uid, ip, port, hotkey) for (mv, mh, uid, ip, port, hotkey) in newer_candidates if mh == majority_hash]
     if not filtered:
         return False, []
 
     # 3) prepare download_meta for each entry (uid, ip, port, model_hash, model_version)
     download_meta = []
-    for mv, mh, uid, ip, port in filtered:
+    for mv, mh, uid, ip, port, hotkey in filtered:
         # Only include entries with reachable metadata
         download_meta.append(
             {
@@ -142,6 +143,7 @@ def scan_for_new_model(
                 "port": port,
                 "model_hash": mh,
                 "model_version": mv,
+                "hotkey": hotkey,
             }
         )
 
@@ -289,41 +291,6 @@ def get_phase_status(schedule: dict, block: int) -> str:
         return "submission"
     else:
         return "not_regcognised"
-
-
-def parse_dynamic_filename(filename: str) -> dict:
-    """
-    Parse filenames like key_val_key_val... into a dictionary.
-    Example:
-        uid_13_hotkey_5FnRrH_block_5759026.pt
-    → {"uid": 13, "hotkey": "5FnRrH", "block": 5759026}
-    """
-    # Remove .pt extension
-    name = Path(filename).stem
-
-    parts = name.split("_")
-    meta = {}
-    i = 0
-    while i < len(parts) - 1:
-        key = parts[i]
-        value = parts[i + 1]
-
-        # Handle potential composite keys (non-even splits)
-        # Example: if filename has uneven underscores
-        if key in meta:  # duplicate key, skip
-            i += 1
-            continue
-
-        # Try to cast numeric values to int
-        try:
-            value = int(value)
-        except ValueError:
-            pass
-
-        meta[key] = value
-        i += 2
-
-    return meta
 
 
 def load_submission_files(folder: str = "miner_submission"):

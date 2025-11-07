@@ -55,7 +55,6 @@ from transformers.modeling_outputs import MoeCausalLMOutputWithPast
 
 from mycelia.shared.config import MinerConfig, ValidatorConfig
 from mycelia.shared.app_logging import structlog
-from mycelia.shared.modeling.modeling_deepseek import DeepseekAttention
 from mycelia.shared.helper import *
 
 logger = structlog.get_logger(__name__)
@@ -69,7 +68,6 @@ class TopkRouter(DeepseekV3TopkRouter):
 
         self.weight = nn.Parameter(torch.zeros((self.n_routed_experts, config.hidden_size)))
 
-    # @torch.no_grad()
     def _mask_routing_weights(self, x: torch.Tensor, dim: int = 1) -> torch.Tensor:
         """
         Zero-out routing weights for experts not present in this group.
@@ -85,7 +83,6 @@ class TopkRouter(DeepseekV3TopkRouter):
         # logger.info("masking", mask)
         return x * mask
 
-    # @torch.no_grad()
     def get_topk_indices(self, scores):
         scores_for_choice = scores.view(-1, self.n_routed_experts) + self.e_score_correction_bias.unsqueeze(0)
         group_scores = (
@@ -105,19 +102,6 @@ class TopkRouter(DeepseekV3TopkRouter):
         scores_for_choice = self._mask_routing_weights(scores_for_choice)
         topk_indices = torch.topk(scores_for_choice, k=self.top_k, dim=-1, sorted=False)[1]
         return topk_indices
-
-    # TODO: no customisation needed here, remove
-    def forward(self, hidden_states):
-        hidden_states = hidden_states.view(-1, self.config.hidden_size)
-        router_logits = F.linear(hidden_states.type(torch.float32), self.weight.type(torch.float32))
-        scores = router_logits.sigmoid()
-        topk_indices = self.get_topk_indices(scores)
-        topk_weights = scores.gather(1, topk_indices)
-        if self.norm_topk_prob:
-            denominator = topk_weights.sum(dim=-1, keepdim=True) + 1e-20
-            topk_weights /= denominator
-        topk_weights = topk_weights * self.routed_scaling_factor
-        return topk_indices, topk_weights
 
 
 class SparseMoeBlock(DeepseekV3MoE):
@@ -697,7 +681,7 @@ def get_moe_model_config(config: MinerConfig, topk: int, org_model_config: AutoC
     # merge our subnet config to the base config
     base_config.num_experts = int(config.moe.num_experts)
     base_config.n_routed_experts = int(config.moe.num_experts)
-    base_config.n_group = 1
+    base_config.n_group = config.moe.num_worker_groups
     base_config.topk_group = 1
     base_config.num_experts_per_tok = int(topk)
     base_config.interleave = bool(config.moe.interleave)

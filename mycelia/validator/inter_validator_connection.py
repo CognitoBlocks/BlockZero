@@ -71,7 +71,6 @@ def build_buff_from_params(params):
     total = sum(numels)
     flat_grad = torch.zeros(total, device="cpu")  # or cuda
 
-    logger.info("buld buff total", total)
     return {"params": params, "numels": numels, "offsets": offsets, "buff": flat_grad}
 
 
