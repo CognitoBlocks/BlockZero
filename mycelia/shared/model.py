@@ -18,27 +18,29 @@ from mycelia.shared import chain
 from mycelia.shared.checkpoint import (
     get_resume_info,
     load_checkpoint,
+    start_model_from
 )
 from mycelia.shared.helper import *
 
 logger = structlog.get_logger(__name__)
 
 
-def _default_model(rank: int, config: MinerConfig) -> nn.Module:
+def _default_model(rank: int, config: MinerConfig) -> Tuple[nn.Module, ExpertManager, dict]:
     resume = False
-    start_step = 0
+    miner_version = 0 
+    validator_version = 0
     latest_checkpoint_path = None
     if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
-        resume, start_step, latest_checkpoint_path = get_resume_info(rank, config)
+        resume, model_version, latest_checkpoint_path = start_model_from(rank, config)
 
     em = ExpertManager(
         model=get_base_model(config, noise=True),
         num_experts=config.moe.num_experts,
         num_worker_groups=config.moe.num_worker_groups,
     )
-    em.compute_group_assignments(seed=start_step if config.moe.rotate_expert else 0)
+    em.compute_group_assignments(seed = 0)
 
-    model = get_base_model(config, noise=start_step == 0, expert_group_assignment=em.expert_group_assignment).to(
+    model = get_base_model(config, noise = (miner_version if miner_version else 0 + validator_version if validator_version else 0) == 0, expert_group_assignment=em.expert_group_assignment).to(
         config.model.device
     )
 
@@ -54,7 +56,7 @@ def _default_model(rank: int, config: MinerConfig) -> nn.Module:
 
     model.gradient_checkpointing_enable()
 
-    return model, em
+    return model, em, model_version
 
 
 # TODO: fill function
@@ -74,7 +76,7 @@ def _fetch_validator_endpoint_from_chain(round_hint: Optional[str] = None) -> Op
 
 def load_base_model(
     rank: int, config: Optional[Config] = None, round_hint: Optional[str] = None
-) -> Tuple[nn.Module, ExpertManager]:
+) -> Tuple[nn.Module, ExpertManager, dict]:
     """
     Main entry point used by miners (and potentially validator itself).
     1) Ask the chain for an active validator endpoint.

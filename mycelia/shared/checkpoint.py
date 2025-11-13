@@ -15,8 +15,26 @@ from mycelia.shared.helper import parse_dynamic_filename
 
 logger = structlog.getLogger(__name__)
 
+def start_model_from(rank: int, config: MinerConfig) -> Tuple(bool, int | None, int | None, str | Path):
 
-def get_resume_info(rank: int, config: MinerConfig | ValidatorConfig) -> tuple[bool, int, str | None]:
+    validator_ckpt_found, validator_version, latest_validator_ckpt = get_resume_info(rank, config, config.miner.validator_checkpoint_path)
+    miner_ckpt_found, miner_version, latest_miner_ckpt = get_resume_info(rank, config, config.ckpt.checkpoint_path)
+
+    if miner_ckpt_found:
+        miner_ckpt_meta = parse_dynamic_filename(latest_miner_ckpt)
+    else:    
+        return validator_ckpt_found, {'gloablopt': validator_version, 'inneropt': 0}, latest_validator_ckpt
+    
+    if not validator_ckpt_found:
+        return miner_ckpt_found, {'gloablopt': miner_ckpt_meta['globalopt'], 'inneropt': miner_version}, latest_miner_ckpt/'model.pt'
+    
+    if miner_ckpt_meta['globalopt'] >= validator_version:
+        return miner_ckpt_found, {'gloablopt': miner_ckpt_meta['globalopt'], 'inneropt': miner_version}, latest_miner_ckpt/'model.pt'
+    else:
+        return validator_ckpt_found, {'gloablopt': miner_ckpt_meta['globalopt'], 'inneropt': 0}, latest_validator_ckpt
+
+
+def get_resume_info(rank: int, config: MinerConfig | ValidatorConfig, path : Path | None = None) -> tuple[bool, dict, str | None]:
     """
     Retrieves the resume information for a given rank and checkpoint configuration.
 
@@ -32,26 +50,28 @@ def get_resume_info(rank: int, config: MinerConfig | ValidatorConfig) -> tuple[b
     Check if we should resume from a checkpoint, if yes return the path to the checkpoint, otherwise return None
     """
     if config.ckpt.resume_from_ckpt is None:
-        return False, None
+        return False, {}, None
 
     elif isinstance(config.ckpt.resume_from_ckpt, bool):
         # Using fsspec to list directory contents
-        fs = GenericFileSystem()
         try:
-            fs, root = fsspec.core.url_to_fs(config.ckpt.checkpoint_path)  # root has no protocol
-            ckpt_files = fs.ls(root, detail=False)
-            ckpt_files = [f for f in ckpt_files if filter_ckpt_files(f)]
+            if path == None:
+                path = config.ckpt.checkpoint_path
+            
+            ckpt_files = get_sorted_checkpoints(path)
+            
         except FileNotFoundError:
             logger.info(f"rank {rank}: Checkpoint path {config.ckpt.checkpoint_path} not found, starting from scratch")
-            return False, 0, None
+            return False, {}, None
 
         if len(ckpt_files) == 0:
             logger.info(f"rank {rank}: No checkpoints found in {config.ckpt.checkpoint_path}, starting from scratch")
-            return False, 0, None
+            return False, {}, None
 
-        latest_ckpt = max(ckpt_files, key=lambda f: int(f.split("_")[-1]))
+        latest_ckpt = ckpt_files[0][0]
+        version = ckpt_files[0][1]
         logger.info(f"rank {rank}: Latest checkpoint found in {latest_ckpt}")
-        return True, int(latest_ckpt.split("_")[-1]), latest_ckpt
+        return True, version, latest_ckpt
 
 
 def save_checkpoint(
@@ -264,37 +284,28 @@ def load_checkpoint(
 
     return global_state_dict["loss"]
 
+def get_sorted_checkpoints(checkpoint_path: str):
+    fs, root = fsspec.core.url_to_fs(checkpoint_path)
 
-def extract_version_from_file_name(f: str) -> int | None:
-    """
-    Filters checkpoint files based on specific criteria.
+    ckpt_files = {}
+    for f in fs.ls(root, detail=False):
+        meta = parse_dynamic_filename(f)
+        if meta is None:
+            continue
 
-    Ignores file extensions (e.g. .pt, .pth, .tar.pt).
-    Returns True only if the filename (without extension)
-    ends with an underscore followed by an integer.
+        # ensure both fields exist and are numeric
+        meta["globalopt"] = int(meta.get("globalopt") or 0)
+        meta["inneropt"] = int(meta.get("inneropt") or 0)
+        ckpt_files[f] = meta
 
-    Args:
-        f (str): The filename to check.
+    # sort descending by globalopt, then inneropt
+    sorted_ckpt_files = sorted(
+        ckpt_files.items(),
+        key=lambda item: (-item[1]["globalopt"], -item[1]["inneropt"]),
+    )
 
-    Returns:
-        bool: True if the file meets the criteria, False otherwise.
-    """
-    # Remove any file extensions (handles cases like .pt, .pth, .tar.pt)
-    stem = Path(f).stem
+    return sorted_ckpt_files
 
-    # Some files may have multiple dots; keep stripping until only the base remains
-    while "." in stem:
-        stem = Path(stem).stem
-
-    # Split by underscore and check last token
-    parts = stem.split("_")
-    if not parts:
-        return None
-
-    try:
-        return int(parts[-1])
-    except ValueError:
-        return None
 
 
 def delete_old_checkpoints(checkpoint_path: str, topk: int) -> list[str]:
@@ -309,21 +320,10 @@ def delete_old_checkpoints(checkpoint_path: str, topk: int) -> list[str]:
         list[str]: A list of deleted checkpoint filenames.
     """
     fs = GenericFileSystem()
-    # Remove None values and sort by the trailing block number in filename
-    ckpt_files = {
-        f: v
-        for f, v in ((f, extract_version_from_file_name(f)) for f in fs.ls(checkpoint_path, detail=False))
-        if v is not None
-    }
-
-    # Sort by the integer after the last underscore
-    sorted_ckpt_files = sorted(
-        ckpt_files.items(),
-        key=lambda x: -x[1]
-    )
-    
+    sorted_ckpt_files = get_sorted_checkpoints(checkpoint_path)
+     
     ckpt_deleted = []
-    for ckpt_file in sorted_ckpt_files[:-topk]:
+    for ckpt_file, order in sorted_ckpt_files[:-topk]:
         fs.rm(ckpt_file, recursive=True)
         ckpt_deleted.append(ckpt_file)
     return ckpt_deleted

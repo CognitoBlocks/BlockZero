@@ -155,7 +155,8 @@ class MetricLogger:
                     new_row[col] = ""  # ensure consistent column order
 
             # Reorder new_row to match existing column order and append.
-            new_row = new_row[existing.columns]
+
+            new_row = new_row.reindex(columns=existing.columns)
             updated = pd.concat([existing, new_row], ignore_index=True)
             updated.to_csv(self.csv_path, index=False)
 

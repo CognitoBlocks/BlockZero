@@ -54,6 +54,7 @@ from transformers.utils.deprecation import deprecate_kwarg
 from transformers.modeling_outputs import MoeCausalLMOutputWithPast
 
 from mycelia.shared.config import MinerConfig, ValidatorConfig
+from mycelia.shared.expert_manager import get_layer_expert_id
 from mycelia.shared.app_logging import structlog
 from mycelia.shared.helper import *
 
@@ -693,23 +694,6 @@ def get_moe_model_config(config: MinerConfig, topk: int, org_model_config: AutoC
     base_config.max_position_embeddings = config.data.sequence_length
 
     return base_config
-
-
-def get_layer_expert_id(layer_name: str) -> Tuple[Optional[int], Optional[int]]:
-    """
-    Extract (layer_id, expert_id) from a parameter name.
-
-    Examples
-    --------
-    "model.layers.3.mlp.experts.7.w1.weight" -> (3, 7)
-    "model.layers.5.mlp.gate.weight"         -> (5, None)
-    """
-    m = re.search(r"model\.layers\.(\d+)(?:\.mlp\.experts\.(\d+))?", layer_name)
-    if not m:
-        return None, None
-    layer_id = int(m.group(1))
-    expert_id = int(m.group(2)) if m.group(2) is not None else None
-    return layer_id, expert_id
 
 
 def partial_moe(

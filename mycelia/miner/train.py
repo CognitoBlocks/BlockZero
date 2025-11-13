@@ -32,6 +32,7 @@ from mycelia.shared.checkpoint import (
     save_checkpoint,
     load_checkpoint,
     delete_old_checkpoints,
+    start_model_from
 )
 from mycelia.shared.expert_manager import (
     ExpertManager,
@@ -67,7 +68,7 @@ def init_process(local_rank: int, config: MinerConfig, world_size: int, fn: call
     if local_rank == 0:
         print(config)  # pretty JSON
 
-    torch.cuda.set_device(local_rank)
+    # torch.cuda.set_device(local_rank)
 
     dist.init_process_group(
         backend,
@@ -103,9 +104,10 @@ def setup_training(config, rank: int, device: torch.device, tokenizer: PreTraine
     torch.amp.GradScaler,  # inner_scaler
     torch.amp.GradScaler,  # outer_scaler
     torch.optim.lr_scheduler.LRScheduler,  # scheduler
-    int,  # start_step
+    # int,  # start_step
     "ExpertManager",  # em
     StatefulDataLoader,
+    dict, # current model version
 ]:
     """
     Build model(s), experts layout, optimizers, scheduler, scaler, and optionally resume from a checkpoint.
@@ -135,13 +137,12 @@ def setup_training(config, rank: int, device: torch.device, tokenizer: PreTraine
     """
     # === checkpoint info ===
     resume = False
-    start_step = 0
     latest_checkpoint_path = None
     if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
         resume, start_step, latest_checkpoint_path = get_resume_info(rank, config)
 
     # === model & Experts manager ===
-    model, em = load_base_model(rank, config)
+    model, em, model_version = load_base_model(rank, config)
     model = model.to(device)
     global_model = copy.deepcopy(model).cpu()
 
@@ -198,9 +199,9 @@ def setup_training(config, rank: int, device: torch.device, tokenizer: PreTraine
         inner_scaler,
         outer_scaler,
         scheduler,
-        start_step,
         em,
         train_dataloader,
+        model_version
     )
 
 
@@ -244,9 +245,10 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
         inner_scaler,
         outer_scaler,
         scheduler,
-        start_step,
+        # start_step,
         em,
         train_dataloader,
+        model_version
     ) = setup_training(config, rank, device, tokenizer)
 
     # === training ===
@@ -260,7 +262,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
     outer_optimizer.zero_grad()
     try:
         for step, batch in enumerate(
-            iterable=train_dataloader, start=start_step * config.local_par.gradient_accumulation_steps
+            iterable=train_dataloader, start=model_version['inneropt'] * config.local_par.gradient_accumulation_steps
         ):
             # for each step, we run 1 backward
             # for each inner_opt_step, we run local optimization; gradient_accumulation_steps = 1 real step
@@ -282,7 +284,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
 
             inner_opt_step = step // config.local_par.gradient_accumulation_steps
             is_inner_optimizer_step = step % config.local_par.gradient_accumulation_steps == 0
-            is_start_step = step == start_step * config.local_par.gradient_accumulation_steps
+            is_start_step = step == model_version['inneropt'] * config.local_par.gradient_accumulation_steps
 
             # === Training and inner optimization ===
             if (
@@ -396,7 +398,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 and inner_opt_step % config.ckpt.checkpoint_interval == 0
             ):
                 logp(f"saving checkpoint")
-                ckpt_path = os.path.join(config.ckpt.checkpoint_path, f"inner_opt_step_{int(inner_opt_step)}")
+                ckpt_path = os.path.join(config.ckpt.checkpoint_path, f"globalopt_{model_version['globalopt']}_inneropt_{inner_opt_step}")
 
                 save_checkpoint(
                     checkpoint_path=ckpt_path,
@@ -423,9 +425,8 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
 
             # === reload model ===
             if (
-                is_inner_optimizer_step
-                and config.moe.rotate_expert
-                and inner_opt_step % config.moe.expert_rotate_interval == 0
+                is_inner_optimizer_step and
+                start_model_from(rank, config)[1]['global_opt'] == model_version['globalopt']
             ):
                 dist.barrier(device_ids=[rank])  # make sure everything is saved and everyone is ready to load
                 logp("freeing cuda memory")
@@ -439,9 +440,10 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                     inner_scaler,
                     outer_scaler,
                     scheduler,
-                    start_step,
+                    # start_step,
                     em,
                     train_dataloader,
+                    model_version
                 ) = setup_training(config, rank, device, tokenizer)
 
             # === Clean up ===

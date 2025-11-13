@@ -17,15 +17,14 @@ Assumptions
 """
 
 from __future__ import annotations
-
+import re
 import random
-from typing import Dict, Iterable, List, Mapping, MutableMapping, Tuple
+from typing import Dict, Iterable, List, Mapping, MutableMapping, Tuple, Optional
 
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 
-from mycelia.shared.modeling.modeling_mycelia import get_layer_expert_id
 from mycelia.shared.app_logging import structlog
 
 logger = structlog.getLogger(__name__)
@@ -37,6 +36,22 @@ logger = structlog.getLogger(__name__)
 def is_expert_param(name: str) -> bool:
     """Heuristic to detect MoE expert parameters by name."""
     return "expert" in name  # customize if needed (e.g., "experts.")
+
+def get_layer_expert_id(layer_name: str) -> Tuple[Optional[int], Optional[int]]:
+    """
+    Extract (layer_id, expert_id) from a parameter name.
+
+    Examples
+    --------
+    "model.layers.3.mlp.experts.7.w1.weight" -> (3, 7)
+    "model.layers.5.mlp.gate.weight"         -> (5, None)
+    """
+    m = re.search(r"model\.layers\.(\d+)(?:\.mlp\.experts\.(\d+))?", layer_name)
+    if not m:
+        return None, None
+    layer_id = int(m.group(1))
+    expert_id = int(m.group(2)) if m.group(2) is not None else None
+    return layer_id, expert_id
 
 
 def split_into_groups(lst: List[int], num_groups: int, shuffle: bool = False, seed: int | None = 123) -> Dict[int, List[int]]:
@@ -189,7 +204,7 @@ class ExpertManager:
         self.expert_group_assignment = expert_groups
 
         for layer, groups in self.expert_group_assignment.items():
-            if layer == 0 or layer == max(self.expert_group_assignment):
+            if layer == min(self.expert_group_assignment) or layer == max(self.expert_group_assignment):
                 logger.info(f"seed {seed} Expert group assignment for layer {layer}: {groups}")
 
     # ---- loading ----

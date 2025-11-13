@@ -61,7 +61,7 @@ class ChainCfg(BaseModel):
 
 
 class CycleCfg(BaseModel):
-    validation_period: int = 30  # validators run a validation round everytime when sub.block % validation_period == 0
+    validation_period: int = 35  # validators run a validation round everytime when sub.block % validation_period == 0
     validation_offset: int = (
         15  # 3mins  # validation and model update happens from validation_period to validation_period + validation_offset
     )

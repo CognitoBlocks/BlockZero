@@ -32,12 +32,11 @@ def should_submit_model(
     subtensor: bittensor.Subtensor,
     last_submission_block: int,
 ) -> Tuple[bool, int]:
+    block = subtensor.block
     schedule = get_validation_schedule(config, subtensor)
-    phase_status = get_phase_status(schedule, subtensor.block)
-    should_submit = phase_status == "submission" and (
-        subtensor.block - last_submission_block > config.cycle.submission_rate_limit
-    )
-    block_till = schedule["submission_start_block"] - subtensor.block
+    phase_status = get_phase_status(schedule, block)
+    should_submit = phase_status == "submission" 
+    block_till = schedule["submission_start_block"] - block
     if block_till < 0 and should_submit == False:
         block_till += config.cycle.validation_period
     logger.info("should_submit_model", should_start=should_submit, block_till=block_till)
@@ -282,7 +281,6 @@ def get_phase_status(schedule: dict, block: int) -> str:
     validation = schedule["validation_end_block"]
     submission = schedule["submission_start_block"]
     end = schedule["interval_end_block"]
-
     if start <= block < validation:
         return "validating"
     elif validation <= block < submission:

@@ -6,7 +6,7 @@ import torch.nn as nn
 import hivemind
 from hivemind.averaging import DecentralizedAverager
 
-from mycelia.shared.modeling.modeling_mycelia import get_layer_expert_id
+from mycelia.shared.expert_manager import get_layer_expert_id
 from mycelia.shared.app_logging import structlog, configure_logging
 
 
