@@ -42,308 +42,18 @@ from transformers import (
     AutoModelForCausalLM,
     PretrainedConfig,
 )
-from transformers.models.deepseek_v3.modeling_deepseek_v3 import (
-    DeepseekV3MoE,
-    DeepseekV3MLP,
-    DeepseekV3DecoderLayer,
-    DeepseekV3ForCausalLM,
-    DeepseekV3TopkRouter,
-)
+
 from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
 from transformers.utils.deprecation import deprecate_kwarg
 from transformers.modeling_outputs import MoeCausalLMOutputWithPast
 
+from mycelia.shared.modeling.modeling_custom_deepseek import CustomDeekSeekMoE, get_moe_model_config
 from mycelia.shared.config import MinerConfig, ValidatorConfig
 from mycelia.shared.expert_manager import get_layer_expert_id
 from mycelia.shared.app_logging import structlog
 from mycelia.shared.helper import *
 
 logger = structlog.get_logger(__name__)
-
-
-class TopkRouter(DeepseekV3TopkRouter):
-    def __init__(self, config, available_experts=None):
-        super().__init__(config)
-        if available_experts is not None:
-            self.available_experts = torch.as_tensor(available_experts)
-
-        self.weight = nn.Parameter(torch.zeros((self.n_routed_experts, config.hidden_size)))
-
-    def _mask_routing_weights(self, x: torch.Tensor, dim: int = 1) -> torch.Tensor:
-        """
-        Zero-out routing weights for experts not present in this group.
-        """
-        mask_1d = torch.zeros(x.size(dim), dtype=torch.bool, device=x.device)
-        mask_1d[self.available_experts.to(x.device)] = True
-
-        # Broadcast mask across all other dims
-        shape = [1] * x.ndim
-        shape[dim] = x.size(dim)
-        mask = mask_1d.view(shape).to(dtype=x.dtype)
-
-        # logger.info("masking", mask)
-        return x * mask
-
-    def get_topk_indices(self, scores):
-        scores_for_choice = scores.view(-1, self.n_routed_experts) + self.e_score_correction_bias.unsqueeze(0)
-        group_scores = (
-            scores_for_choice.view(-1, self.n_group, self.n_routed_experts // self.n_group)
-            .topk(2, dim=-1)[0]
-            .sum(dim=-1)
-        )
-        group_idx = torch.topk(group_scores, k=self.topk_group, dim=-1, sorted=False)[1]
-        group_mask = torch.zeros_like(group_scores)
-        group_mask.scatter_(1, group_idx, 1)
-        score_mask = (
-            group_mask.unsqueeze(-1)
-            .expand(-1, self.n_group, self.n_routed_experts // self.n_group)
-            .reshape(-1, self.n_routed_experts)
-        )
-        scores_for_choice = scores_for_choice.masked_fill(~score_mask.bool(), 0.0)
-        scores_for_choice = self._mask_routing_weights(scores_for_choice)
-        topk_indices = torch.topk(scores_for_choice, k=self.top_k, dim=-1, sorted=False)[1]
-        return topk_indices
-
-
-class SparseMoeBlock(DeepseekV3MoE):
-    """
-    Sparse MoE block that only uses a subset of experts assigned to the current group.
-
-    Parameters
-    ----------
-    config : DeepseekV3Config-like
-        Must provide: hidden_size, num_experts, num_experts_per_tok, norm_topk_prob.
-    my_group_id : int
-        The group this rank belongs to.
-    expert_group_assignment : Dict[int, Dict[int, List[int]]]
-        Mapping: layer_id -> (group_id -> list of expert ids available to that group).
-    layer_id : int
-        The layer index used to pick the allowed experts.
-    """
-
-    def __init__(
-        self,
-        config,
-        layer_id: int,
-        num_experts: int | None = None,
-        my_group_id: int | None = None,
-        expert_group_assignment: Dict[int, Dict[int, List[int]]] | None = None,
-    ):
-        super().__init__(config)
-        self.num_experts: int = config.num_experts
-        self.top_k: int = config.num_experts_per_tok
-        self.norm_topk_prob: bool = getattr(config, "norm_topk_prob", True)
-        self.layer_id: int = layer_id
-        self.expert_group_assignment = expert_group_assignment
-
-        # Only instantiate experts owned by this group at this layer
-        if my_group_id is not None and expert_group_assignment is not None:
-            allowed = expert_group_assignment[layer_id][my_group_id]
-
-        elif num_experts is not None:
-            allowed = list(range(num_experts))
-
-        self.experts = nn.ModuleDict(
-            {str(k): DeepseekV3MLP(config, intermediate_size=config.moe_intermediate_size) for k in allowed}
-        )
-
-        self.shared_experts = DeepseekV3MLP(
-            config=config, intermediate_size=config.moe_intermediate_size * config.n_shared_experts
-        )
-
-        self.available_experts = torch.as_tensor([int(k) for k in self.experts.keys()])
-
-        self.gate = TopkRouter(config, self.available_experts)
-
-    # TODO: double check is there any customization here, may remove
-    def moe(self, hidden_states: torch.Tensor, topk_indices: torch.Tensor, topk_weights: torch.Tensor):
-        r"""
-        CALL FOR CONTRIBUTION! I don't have time to optimise this right now, but expert weights need to be fused
-        to not have to do a loop here (deepseek has 256 experts soooo yeah).
-        """
-        final_hidden_states = torch.zeros_like(hidden_states, dtype=topk_weights.dtype)
-        expert_mask = torch.nn.functional.one_hot(topk_indices, num_classes=self.num_experts)
-        expert_mask = expert_mask.permute(2, 0, 1)
-
-        for expert_idx in self.available_experts.tolist():
-            expert = self.experts[str(expert_idx)]
-            mask = expert_mask[expert_idx]
-            token_indices, weight_indices = torch.where(mask)
-
-            if token_indices.numel() > 0:
-                expert_weights = topk_weights[token_indices, weight_indices]
-                expert_input = hidden_states[token_indices]
-                expert_output = expert(expert_input)
-                weighted_output = expert_output * expert_weights.unsqueeze(-1)
-                final_hidden_states.index_add_(0, token_indices, weighted_output)
-
-        # in original deepseek, the output of the experts are gathered once we leave this module
-        # thus the moe module is itelsf an IsolatedParallel module
-        # and all expert are "local" meaning we shard but we don't gather
-
-        return final_hidden_states.type(hidden_states.dtype)
-
-
-class MyceliaMoE(DeepseekV3ForCausalLM):
-    """
-    DeepseekV3 variant that interleaves MoE and dense blocks and optionally restricts experts
-    to those owned by the calling group.
-
-    If `partial=True`, MoE blocks become `myceliaSparseMoeBlock` limited to the group’s experts.
-    Otherwise, standard `SparseMoeBlock` is used for MoE layers.
-    """
-
-    def __init__(
-        self,
-        config: MinerConfig,
-        model_config: PretrainedConfig,
-        my_group_id: Optional[int] = None,
-        expert_group_assignment: Optional[Dict[int, Dict[int, List[int]]]] = None,
-        partial: bool = False,
-    ):
-        super().__init__(model_config)
-        layers: List[nn.Module] = []
-
-        for i in range(model_config.num_hidden_layers):
-            layer = DeepseekV3DecoderLayer(model_config, layer_idx=i)
-
-            # layer.self_attn = DeepseekAttention(model_config)
-
-            # Interleave MoE and dense layers (MoE on odd indices if interleave=True)
-            if getattr(model_config, "interleave", True) and (i + 1) % model_config.decoder_sparse_step == 0:
-                if not partial:
-                    layer.mlp = SparseMoeBlock(
-                        model_config,
-                        i,
-                        num_experts=config.moe.num_experts,
-                        expert_group_assignment=expert_group_assignment,
-                    )  # full MoE (all experts)
-                else:
-                    assert (
-                        my_group_id is not None and expert_group_assignment is not None
-                    ), "partial=True requires my_group_id and expert_group_assignment"
-                    layer.mlp = SparseMoeBlock(
-                        model_config, i, my_group_id=my_group_id, expert_group_assignment=expert_group_assignment
-                    )
-
-            elif i == 0:
-                layer.mlp = DeepseekV3MLP(model_config, intermediate_size=10944)
-
-            else:
-                layer.mlp = DeepseekV3MLP(model_config)
-
-            layers.append(layer)
-
-        self.model.layers = nn.ModuleList(layers)
-
-    # def forward(
-    #     self,
-    #     input_ids: Optional[torch.LongTensor] = None,
-    #     attention_mask: Optional[torch.Tensor] = None,
-    #     position_ids: Optional[torch.LongTensor] = None,
-    #     past_key_values: Optional[Cache] = None,
-    #     inputs_embeds: Optional[torch.FloatTensor] = None,
-    #     labels: Optional[torch.LongTensor] = None,
-    #     use_cache: Optional[bool] = None,
-    #     output_attentions: Optional[bool] = None,
-    #     output_hidden_states: Optional[bool] = None,
-    #     output_router_logits: Optional[bool] = None,
-    #     return_dict: Optional[bool] = None,
-    #     cache_position: Optional[torch.LongTensor] = None,
-    #     logits_to_keep: Union[int, torch.Tensor] = 0,
-    #     **kwargs,
-    # ) -> Union[tuple, MoeCausalLMOutputWithPast]:
-    #     r"""
-    #     labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-    #         Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
-    #         config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
-    #         (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
-
-    #     Example:
-
-    #     ```python
-    #     >>> from transformers import AutoTokenizer, OlmoeForCausalLM
-
-    #     >>> model = OlmoeForCausalLM.from_pretrained("allenai/OLMoE-1B-7B-0924")
-    #     >>> tokenizer = AutoTokenizer.from_pretrained("allenai/OLMoE-1B-7B-0924")
-
-    #     >>> prompt = "Hey, are you conscious? Can you talk to me?"
-    #     >>> inputs = tokenizer(prompt, return_tensors="pt")
-
-    #     >>> # Generate
-    #     >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
-    #     >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-    #     'Hey, are you conscious? Can you talk to me?\nI’m not sure if you’re conscious of this, but I’m'
-    #     ```
-    #     """
-    #     output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-    #     output_router_logits = (
-    #         output_router_logits if output_router_logits is not None else self.config.output_router_logits
-    #     )
-
-    #     output_hidden_states = (
-    #         output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-    #     )
-    #     return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-    #     # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-    #     outputs = self.model(
-    #         input_ids=input_ids,
-    #         attention_mask=attention_mask,
-    #         position_ids=position_ids,
-    #         past_key_values=past_key_values,
-    #         inputs_embeds=inputs_embeds,
-    #         use_cache=use_cache,
-    #         output_attentions=output_attentions,
-    #         output_hidden_states=output_hidden_states,
-    #         output_router_logits=output_router_logits,
-    #         return_dict=return_dict,
-    #         cache_position=cache_position,
-    #     )
-
-    #     hidden_states = outputs[0]
-    #     # Only compute necessary logits, and do not upcast them to float if we are not computing the loss
-    #     slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-    #     logits = self.lm_head(hidden_states[:, slice_indices, :])
-
-    #     loss = None
-    #     if labels is not None:
-    #         loss = self.loss_function(logits, labels, self.vocab_size, **kwargs)
-
-    #     aux_loss = None
-    #     if output_router_logits:
-    #         aux_loss_sum = 0
-    #         aux_count = 0
-    #         for r in outputs.router_logits if return_dict else outputs[-1]:
-    #             aux_loss_sum += load_balancing_loss_func(
-    #                 tuple([r]),
-    #                 attention_mask=attention_mask,
-    #                 num_experts=self.num_experts,
-    #                 top_k=self.num_experts_per_tok,
-    #             )
-    #             aux_count += 1
-    #         aux_loss = (aux_loss_sum / aux_count) - self.num_experts_per_tok
-
-    #         if labels is not None:
-    #             loss += self.router_aux_loss_coef * aux_loss.to(
-    #                 loss.device
-    #             )  # make sure to reside in the same device
-
-    #     if not return_dict:
-    #         output = (logits,) + outputs[1:]
-    #         if output_router_logits:
-    #             output = (aux_loss,) + output
-    #         return (loss,) + output if loss is not None else output
-
-    #     return MoeCausalLMOutputWithPast(
-    #         loss=loss,
-    #         aux_loss=aux_loss,
-    #         logits=logits,
-    #         past_key_values=outputs.past_key_values,
-    #         hidden_states=outputs.hidden_states,
-    #         attentions=outputs.attentions,
-    #         router_logits=outputs.router_logits if output_router_logits else None,
-    #     )
 
 
 # ---------------------------------------------------------------------
@@ -372,33 +82,12 @@ def get_base_model(
         moe_config = get_moe_model_config(
             config, config.moe.full_topk if full else config.moe.partial_topk, org_model_config=model_config
         )
-        model = MyceliaMoE(config, moe_config, expert_group_assignment=expert_group_assignment)
-
-    elif "llama" in config.model.model_path.lower():
-        llama_cfg = LlamaConfig.from_pretrained(
-            config.model.model_path, attn_implementation=config.model.attn_implementation
-        )
-        model = LlamaForCausalLM.from_pretrained(config.model.model_path, config=llama_cfg)
-
-    elif "olmo" in config.model.model_path:
-        model = OlmoForCausalLM.from_pretrained(config.model.model_path)
+        model = CustomDeekSeekMoE(config, moe_config, expert_group_assignment=expert_group_assignment)
 
     else:
         model = AutoModelForCausalLM.from_pretrained(
             config.model.model_path, trust_remote_code=True
         )  # TODO: need miner agreement to trust remote code
-
-    # if model is not None and get_nested_attr(config,"moe.dense_to_moe", False):
-    #     noise = get_nested_attr(config,"moe.noise", False) and noise
-    #     # logger.info(f"extract_model_from_shared_expert", noise = noise)
-    #     model = extract_model_from_shared_expert(
-    #         config,
-    #         model,
-    #         topk=config.moe.full_topk if full else config.moe.partial_topk,
-    #         noise=noise,
-    #         noise_std=get_nested_attr(config,"moe.noise_std", 0.02),
-    #         expert_group_assignment=expert_group_assignment,
-    #     )
 
     if model is not None and get_nested_attr(config, "model.torch_compile", False):
         model = torch.compile(model)
@@ -447,7 +136,7 @@ def noise_injection(weight: torch.Tensor, noise_ratio: float = 0.5, init_std: fl
     return weight
 
 
-def extract_model_from_shared_expert(
+def derive_model_from_shared_expert(
     config: MinerConfig,
     model: nn.Module,
     topk: int,
@@ -539,7 +228,7 @@ def extract_model_from_shared_expert(
             new_sd[k.replace(f"experts.{expert_id}.", "")] = state_dict[src_key].clone()
 
     # Start from a base OLMoE config, then copy overlapping fields from the dense config
-    model = MyceliaMoE(config, moe_config, expert_group_assignment=expert_group_assignment)
+    model = CustomDeekSeekMoE(config, moe_config, expert_group_assignment=expert_group_assignment)
 
     # TODO: strict should be true
     _missing, _unexpected = model.load_state_dict(new_sd, strict=False)  # will raise if mismatch
@@ -553,7 +242,7 @@ def dense_model_to_moe(
     noise: bool = False,
     noise_std: Optional[float] = None,
     expert_group_assignment: Dict[int, list] | None = None,
-) -> MyceliaMoE:
+) -> CustomDeekSeekMoE:
     """
     Convert a dense transformer model to an OLMoE-structured model by:
       * Injecting a router gate and expanding MLP weights into expert shards.
@@ -662,46 +351,18 @@ def dense_model_to_moe(
     # Start from a base OLMoE config, then copy overlapping fields from the dense config
     moe_config = get_moe_model_config(config, topk, org_model_config=dense_model.config)
 
-    model = MyceliaMoE(config, moe_config, expert_group_assignment=expert_group_assignment)
+    model = CustomDeekSeekMoE(config, moe_config, expert_group_assignment=expert_group_assignment)
 
     _missing, _unexpected = model.load_state_dict(moe_sd, strict=True)  # will raise if mismatch
     return model
 
 
-def get_moe_model_config(config: MinerConfig, topk: int, org_model_config: AutoConfig = None) -> PretrainedConfig:
-
-    # get the base config from qwen model
-    base_config = AutoConfig.from_pretrained("deepseek-ai/DeepSeek-V3")  # TODO: need user permission
-    # base_config = AutoConfig.from_pretrained(config.model.model_path, trust_remote_code=True) #TODO: need user permission
-
-    # merge the existing model config into the base config
-    if org_model_config is not None:
-        for k, v in org_model_config.to_dict().items():
-            setattr(base_config, k, v)
-
-    # merge our subnet config to the base config
-    base_config.num_experts = int(config.moe.num_experts)
-    base_config.n_routed_experts = int(config.moe.num_experts)
-    base_config.n_group = config.moe.num_worker_groups
-    base_config.topk_group = 1
-    base_config.num_experts_per_tok = int(topk)
-    base_config.interleave = bool(config.moe.interleave)
-    base_config.intermediate_size = base_config.moe_intermediate_size
-    base_config.decoder_sparse_step = 2 if bool(config.moe.interleave) else 1
-    base_config.output_router_logits = get_nested_attr(config, "moe.aux_load_balance", False)
-    base_config.router_aux_loss_coef = get_nested_attr(config, "moe.router_aux_loss_coef", False)
-    base_config.norm_topk_prob = True
-    base_config.max_position_embeddings = config.data.sequence_length
-
-    return base_config
-
-
 def partial_moe(
     config: MinerConfig,
-    moe_model: MyceliaMoE,
+    moe_model: CustomDeekSeekMoE,
     my_group_id: int,
     expert_group_assignment: Dict[int, Dict[int, List[int]]],
-) -> MyceliaMoE:
+) -> CustomDeekSeekMoE:
     """
     Build a partial MoE that retains only experts for `my_group_id`.
 
@@ -730,7 +391,7 @@ def partial_moe(
     topk = getattr(moe_model.config, "num_experts_per_tok", 2)
     moe_config = get_moe_model_config(config, topk, moe_model.config)
 
-    partial = MyceliaMoE(
+    partial = CustomDeekSeekMoE(
         config, moe_config, my_group_id=my_group_id, expert_group_assignment=expert_group_assignment, partial=True
     )
 
