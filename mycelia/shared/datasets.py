@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 from functools import partial
-from typing import Dict, Iterator, Optional
+from typing import Dict, Iterator, Optional, Callable
 
 from datasets import load_dataset
 from datasets.distributed import split_dataset_by_node
@@ -10,37 +10,6 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers import DataCollatorForLanguageModeling, PreTrainedTokenizerBase
 
 logger = logging.getLogger("diloco.data")
-
-
-def tokenize_function(
-    example: Dict[str, str], tokenizer: PreTrainedTokenizerBase, sequence_length: int
-) -> Dict[str, list]:
-    """
-    Tokenize a single text example for causal LM.
-
-    Parameters
-    ----------
-    example : Dict[str, str]
-        A dataset row containing a "text" field.
-    tokenizer : PreTrainedTokenizerBase
-        HF tokenizer (must be configured with pad_token if padding is used).
-    sequence_length : int
-        Max sequence length to truncate/pad to.
-
-    Returns
-    -------
-    Dict[str, list]
-        Tokenized outputs compatible with DataCollatorForLanguageModeling
-        (e.g., "input_ids", "attention_mask").
-    """
-    text = example.get("text", "")
-    return tokenizer(
-        text,
-        truncation=True,
-        max_length=sequence_length,
-        padding="max_length",
-    )
-
 
 class HFStreamingTorchDataset(TorchIterableDataset):
     """
@@ -51,7 +20,7 @@ class HFStreamingTorchDataset(TorchIterableDataset):
     avoid relying on `IterableDataset.map(...)` behaviors.
     """
 
-    def __init__(self, hf_iterable, tokenizer: PreTrainedTokenizerBase, seq_length: int):
+    def __init__(self, hf_iterable, tokenizer: PreTrainedTokenizerBase, seq_length: int, format_fn: Callable | None = None):
         """
         Parameters
         ----------
@@ -65,10 +34,15 @@ class HFStreamingTorchDataset(TorchIterableDataset):
         self.hf_iterable = hf_iterable
         self.tokenizer = tokenizer
         self.seq_length = seq_length
+        self.format_fn = format_fn
 
     def __iter__(self):
-        return (tokenize_function(example, self.tokenizer, self.seq_length) for example in self.hf_iterable)
-
+        if self.format_fn is None:
+            print('self.format_fn is none')
+            return (tokenize_function(example, self.tokenizer, self.seq_length) for example in self.hf_iterable)
+        else:
+            format_fn_partial = partial(self.format_fn, tokenizer = self.tokenizer, sequence_length = self.seq_length)
+            return iter(self.hf_iterable.map(format_fn_partial, remove_columns=self.hf_iterable.column_names))
 
 def get_dataloader(
     config,
@@ -76,6 +50,7 @@ def get_dataloader(
     rank: Optional[int] = None,
     world_size: Optional[int] = None,
     train: bool = True,
+    format_fn: Callable | None = None,
 ) -> StatefulDataLoader:
     """
     Build a `StatefulDataLoader` over a streaming HF dataset, tokenized on the fly.
@@ -136,6 +111,7 @@ def get_dataloader(
         hf_iterable=split,
         tokenizer=tokenizer,
         seq_length=config.data.sequence_length,
+        format_fn=format_fn
     )
 
     # Collator for causal LM (no MLM)
@@ -149,3 +125,69 @@ def get_dataloader(
         num_workers=4,  # tune based on CPU/disk throughput
     )
     return loader
+
+# ---------------------------
+# Tokeniser format helper
+# ---------------------------
+def tokenize_function(
+    example: Dict[str, str], tokenizer: PreTrainedTokenizerBase, sequence_length: int
+) -> Dict[str, list]:
+    """
+    Tokenize a single text example for causal LM.
+
+    Parameters
+    ----------
+    example : Dict[str, str]
+        A dataset row containing a "text" field.
+    tokenizer : PreTrainedTokenizerBase
+        HF tokenizer (must be configured with pad_token if padding is used).
+    sequence_length : int
+        Max sequence length to truncate/pad to.
+
+    Returns
+    -------
+    Dict[str, list]
+        Tokenized outputs compatible with DataCollatorForLanguageModeling
+        (e.g., "input_ids", "attention_mask").
+    """
+    text = example.get("text", "")
+    return tokenizer(
+        text,
+        truncation=True,
+        max_length=sequence_length,
+        padding="max_length",
+    )
+
+
+def build_messages_generic_r1(example, q_key="question", a_key="answer"):
+    return example['messages']
+    # return [
+    #     {"role": "user", "content": example[q_key]},
+    #     {"role": "assistant", "content": example[a_key]},
+    # ]
+
+def format_example_r1(example, tokenizer: PreTrainedTokenizerBase, sequence_length: int):
+    # 1) Convert dataset row -> messages
+    messages = build_messages_generic_r1(example)
+
+    # 2) Use Qwen’s chat template to build a single training string
+    text = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,  
+    )
+
+    # 3) Tokenize
+    toks = tokenizer(
+        text,
+        truncation=True,
+        max_length=sequence_length,
+        padding = "max_length",
+        add_special_tokens=False,
+        return_tensors="pt"
+    )
+
+    return {
+        "input_ids": toks["input_ids"],
+        "attention_mask": toks["attention_mask"],
+    }

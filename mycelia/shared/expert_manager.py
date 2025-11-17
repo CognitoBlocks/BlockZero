@@ -89,6 +89,7 @@ def split_into_groups(lst: List[int], num_groups: int, shuffle: bool = False, se
 
     else:
         return { i: lst[i * (len(lst)//num_groups) : (i + 1) * (len(lst)//num_groups)] for i in range(num_groups) }
+   
     
 def create_expert_groups(
     my_rank: int, rank_group_assignment: Mapping[int, Iterable[int]]
