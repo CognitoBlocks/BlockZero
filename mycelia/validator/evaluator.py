@@ -24,7 +24,7 @@ from typing import Dict, List, Optional, Tuple
 from mycelia.miner.client import download_model
 from mycelia.shared.evaluate import evaluate_model
 from mycelia.shared.app_logging import structlog, configure_logging
-from mycelia.shared.datasets import get_dataloader, HFStreamingTorchDataset
+from mycelia.shared.dataloader import get_dataloader, HFStreamingTorchDataset
 
 logger = structlog.get_logger(__name__)
 

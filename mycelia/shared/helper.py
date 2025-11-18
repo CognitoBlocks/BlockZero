@@ -1,4 +1,14 @@
 from pathlib import Path
+import importlib
+from typing import Type
+
+def import_from_string(path: str) -> Type:
+    """
+    Import a class from a string like 'package.module:ClassName'.
+    """
+    module_path, class_name = path.split(":")
+    module = importlib.import_module(module_path)
+    return getattr(module, class_name)
 
 def get_nested_attr(obj, attr_chain, default=None):
     for attr in attr_chain.split("."):

@@ -23,7 +23,7 @@ from mycelia.shared.config import MinerConfig, ValidatorConfig
 from mycelia.shared.metrics import MetricLogger
 from mycelia.shared.model import get_base_model, partial_moe
 from mycelia.shared.modeling.modeling_mycelia import get_base_tokenizer
-from mycelia.shared.datasets import get_dataloader
+from mycelia.shared.dataloader import get_dataloader
 from mycelia.shared.checkpoint import (
     get_resume_info,
     save_checkpoint,

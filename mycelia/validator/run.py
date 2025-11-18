@@ -33,7 +33,7 @@ from mycelia.shared.app_logging import structlog, configure_logging
 from mycelia.shared.metrics import MetricLogger
 from mycelia.shared.model import load_base_model
 from mycelia.shared.modeling.modeling_mycelia import get_base_tokenizer, partial_moe
-from mycelia.shared.datasets import get_dataloader, HFStreamingTorchDataset
+from mycelia.shared.dataloader import get_dataloader, HFStreamingTorchDataset
 from mycelia.miner.train_helper import free_cuda_models, get_status
 from mycelia.shared.evaluate import evaluate_model
 from mycelia.shared.checkpoint import (

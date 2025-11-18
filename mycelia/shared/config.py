@@ -8,7 +8,7 @@ import re
 from enum import Enum
 from pathlib import Path
 from typing import Dict, List, Literal, Optional
-
+import yaml
 import fsspec
 import torch
 from pydantic import BaseModel, Field, NonNegativeInt, PositiveInt, field_validator, model_validator
@@ -27,22 +27,6 @@ def find_project_root() -> Path:
         if (p / ".git").exists() or (p / "pyproject.toml").exists() or (p / "requirements.txt").exists():
             return p
     return start.parents[1]  # fallback: up one level from mycelia/
-
-
-# ---------------------------
-# Enums
-# ---------------------------
-class Precision(str, Enum):
-    fp32 = "fp32"
-    bf16 = "bf16"
-    fp16_mixed = "fp16-mixed"
-
-
-class AttnImpl(str, Enum):
-    sdpa = "sdpa"
-    flash = "flash"
-    eager = "eager"
-
 
 # ---------------------------
 # Sections
@@ -82,10 +66,14 @@ class ModelCfg(BaseModel):
     )
     foundation: bool = True
     torch_compile: bool = True
-    attn_implementation: AttnImpl = AttnImpl.sdpa
-    precision: Precision = Precision.fp16_mixed
+    attn_implementation: str = 'sdpa'
+    precision: str = "fp16-mixed"
     device: str = "cuda"
 
+class TaskCfg(BaseModel):
+    expert_group_name: str = "exp_math"
+    base_path: Path = Path("tasks")
+    path: Path | None = None
 
 class DataCfg(BaseModel):
     dataset_name: str = "allenai/c4"
@@ -95,8 +83,7 @@ class DataCfg(BaseModel):
     per_device_train_batch_size: PositiveInt = 5
     world_size: int = 10  # TODO
     rank: int = 1  # TODO
-
-
+    dataset_class: str | None = None 
 class MoECfg(BaseModel):
     my_expert_group_id: int = 1
     dense_to_moe: bool = True
@@ -134,7 +121,6 @@ class ParallelismCfg(BaseModel):  # parallelism for local training
             return int(torch.cuda.device_count())
         except Exception:
             return 0
-
 
 class ScheduleCfg(BaseModel):
     warmup_steps: PositiveInt = 600
@@ -175,7 +161,6 @@ class MinerCfg(BaseModel):
     eval_interval: int = 100  # blocks
     validator_checkpoint_path: Path = Path("checkpoints/miner/validator_checkpoint")
 
-
 # ---------------------------
 # Top-level config
 # ---------------------------
@@ -194,6 +179,7 @@ class BaseConfig(BaseModel):
     data: DataCfg = DataCfg()
     opt: OptimizerCfg = OptimizerCfg()
     cycle: CycleCfg = CycleCfg()
+    task: TaskCfg = TaskCfg()
 
     # -----------------------
     # Derivations & hygiene
@@ -258,6 +244,8 @@ class BaseConfig(BaseModel):
                 config_path = os.path.join(self.ckpt.checkpoint_path, "config.json")
 
         # === create checkpoint directory ===
+        os.makedirs(self.task.base_path, exist_ok=True)
+        os.makedirs(self.task.path, exist_ok=True)
         os.makedirs(self.ckpt.base_checkpoint_path, exist_ok=True)
         os.makedirs(self.ckpt.checkpoint_path, exist_ok=True)
         os.makedirs(self.log.base_metric_path, exist_ok=True)
@@ -280,7 +268,7 @@ class BaseConfig(BaseModel):
             Instantiated MinerConfig object.
         """
         with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+            data = yaml.safe_load(f)
         return cls(**data)
 
     def _refresh_paths(self) -> None:
@@ -292,6 +280,9 @@ class BaseConfig(BaseModel):
         self.log.base_metric_path = self.run.root_path / self.log.base_metric_path
         self.log.metric_path = self.log.base_metric_path / f"{self.run.run_name}.csv"
 
+        self.task.base_path = self.run.root_path / self.task.base_path
+        self.task.path = self.task.base_path / self.task.expert_group_name
+        
         if hasattr(self, "vali"):
             self.vali.miner_submission_path = self.run.root_path / self.vali.miner_submission_path
 
@@ -403,12 +394,36 @@ class BaseConfig(BaseModel):
 
         Creates the directory if it does not exist.
         """
+        data = self.model_dump()
+        data = conver_path_to_str(data)
+
         os.makedirs(self.ckpt.checkpoint_path, exist_ok=True)
-        target = os.path.join(self.ckpt.checkpoint_path, "config.json")
+        target = os.path.join(self.ckpt.checkpoint_path, "config.yaml")
+
         with fsspec.open(target, "w", encoding="utf-8") as f:
-            f.write(self.to_json())
+            yaml.dump(config, f, sort_keys=False)
+
         logger.info(f"Wrote config to {target}")
 
+def conver_path_to_str(obj):
+    """
+    Recursively convert Path/PosixPath objects to strings
+    inside any dict, list, or tuple.
+    """
+
+    if isinstance(obj, dict):
+        return {k: conver_path_to_str(v) for k, v in obj.items()}
+
+    if isinstance(obj, list):
+        return [conver_path_to_str(i) for i in obj]
+
+    if isinstance(obj, tuple):
+        return tuple(conver_path_to_str(i) for i in obj)
+
+    if not isinstance(obj, int):
+        return str(obj)
+    
+    return obj   
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train mycelia with config")
