@@ -62,8 +62,8 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
     ):
         # Load streaming dataset. `disable_tqdm=True` silences progress bars.
         ds = load_dataset(
-            config.data.dataset_name,
-            data_dir=config.data.data_dir,
+            config.task.data.dataset_name,
+            data_dir=config.task.data.data_dir,
             streaming=True,
         )
 
@@ -71,7 +71,7 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
         split_name = "train" if train else "validation"
         if split_name not in ds:
             raise ValueError(
-                f"Dataset split '{split_name}' not found for {config.data.dataset_name}:{config.data.data_dir}"
+                f"Dataset split '{split_name}' not found for {config.task.data.dataset_name}:{config.task.data.data_dir}"
             )
 
         split = ds[split_name]
@@ -88,7 +88,7 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
         tokenized_stream = cls(
             hf_iterable=split,
             tokenizer=tokenizer,
-            seq_length=config.data.sequence_length,
+            seq_length=config.task.data.sequence_length,
         )
 
         return tokenized_stream
@@ -132,10 +132,10 @@ def get_dataloader(
         A stateful dataloader for the requested split, or None if the eval split is missing.
     """
     # Prefer provided rank/world_size, else fall back to config (if present), else no sharding.
-    world_size = world_size if world_size is not None else config.data.world_size
-    rank = rank if rank is not None else config.data.rank
+    world_size = world_size if world_size is not None else config.task.data.world_size
+    rank = rank if rank is not None else config.task.data.rank
 
-    dataset_class_path = getattr(config.data, "dataset_class", None)
+    dataset_class_path = getattr(config.task.data, "dataset_class", None)
     if dataset_class_path is None:
         DatasetCls = DefaultStreamingTorchDataset
     else:
@@ -157,7 +157,7 @@ def get_dataloader(
     loader = StatefulDataLoader(
         tokenised_dataset,  # split
         collate_fn=data_collator,
-        batch_size=config.data.per_device_train_batch_size,
+        batch_size=config.task.data.per_device_train_batch_size,
         num_workers=4,  # tune based on CPU/disk throughput
     )
     return loader

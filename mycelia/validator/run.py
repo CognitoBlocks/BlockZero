@@ -132,7 +132,7 @@ def setup_training(config, rank: int, device: torch.device, tokenizer: PreTraine
 
     # === dataloader ===
     logger.info(f"rank {rank} setup training - load dataloader")
-    train_dataloader = get_dataloader(config, rank=rank, world_size=config.data.world_size, tokenizer=tokenizer)
+    train_dataloader = get_dataloader(config, rank=rank, world_size=config.task.data.world_size, tokenizer=tokenizer)
 
     # === load checkpoint (if any) ===
     logger.info(f"rank {rank} setup training - load past checkpoint")

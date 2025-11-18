@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, NonNegativeInt, PositiveInt, field_valida
 import bittensor
 
 from mycelia.shared.app_logging import structlog, configure_logging
+from mycelia.shared.helper import deep_update, convert_to_str
 
 configure_logging()
 logger = structlog.get_logger(__name__)
@@ -28,10 +29,41 @@ def find_project_root() -> Path:
             return p
     return start.parents[1]  # fallback: up one level from mycelia/
 
+class BaseConfig(BaseModel):
+    def __str__(self) -> str:
+        """Pretty JSON representation of the config."""
+        # return json.dumps(self.dict(), indent=4)
+        return self.to_json()
+    
+    def to_dict(self) -> dict:
+        return self.model_dump(mode="python")
+
+    def to_json(self, **kwargs) -> str:
+        return self.model_dump_json(**kwargs, indent=4)
+
+    @classmethod
+    def from_path(cls, path: str | Path) -> "Config":
+        """
+        Load a MinerConfig from a JSON file.
+
+        Parameters
+        ----------
+        path : str
+            Path to the JSON config file.
+
+        Returns
+        -------
+        MinerConfig
+            Instantiated MinerConfig object.
+        """
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+        return cls(**data)
+
 # ---------------------------
 # Sections
 # ---------------------------
-class ChainCfg(BaseModel):
+class ChainCfg(BaseConfig):
     netuid: int = 348
     uid: int = 1
     hotkey_ss58: str = ""
@@ -44,7 +76,7 @@ class ChainCfg(BaseModel):
     network: str = "test"
 
 
-class CycleCfg(BaseModel):
+class CycleCfg(BaseConfig):
     validation_period: int = 35  # validators run a validation round everytime when sub.block % validation_period == 0
     validation_offset: int = (
         15  # 3mins  # validation and model update happens from validation_period to validation_period + validation_offset
@@ -55,12 +87,12 @@ class CycleCfg(BaseModel):
     submission_rate_limit: int = 15
 
 
-class RunCfg(BaseModel):
+class RunCfg(BaseConfig):
     run_name: str = "foundation"
     root_path: Path = find_project_root()
 
 
-class ModelCfg(BaseModel):
+class ModelCfg(BaseConfig):
     model_path: str = (
         "deepseek-ai/deepseek-moe-16b-base"  # although we are calling a large model here, but we would only be training a partial of it for each miner
     )
@@ -70,21 +102,16 @@ class ModelCfg(BaseModel):
     precision: str = "fp16-mixed"
     device: str = "cuda"
 
-class TaskCfg(BaseModel):
-    expert_group_name: str = "exp_math"
-    base_path: Path = Path("tasks")
-    path: Path | None = None
-
-class DataCfg(BaseModel):
+class DataCfg(BaseConfig):
     dataset_name: str = "allenai/c4"
-    data_dir: str = "en"
+    data_dir: str | None = "en"
     batch_size: PositiveInt = 512
     sequence_length: PositiveInt = 1024
     per_device_train_batch_size: PositiveInt = 5
     world_size: int = 10  # TODO
     rank: int = 1  # TODO
     dataset_class: str | None = None 
-class MoECfg(BaseModel):
+class MoECfg(BaseConfig):
     my_expert_group_id: int = 1
     dense_to_moe: bool = True
     interleave: bool = True
@@ -102,13 +129,13 @@ class MoECfg(BaseModel):
     expert_rotate_interval: Optional[PositiveInt] = None
 
 
-class OptimizerCfg(BaseModel):
+class OptimizerCfg(BaseConfig):
     lr: float = 2e-5
     outer_lr: float = 0.7
     outer_momentum: float = 0.9
 
 
-class ParallelismCfg(BaseModel):  # parallelism for local training
+class ParallelismCfg(BaseConfig):  # parallelism for local training
     gradient_accumulation_steps: PositiveInt = 100
     global_opt_interval: PositiveInt = 100
     world_size: PositiveInt = 2
@@ -122,13 +149,13 @@ class ParallelismCfg(BaseModel):  # parallelism for local training
         except Exception:
             return 0
 
-class ScheduleCfg(BaseModel):
+class ScheduleCfg(BaseConfig):
     warmup_steps: PositiveInt = 600
     total_steps: PositiveInt = 88_000
     # Derived defaults for intervals set in Checkpoint/Logging via global_opt_interval
 
 
-class CheckpointCfg(BaseModel):
+class CheckpointCfg(BaseConfig):
     resume_from_ckpt: bool = True
     base_checkpoint_path: Path = Path("checkpoints/miner")
     checkpoint_path: Optional[Path] = None
@@ -137,7 +164,7 @@ class CheckpointCfg(BaseModel):
     checkpoint_topk: PositiveInt = 5
 
 
-class LoggingCfg(BaseModel):
+class LoggingCfg(BaseConfig):
     log_wandb: bool = False
     wandb_project_name: str = "test-moe"
     wandb_resume: bool = False
@@ -151,24 +178,27 @@ class LoggingCfg(BaseModel):
 class ValidatorCheckpointCfg(CheckpointCfg):
     base_checkpoint_path: Path = Path("checkpoints/validator")
 
-
-class ValidatorCfg(BaseModel):
+class ValidatorCfg(BaseConfig):
     eval_interval: int = 100  # blocks
     miner_submission_path: Path = Path("checkpoints/validator/miner_submission")
 
-
-class MinerCfg(BaseModel):
+class MinerCfg(BaseConfig):
     eval_interval: int = 100  # blocks
     validator_checkpoint_path: Path = Path("checkpoints/miner/validator_checkpoint")
+
+class TaskCfg(BaseConfig):
+    data: DataCfg = DataCfg()
+    expert_group_name: str = "exp_math"
+    base_path: Path = Path("tasks")
+    path: Path | None = None
 
 # ---------------------------
 # Top-level config
 # ---------------------------
-class BaseConfig(BaseModel):
+class Config(BaseConfig):
     """
     Centralized training/eval configuration for mycelia runs.
     """
-
     run: RunCfg = RunCfg()
     chain: ChainCfg = ChainCfg()
     model: ModelCfg = ModelCfg()
@@ -176,15 +206,12 @@ class BaseConfig(BaseModel):
     ckpt: CheckpointCfg = CheckpointCfg()
     sched: ScheduleCfg = ScheduleCfg()
     log: LoggingCfg = LoggingCfg()
-    data: DataCfg = DataCfg()
     opt: OptimizerCfg = OptimizerCfg()
     cycle: CycleCfg = CycleCfg()
     task: TaskCfg = TaskCfg()
-
     # -----------------------
     # Derivations & hygiene
     # -----------------------
-
     @model_validator(mode="after")
     def _derive_all(self):
 
@@ -206,29 +233,21 @@ class BaseConfig(BaseModel):
 
         return self
 
-    # ---- String / JSON helpers ----
-    def __str__(self) -> str:
-        """Pretty JSON representation of the config."""
-        # return json.dumps(self.dict(), indent=4)
-        return self.to_json()
-
-    def to_dict(self) -> dict:
-        return self.model_dump(mode="python")
-
-    def to_json(self, **kwargs) -> str:
-        return self.model_dump_json(**kwargs, indent=4)
-
-    # ---- Lifecycle hooks ----
     def __init__(self, **data):
         """
         Initialize, validate derived fields, and auto-bump `run_name` if an on-disk
         config exists and differs.
         """
-        super().__init__(**data)
+        super().__init__(**data)        
+        # check wallet data
         self._fill_wallet_data()
+        
         # Recompute dependent fields that rely on CUDA availability or run_name.
         self._refresh_paths()
 
+        # get task specific config
+        self.update_by_task()
+        
         # If an existing config exists, bump run_name when the configs don't match.
         config_path = os.path.join(self.ckpt.checkpoint_path, "config.json")
         while os.path.exists(config_path):
@@ -252,24 +271,6 @@ class BaseConfig(BaseModel):
         if hasattr(self, "miner"):
             os.makedirs(self.miner.validator_checkpoint_path, exist_ok=True)
 
-    @classmethod
-    def from_path(cls, path: str) -> "Config":
-        """
-        Load a MinerConfig from a JSON file.
-
-        Parameters
-        ----------
-        path : str
-            Path to the JSON config file.
-
-        Returns
-        -------
-        MinerConfig
-            Instantiated MinerConfig object.
-        """
-        with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
-        return cls(**data)
 
     def _refresh_paths(self) -> None:
         self.ckpt.base_checkpoint_path = self.run.root_path / self.ckpt.base_checkpoint_path
@@ -362,6 +363,7 @@ class BaseConfig(BaseModel):
             return False
         return True
 
+
     # ---- Comparison & versioning ----
     def same_as(self, other: Dict) -> bool:
         """
@@ -387,6 +389,19 @@ class BaseConfig(BaseModel):
         logger.info(f"Bumped run_name to {self.run.run_name} due to config differences.")
         return True
 
+    # ---- Get config based on task ----
+    def update_by_task(self, expert_group_name: str | None = None):
+        """
+        Start from BaseConfig defaults, then apply YAML overrides.
+        """
+        if expert_group_name:
+            self.task.expert_group_name = expert_group_name
+            self._refresh_paths() # base path may change
+
+        self.task = TaskCfg.from_path(self.task.path / "config.yaml") # type: ignore
+        self._refresh_paths() # base path may change
+        print(self.task)
+    
     # ---- Persistence ----
     def write(self) -> None:
         """
@@ -395,7 +410,7 @@ class BaseConfig(BaseModel):
         Creates the directory if it does not exist.
         """
         data = self.model_dump()
-        data = conver_path_to_str(data)
+        data = convert_to_str(data)
 
         os.makedirs(self.ckpt.checkpoint_path, exist_ok=True)
         target = os.path.join(self.ckpt.checkpoint_path, "config.yaml")
@@ -405,25 +420,14 @@ class BaseConfig(BaseModel):
 
         logger.info(f"Wrote config to {target}")
 
-def conver_path_to_str(obj):
-    """
-    Recursively convert Path/PosixPath objects to strings
-    inside any dict, list, or tuple.
-    """
+class MinerConfig(Config):
+    miner: MinerCfg = MinerCfg()
+    local_par: ParallelismCfg = ParallelismCfg()
 
-    if isinstance(obj, dict):
-        return {k: conver_path_to_str(v) for k, v in obj.items()}
 
-    if isinstance(obj, list):
-        return [conver_path_to_str(i) for i in obj]
-
-    if isinstance(obj, tuple):
-        return tuple(conver_path_to_str(i) for i in obj)
-
-    if not isinstance(obj, int):
-        return str(obj)
-    
-    return obj   
+class ValidatorConfig(Config):
+    vali: ValidatorCfg = ValidatorCfg()
+    ckpt: ValidatorCheckpointCfg = ValidatorCheckpointCfg()
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train mycelia with config")
@@ -453,17 +457,6 @@ def parse_args():
         help="Optional, run name for creating the folder path to the template file.",
     )
     return parser.parse_args()
-
-
-class MinerConfig(BaseConfig):
-    miner: MinerCfg = MinerCfg()
-    local_par: ParallelismCfg = ParallelismCfg()
-
-
-class ValidatorConfig(BaseConfig):
-    vali: ValidatorCfg = ValidatorCfg()
-    ckpt: ValidatorCheckpointCfg = ValidatorCheckpointCfg()
-
 
 if __name__ == "__main__":
     args = parse_args()

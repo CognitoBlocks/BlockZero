@@ -171,9 +171,9 @@ def get_status(
         raise ValueError
 
     if inner_opt_step is not None:
-        total_batch_size = config.data.batch_size * config.local_par.world_size
+        total_batch_size = config.task.data.batch_size * config.local_par.world_size
         total_samples = inner_opt_step * total_batch_size
-        total_tokens = total_samples * config.data.sequence_length
+        total_tokens = total_samples * config.task.data.sequence_length
 
     _, expert_sum = get_weight_sum(model, shared=False)
 
@@ -202,7 +202,7 @@ def get_status(
         }
         if inner_opt_step is not None:
             metrics = metrics | {
-                "tokens_per_second": (config.data.sequence_length * total_batch_size) / training_time,
+                "tokens_per_second": (config.task.data.sequence_length * total_batch_size) / training_time,
             }
 
     if loss_batch is not None and loss_batch != 0:

@@ -1,6 +1,35 @@
 from pathlib import Path
 import importlib
-from typing import Type
+from typing import Type, Dict, Any 
+
+def convert_to_str(obj):
+    """
+    Recursively convert Path/PosixPath objects to strings
+    inside any dict, list, or tuple.
+    """
+
+    if isinstance(obj, dict):
+        return {k: convert_to_str(v) for k, v in obj.items()}
+
+    if isinstance(obj, list):
+        return [convert_to_str(i) for i in obj]
+
+    if isinstance(obj, tuple):
+        return tuple(convert_to_str(i) for i in obj)
+
+    if not isinstance(obj, int):
+        return str(obj)
+    
+    return obj   
+
+def deep_update(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+    for k, v in overrides.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            base[k] = deep_update(base[k], v)
+        else:
+            base[k] = v
+    return base
+
 
 def import_from_string(path: str) -> Type:
     """

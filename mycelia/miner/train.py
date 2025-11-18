@@ -173,7 +173,7 @@ def setup_training(config, rank: int, device: torch.device, tokenizer: PreTraine
     )
 
     # === dataloader ===
-    train_dataloader = get_dataloader(config, rank=rank, world_size=config.data.world_size, tokenizer=tokenizer)
+    train_dataloader = get_dataloader(config, rank=rank, world_size=config.task.data.world_size, tokenizer=tokenizer)
 
     # === load checkpoint (if any) ===
     if get_nested_attr(config, "resume_from_ckpt", False) and resume and latest_checkpoint_path:
