@@ -17,7 +17,7 @@ from requests.exceptions import RequestException, Timeout, ConnectionError as Re
 import bittensor
 from mycelia.shared.chain import serve_axon, get_status, commit_status, MinerStatus
 from mycelia.shared.checkpoint import get_resume_info, delete_old_checkpoints
-from mycelia.shared.config import MinerConfig, parse_args, BaseConfig, ValidatorConfig
+from mycelia.shared.config import MinerConfig, parse_args, WorkerConfig, ValidatorConfig
 from mycelia.miner.client import submit_model, download_model
 from mycelia.shared.app_logging import structlog, configure_logging
 from mycelia.shared.helper import parse_dynamic_filename
@@ -226,7 +226,7 @@ def assign_miners_to_validators(
     return assignment
 
 
-def get_validator_miner_assignment(config: BaseConfig, subtensor: bittensor.Subtensor):
+def get_validator_miner_assignment(config: WorkerConfig, subtensor: bittensor.Subtensor):
     status = get_status(config, subtensor)
 
     validator_seeds: Dict[str, int] = {
@@ -248,7 +248,7 @@ def get_validator_miner_assignment(config: BaseConfig, subtensor: bittensor.Subt
 
 
 def get_validation_schedule(
-    config: BaseConfig, subtensor: bittensor.Subtensor, block=None, last=False
+    config: WorkerConfig, subtensor: bittensor.Subtensor, block=None, last=False
 ) -> Dict[str, int]:
 
     if block == None:

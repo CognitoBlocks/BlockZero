@@ -1,0 +1,217 @@
+
+from __future__ import annotations
+
+import os
+import re
+import copy
+import logging
+from typing import Dict, List, Optional, Tuple, Union
+from collections import OrderedDict
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from huggingface_hub import login
+from transformers import (
+    AutoConfig,
+    AutoTokenizer,
+    LlamaConfig,
+    LlamaForCausalLM,
+    OlmoForCausalLM,
+    AutoModelForCausalLM,
+    PretrainedConfig,
+)
+from transformers.models.qwen3_next.modeling_qwen3_next import (
+    Qwen3NextSparseMoeBlock,
+    Qwen3NextDecoderLayer,
+    # Qwen3NextTopKRouter,
+    Qwen3NextAttention,
+    Qwen3NextPreTrainedModel,
+    Qwen3NextModel,
+    Qwen3NextMLP,
+    OutputRecorder
+)
+
+from transformers.models.qwen3_next.configuration_qwen3_next import Qwen3NextConfig
+from transformers.utils.deprecation import deprecate_kwarg
+from transformers.modeling_outputs import MoeCausalLMOutputWithPast
+
+from mycelia.shared.config import MinerConfig, ValidatorConfig
+from mycelia.shared.expert_manager import get_layer_expert_id, ExpertManager
+from mycelia.shared.app_logging import structlog
+from mycelia.shared.helper import *
+
+logger = structlog.get_logger(__name__)
+
+class TopKRouter(nn.Module):
+    def __init__(self, config, available_experts = None):
+        super().__init__()
+        self.top_k = config.num_experts_per_tok
+        self.num_experts = config.num_experts
+        self.norm_topk_prob = config.norm_topk_prob
+        self.hidden_dim = config.hidden_size
+        self.weight = nn.Linear(config.hidden_size, config.num_experts, bias=False)
+
+        if available_experts is not None:
+            self.available_experts = torch.as_tensor(available_experts)
+
+    def _mask_routing_weights(self, x: torch.Tensor, dim: int = 1) -> torch.Tensor:
+        """
+        Zero-out routing weights for experts not present in this group.
+        """
+        mask_1d = torch.zeros(x.size(dim), dtype=torch.bool, device=x.device)
+        mask_1d[self.available_experts.to(x.device)] = True
+
+        # Broadcast mask across all other dims
+        shape = [1] * x.ndim
+        shape[dim] = x.size(dim)
+        mask = mask_1d.view(shape).to(dtype=x.dtype)
+
+        return x * mask
+
+    def forward(self, hidden_states):
+        router_logits = self.weight(hidden_states)
+
+        routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
+        routing_weights = self._mask_routing_weights(router_logits)
+        routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
+        if self.norm_topk_prob:
+            routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
+        
+        # we cast back to the input dtype
+        routing_weights = routing_weights.to(hidden_states.dtype)
+        return router_logits, routing_weights, selected_experts
+
+
+class SparseMoeBlock(Qwen3NextSparseMoeBlock):
+    def __init__(
+            self, 
+            config, 
+            layer_id: int,
+        ):
+        super().__init__(config)
+
+        if config.expert_group_assignment is not None:
+            if config.group_ids is None:
+                group_ids = config.expert_group_assignment.keys()
+            else:
+                group_ids = config.group_ids
+
+            allowed_expert_id = []
+            for group_id in group_ids:
+                allowed_expert_id += [my_expert_id for my_expert_id, org_expert_id in config.expert_group_assignment[group_id][layer_id]]
+        else:
+            allowed_expert_id = list(range(config.num_experts))
+        
+        self.available_experts = torch.as_tensor([int(k) for k in allowed_expert_id])
+        self.gate = TopKRouter(config, self.available_experts)
+
+        self.experts = nn.ModuleDict(
+            {
+                str(i): Qwen3NextMLP(
+                    config,
+                    intermediate_size=config.moe_intermediate_size
+                )
+                for i in allowed_expert_id
+            }
+        )
+    
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        """ """
+        batch_size, sequence_length, hidden_dim = hidden_states.shape
+        hidden_states = hidden_states.view(-1, hidden_dim)
+        # router_logits: (batch * sequence_length, n_experts)
+        router_logits, routing_weights, selected_experts = self.gate(hidden_states)
+
+        final_hidden_states = torch.zeros(
+            (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
+        )
+
+        # One hot encode the selected experts to create an expert mask
+        # this will be used to easily index which expert is going to be sollicitated
+        expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
+
+        # Loop over all available experts in the model and perform the computation on each expert
+        expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+        print('expert keys', self.experts.keys())
+        print('expert_hit', expert_hit)
+        for expert_idx in expert_hit:
+            if not str(expert_idx.item()) in self.experts:
+                continue
+            expert_layer = self.experts[str(expert_idx.item())]
+            idx, top_x = torch.where(expert_mask[expert_idx].squeeze(0))
+
+            # Index the correct hidden states and compute the expert hidden state for
+            # the current expert. We need to make sure to multiply the output hidden
+            # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
+            current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
+            current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
+
+            # However `index_add_` only support torch tensors for indexing so we'll use
+            # the `top_x` tensor here.
+            final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
+
+        shared_expert_output = self.shared_expert(hidden_states)
+        shared_expert_output = F.sigmoid(self.shared_expert_gate(hidden_states)) * shared_expert_output
+
+        final_hidden_states = final_hidden_states + shared_expert_output
+
+        final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
+        return final_hidden_states, router_logits
+    
+class DecoderLayer(Qwen3NextDecoderLayer):
+    def __init__(
+            self, 
+            config: Qwen3NextConfig, 
+            layer_idx: int,
+        ):
+        super().__init__(config, layer_idx)
+        if (layer_idx not in config.mlp_only_layers) and (
+            config.num_experts > 0 and (layer_idx + 1) % config.decoder_sparse_step == 0
+        ):
+            self.mlp = SparseMoeBlock(
+                config,
+                layer_id = layer_idx,
+            )
+
+class CustomPreTrainedModel(Qwen3NextPreTrainedModel):
+    config: Qwen3NextConfig
+    base_model_prefix = "model"
+    supports_gradient_checkpointing = True
+    _no_split_modules = ["DecoderLayer"]
+    _skip_keys_device_placement = "past_key_values"
+    _supports_flash_attn_2 = True
+    _supports_sdpa = True
+    _keys_to_ignore_on_load_unexpected = [r"^mtp.*"]
+    _can_record_outputs = {
+        "router_logits": OutputRecorder(Qwen3NextSparseMoeBlock, index=1),
+        "hidden_states": DecoderLayer,
+        "attentions": Qwen3NextAttention,
+    }
+    _is_stateful = True
+
+class CustomQwen3NextModel(Qwen3NextModel):
+    def __init__(self, config: Qwen3NextConfig):
+        super().__init__(config)
+        self.layers = nn.ModuleList(
+            [DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+        )
+
+def get_moe_model_config(config: MinerConfig, topk: int, group_ids: List | None, expert_manager: ExpertManager) -> PretrainedConfig:
+
+    # get the base config from qwen model
+    base_config = AutoConfig.from_pretrained(config.model.model_path)
+
+    # full/partial dependent configuration
+    base_config.num_experts_per_tok = int(topk)
+    base_config.group_ids = group_ids
+    
+    # merge our subnet config to the base config
+    base_config.n_group = config.moe.num_worker_groups
+    base_config.max_position_embeddings = config.task.data.sequence_length
+    base_config.num_experts = expert_manager.num_experts # this stays the same regardless of full/partial cause we keep the same router size either case
+    base_config.output_router_logits = get_nested_attr(config, "moe.aux_load_balance", False)
+    base_config.router_aux_loss_coef = get_nested_attr(config, "moe.router_aux_loss_coef", False)
+    base_config.expert_group_assignment = expert_manager.expert_group_assignment
+
+    return base_config

@@ -10,10 +10,10 @@ import requests
 import torch
 from torch import nn
 
-from mycelia.shared.config import MinerConfig
+from mycelia.shared.config import MinerConfig, ValidatorConfig
 from mycelia.shared.app_logging import structlog
 from mycelia.shared.expert_manager import ExpertManager, create_expert_groups
-from mycelia.shared.modeling.modeling_mycelia import get_base_model, partial_moe
+from mycelia.shared.modeling.mycelia import get_model
 from mycelia.shared import chain
 from mycelia.shared.checkpoint import (
     get_resume_info,
@@ -25,7 +25,7 @@ from mycelia.shared.helper import *
 logger = structlog.get_logger(__name__)
 
 
-def _default_model(rank: int, config: MinerConfig) -> Tuple[nn.Module, ExpertManager, dict]:
+def _default_model(rank: int, config: MinerConfig | ValidatorConfig, expert_manager: ExpertManager) -> Tuple[nn.Module, dict]:
     resume = False
     miner_version = 0 
     validator_version = 0
@@ -33,19 +33,12 @@ def _default_model(rank: int, config: MinerConfig) -> Tuple[nn.Module, ExpertMan
     if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
         resume, model_version, latest_checkpoint_path = start_model_from(rank, config)
 
-    em = ExpertManager(
-        model=get_base_model(config, noise=True),
-        num_experts=config.moe.num_experts,
-        num_worker_groups=config.moe.num_worker_groups,
-    )
-    em.compute_group_assignments(seed = 0)
-
-    model = get_base_model(config, noise = (miner_version if miner_version else 0 + validator_version if validator_version else 0) == 0, expert_group_assignment=em.expert_group_assignment).to(
-        config.model.device
-    )
-
-    if get_nested_attr(config, "moe.partial_moe", False):
-        model = partial_moe(config, model, config.moe.my_expert_group_id, em.expert_group_assignment)
+    model = get_model(
+        config, 
+        expert_manager=expert_manager, 
+        group_ids = [config.moe.my_expert_group_id] if config.role == 'miner' else None,
+        partial=(config.role == 'miner')
+    ).to(config.model.device)
 
     if get_nested_attr(config, "ckpt.resume_from_ckpt", False) and resume and latest_checkpoint_path:
         load_checkpoint(
@@ -56,7 +49,7 @@ def _default_model(rank: int, config: MinerConfig) -> Tuple[nn.Module, ExpertMan
 
     model.gradient_checkpointing_enable()
 
-    return model, em, model_version
+    return model, model_version
 
 
 # TODO: fill function
@@ -75,8 +68,8 @@ def _fetch_validator_endpoint_from_chain(round_hint: Optional[str] = None) -> Op
 
 
 def load_base_model(
-    rank: int, config: Optional[Config] = None, round_hint: Optional[str] = None
-) -> Tuple[nn.Module, ExpertManager, dict]:
+    rank: int, config: MinerConfig | ValidatorConfig, expert_manager: ExpertManager, round_hint: Optional[str] = None, 
+) -> Tuple[nn.Module, dict]:
     """
     Main entry point used by miners (and potentially validator itself).
     1) Ask the chain for an active validator endpoint.
@@ -89,7 +82,7 @@ def load_base_model(
     if api_base:
         pass
 
-    return _default_model(rank=rank, config=config)
+    return _default_model(rank=rank, config=config, expert_manager = expert_manager)
 
 
 # --- Helper: export/save current model to artifact (used by validator) ---

@@ -32,7 +32,7 @@ from mycelia.shared.config import MinerConfig, ValidatorConfig, parse_args
 from mycelia.shared.app_logging import structlog, configure_logging
 from mycelia.shared.metrics import MetricLogger
 from mycelia.shared.model import load_base_model
-from mycelia.shared.modeling.modeling_mycelia import get_base_tokenizer, partial_moe
+from mycelia.shared.modeling.mycelia import get_base_tokenizer, partial_moe
 from mycelia.shared.dataloader import get_dataloader, HFStreamingTorchDataset
 from mycelia.miner.train_helper import free_cuda_models, get_status
 from mycelia.shared.evaluate import evaluate_model
@@ -111,7 +111,8 @@ def setup_training(config, rank: int, device: torch.device, tokenizer: PreTraine
 
     # === model & Experts manager ===
     logger.info(f"rank {rank} setup training - load model and expert manager")
-    base_model, em = load_base_model(rank, config)
+    expert_manager = ExpertManager(config)
+    base_model, version = load_base_model(rank, config, expert_manager)
     base_model = base_model.to(device)
     global_model = copy.deepcopy(base_model).cpu()
 

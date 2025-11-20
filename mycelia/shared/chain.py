@@ -1,6 +1,6 @@
 from __future__ import annotations
 import bittensor as bt
-from mycelia.shared.config import BaseConfig
+from mycelia.shared.config import WorkerConfig
 from typing import Optional, Dict, List
 from pydantic import BaseModel
 import json
@@ -36,7 +36,7 @@ class MinerStatus(BaseModel):
 
 
 def commit_status(
-    config: BaseConfig,
+    config: WorkerConfig,
     wallet: bt.Wallet,
     subtensor: bt.Subtensor,
     status: ValidatorStatus | MinerStatus,
@@ -44,7 +44,7 @@ def commit_status(
     subtensor.set_commitment(wallet=wallet, netuid=config.chain.netuid, data=status.model_dump_json())
 
 
-def get_status(config: BaseConfig, subtensor: bt.Subtensor):
+def get_status(config: WorkerConfig, subtensor: bt.Subtensor):
     all_commitments = subtensor.get_all_commitments(netuid=config.chain.netuid)
     metagraph = subtensor.metagraph(netuid=config.chain.netuid)
     parsed: Dict[str, WorkerStatus] = {}
@@ -67,7 +67,7 @@ def get_status(config: BaseConfig, subtensor: bt.Subtensor):
     return parsed
 
 
-def serve_axon(config: BaseConfig, wallet: bt.Wallet, subtensor: bt.Subtensor):
+def serve_axon(config: WorkerConfig, wallet: bt.Wallet, subtensor: bt.Subtensor):
     axon = bt.Axon(wallet=wallet, external_port=config.chain.port, ip=config.chain.ip)
     axon.serve(netuid=348, subtensor=subtensor)
 

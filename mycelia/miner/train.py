@@ -23,7 +23,7 @@ from mycelia.shared.config import MinerConfig, parse_args
 from mycelia.shared.app_logging import structlog, configure_logging
 from mycelia.shared.metrics import MetricLogger
 from mycelia.shared.model import load_base_model
-from mycelia.shared.modeling.modeling_mycelia import get_base_tokenizer, partial_moe
+from mycelia.shared.modeling.mycelia import get_base_tokenizer, partial_moe
 from mycelia.shared.dataloader import get_dataloader, HFStreamingTorchDataset
 from mycelia.miner.train_helper import free_cuda_models, get_status
 from mycelia.shared.evaluate import evaluate_model
@@ -127,7 +127,7 @@ def setup_training(config, rank: int, device: torch.device, tokenizer: PreTraine
         start_step (int): Step to resume from (0 if starting fresh).
         expert_groups (Sequence[Sequence[int]]): Grouping returned by `create_expert_groups`; typically a list
             (or other sequence) of groups where each group lists the ranks/experts belonging to it.
-        my_group_id (int): This rank’s group id from `create_expert_groups`.
+        group_ids (int): This rank’s group id from `create_expert_groups`.
         em (ExpertManager): The instantiated ExpertManager for this model/rank.
 
     Notes:
@@ -142,7 +142,8 @@ def setup_training(config, rank: int, device: torch.device, tokenizer: PreTraine
         resume, start_step, latest_checkpoint_path = get_resume_info(rank, config)
 
     # === model & Experts manager ===
-    model, em, model_version = load_base_model(rank, config)
+    expert_manager = ExpertManager(config)
+    model, model_version = load_base_model(rank, config, expert_manager)
     model = model.to(device)
     global_model = copy.deepcopy(model).cpu()
 
@@ -199,7 +200,7 @@ def setup_training(config, rank: int, device: torch.device, tokenizer: PreTraine
         inner_scaler,
         outer_scaler,
         scheduler,
-        em,
+        expert_manager,
         train_dataloader,
         model_version
     )

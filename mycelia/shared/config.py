@@ -94,7 +94,7 @@ class RunCfg(BaseConfig):
 
 class ModelCfg(BaseConfig):
     model_path: str = (
-        "deepseek-ai/deepseek-moe-16b-base"  # although we are calling a large model here, but we would only be training a partial of it for each miner
+        "Qwen/Qwen3-Next-80B-A3B-Thinking"  # although we are calling a large model here, but we would only be training a partial of it for each miner
     )
     foundation: bool = True
     torch_compile: bool = True
@@ -121,7 +121,7 @@ class MoECfg(BaseConfig):
     num_experts_per_tok: PositiveInt = 2
     partial_topk: PositiveInt = 1
     full_topk: PositiveInt = 2
-    aux_load_balance: bool = False
+    aux_load_balance: bool = True
     router_aux_loss_coef: float = 1.0
     partial_moe: bool = True
     num_worker_groups: PositiveInt = 2
@@ -188,14 +188,15 @@ class MinerCfg(BaseConfig):
 
 class TaskCfg(BaseConfig):
     data: DataCfg = DataCfg()
+    expert_group_id: int = 0
     expert_group_name: str = "exp_math"
-    base_path: Path = Path("tasks")
+    base_path: Path = Path("expert_groups")
     path: Path | None = None
 
 # ---------------------------
 # Top-level config
 # ---------------------------
-class Config(BaseConfig):
+class WorkerConfig(BaseConfig):
     """
     Centralized training/eval configuration for mycelia runs.
     """
@@ -400,7 +401,6 @@ class Config(BaseConfig):
 
         self.task = TaskCfg.from_path(self.task.path / "config.yaml") # type: ignore
         self._refresh_paths() # base path may change
-        print(self.task)
     
     # ---- Persistence ----
     def write(self) -> None:
@@ -420,12 +420,14 @@ class Config(BaseConfig):
 
         logger.info(f"Wrote config to {target}")
 
-class MinerConfig(Config):
+class MinerConfig(WorkerConfig):
+    role: str = 'miner'
     miner: MinerCfg = MinerCfg()
     local_par: ParallelismCfg = ParallelismCfg()
 
 
-class ValidatorConfig(Config):
+class ValidatorConfig(WorkerConfig):
+    role: str = 'validator'
     vali: ValidatorCfg = ValidatorCfg()
     ckpt: ValidatorCheckpointCfg = ValidatorCheckpointCfg()
 

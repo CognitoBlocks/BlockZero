@@ -71,3 +71,4 @@ aiofiles
 python-multipart
 git+https://github.com/learning-at-home/hivemind.git@master
 matplotlib
+transformers==4.57.1

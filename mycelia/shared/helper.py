@@ -1,6 +1,16 @@
 from pathlib import Path
 import importlib
 from typing import Type, Dict, Any 
+import torch 
+import torch.nn.functional as F
+
+def route_tokens_to_experts(router_logits):
+    routing_weights = F.softmax(router_logits, dim=-1, dtype=torch.float)
+    routing_weights, selected_experts = torch.topk(routing_weights, 10, dim=-1)
+    if True:
+        routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
+    routing_weights = routing_weights.to(router_logits.dtype)
+    return selected_experts, routing_weights
 
 def convert_to_str(obj):
     """

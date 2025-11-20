@@ -37,11 +37,11 @@ from typing import Dict, List, Any
 from torch.distributed import rpc
 from torch.futures import Future
 from mycelia.shared.chain import get_status, MinerStatus
-from mycelia.shared.config import BaseConfig
+from mycelia.shared.config import WorkerConfig
 from mycelia.shared.app_logging import structlog
 from mycelia.shared.metrics import MetricLogger
 from mycelia.shared.model import get_base_model
-from mycelia.shared.modeling.modeling_mycelia import get_base_tokenizer
+from mycelia.shared.modeling.mycelia import get_base_tokenizer
 from mycelia.shared.dataloader import get_dataloader
 from mycelia.shared.expert_manager import ExpertManager
 
