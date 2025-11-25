@@ -90,7 +90,15 @@ def main(config):
 
                         logger.info("Checking for new checkpoint from validator %s ...", download_meta.get("uid"))
                         try:
-                            download_model(url=url, token=getattr(config.miner, "token", ""), out=out_path)
+                            download_model(
+                                url=url,
+                                my_hotkey=wallet.hotkey, #type: ignore
+                                target_hotkey_ss58=download_meta['target_hotksy_ss58'],
+                                block = subtensor.block,
+                                expert_group_id=config.expert_group_id,
+                                token=getattr(config.miner, "token", ""), 
+                                out=out_path
+                            )
                             # If download_model doesn't raise, consider it a success
                             download_success = True
                             current_model_version = download_meta["model_version"]
@@ -131,9 +139,9 @@ def main(config):
             submit_model(
                 url=f"http://{destination_axon.ip}:{destination_axon.port}/submit-checkpoint",
                 token="",
-                step=0,
-                uid=config.chain.uid,
-                hotkey=config.chain.hotkey_ss58,
+                my_hotkey = wallet.hotkey, #type: ignore
+                target_hotkey_ss58 = destination_axon.hotkey, 
+                block = subtensor.block,
                 model_path=f"{latest_checkpoint_path}/model.pt",
             )
 

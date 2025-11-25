@@ -142,7 +142,7 @@ def scan_for_new_model(
                 "port": port,
                 "model_hash": mh,
                 "model_version": mv,
-                "hotkey": hotkey,
+                "target_hotkey_ss58": hotkey,
             }
         )
 

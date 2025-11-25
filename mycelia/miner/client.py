@@ -13,7 +13,8 @@ import requests
 from requests import Response
 from pathlib import Path
 from requests.exceptions import RequestException, Timeout, ConnectionError as ReqConnectionError
-
+from substrateinterface import Keypair 
+from mycelia.shared.schema import construct_block_message, construct_model_message, sign_message, verify_message, SignedDownloadRequestMessage, SignedModelSubmitMessage
 
 CHUNK = 1024 * 1024  # 1 MiB
 
@@ -42,9 +43,9 @@ def submit_model(
     url: str,
     token: str,
     model_path: str,
-    uid: int,
-    hotkey: str,
-    step: int = 12000,
+    my_hotkey: Keypair,
+    target_hotkey_ss58: str, 
+    block: int,
     timeout_s: int = 300,
     retries: int = 3,
     backoff: float = 1.8,
@@ -72,7 +73,13 @@ def submit_model(
     except OSError as e:
         raise OSError(f"Failed to read file: {model_path}") from e
 
-    data = {"step": str(step), "checksum_sha256": checksum, "uid": uid, "hotkey": hotkey}
+    data = SignedModelSubmitMessage(
+        target_hotkey_ss58=target_hotkey_ss58,
+        origin_hotkey_ss58=my_hotkey.ss58_address,
+        block=block,
+        signature=sign_message(my_hotkey, construct_model_message(target_hotkey_ss58=target_hotkey_ss58, block = block, model_path = model_path) )
+    ).to_dict()
+
     if extra_form:
         # stringify non-bytes for safety in form data
         for k, v in extra_form.items():
@@ -141,7 +148,17 @@ def submit_model(
     raise RuntimeError(f"Upload failed after {retries + 1} attempts: {last_exc}")
 
 
-def download_model(url: str, token: str, out: str | Path, resume: bool = False, timeout: int = 30):
+def download_model(
+        url: str, 
+        my_hotkey: Keypair,
+        target_hotkey_ss58: str, 
+        block: int,
+        token: str, 
+        out: str | Path, 
+        expert_group_id: int | None = None,
+        resume: bool = False, 
+        timeout: int = 30
+    ):
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     mode = "wb"
     start_at = 0
@@ -152,7 +169,15 @@ def download_model(url: str, token: str, out: str | Path, resume: bool = False, 
             headers["Range"] = f"bytes={start_at}-"
             mode = "ab"
 
-    with requests.get(url, headers=headers, stream=True, timeout=timeout) as r:
+    data = SignedDownloadRequestMessage(
+        target_hotkey_ss58=target_hotkey_ss58,
+        origin_hotkey_ss58=my_hotkey.ss58_address,
+        expert_group_id=expert_group_id,
+        block=block,
+        signature=sign_message(my_hotkey, construct_block_message(target_hotkey_ss58, block = block))
+    ).to_dict()
+
+    with requests.get(url, headers=headers, stream=True, timeout=timeout, data=data) as r:
         if r.status_code in (401, 403):
             sys.exit(f"Auth failed (HTTP {r.status_code}). Check your token.")
         if r.status_code == 416:

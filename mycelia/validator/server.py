@@ -23,6 +23,7 @@ from mycelia.shared.checkpoint import (
 
 from mycelia.shared.config import MinerConfig, parse_args
 from mycelia.shared.app_logging import structlog, configure_logging
+from mycelia.shared.schema import verify_message, construct_block_message, construct_model_message
 
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -132,11 +133,31 @@ async def status():
 
 # miners / client get model from validator
 @app.get("/get-checkpoint")
-async def get_checkpoint(authorization: Optional[str] = Header(default=None)):
+async def get_checkpoint(
+    authorization: Optional[str] = Header(default=None),
+    target_hotkey_ss58: str = Form(None, description="Receiver's hotkey"),
+    origin_hotkey_ss58: str = Form(None, description="Sender's hotkey"),
+    block: int = Form(None, description="The block that the message was sent."), # insecure, do not use this field for validation, TODO: change it to block hash? 
+    signature: str = Form(None, description="Signed message"),
+
+    # uid: str = Form(..., description="Unique client/user identifier"),
+    # hotkey: Optional[str] = Form(None, description="Optional client routing key"),
+    expert_group_id: Optional[int] = Form(None, description="Optional expert group to fetch")
+):
     """GET to download the configured checkpoint immediately."""
     logger.info(f"checkpoint, A")
     require_auth(authorization)
     logger.info(f"checkpoint, B")
+
+    verify_message(
+        origin_hotkey_ss58=origin_hotkey_ss58,
+        message=construct_block_message(
+            target_hotkey_ss58=target_hotkey_ss58, # TODO: assert hotkey is valid within the metagraph
+            block=block # TODO: change to block hash and assert it is not too far from current
+        ),
+        signature_hex=signature
+    )
+
     resume, start_step, latest_checkpoint_path = get_resume_info(rank=0, config=config)
     logger.info(f"checkpoint, C", latest_checkpoint_path)
 
@@ -153,10 +174,10 @@ async def get_checkpoint(authorization: Optional[str] = Header(default=None)):
 @app.post("/submit-checkpoint")
 async def submit_checkpoint(
     authorization: Optional[str] = Header(default=None),
-    step: int = Form(...),
-    uid: str = Form(..., description="Unique client/user identifier"),
-    hotkey: Optional[str] = Form(None, description="Optional client routing key"),
-    checksum_sha256: Optional[str] = Form(None, description="Optional SHA256 hex digest for integrity check"),
+    target_hotkey_ss58: str = Form(None, description="Receiver's hotkey"),
+    origin_hotkey_ss58: str = Form(None, description="Sender's hotkey"),
+    block: int = Form(None, description="The block that the message was sent."), # insecure, do not use this field for validation, TODO: change it to block hash? 
+    signature: str = Form(None, description="Signed message"),
     file: UploadFile = File(..., description="The checkpoint file, e.g. model.pt"),
 ):
     """
@@ -181,7 +202,7 @@ async def submit_checkpoint(
         raise HTTPException(status_code=400, detail=f"Unsupported file extension: {ext}")
 
     # Stream write + compute SHA256
-    model_name = f"uid_{uid}_hotkey_{hotkey}_block_{subtensor.block}.pt"
+    model_name = f"hotkey_{target_hotkey_ss58}_block_{subtensor.block}.pt"
     hasher = hashlib.sha256()
     bytes_written = 0
     dest_path = config.vali.miner_submission_path / model_name
@@ -205,19 +226,26 @@ async def submit_checkpoint(
         await file.close()
 
     computed = hasher.hexdigest()
-    if checksum_sha256 and checksum_sha256.lower() != computed.lower():
-        # Integrity check failed; remove the file
-        with contextlib.suppress(Exception):
-            dest_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail="Checksum mismatch")
 
-    logger.info(f"Stored checkpoint for step={step} at {dest_path} ({bytes_written} bytes) sha256={computed}")
+    logger.info(f"Stored checkpoint at {dest_path} ({bytes_written} bytes) sha256={computed}")
+
+
+    verify_message(
+        origin_hotkey_ss58=origin_hotkey_ss58,
+        message=construct_model_message(
+            model_path=dest_path,
+            target_hotkey_ss58=target_hotkey_ss58,
+            block=block
+        ),
+        signature_hex=signature
+    )
+    
+    logger.info(f"Verified submission at {dest_path}.")
 
     ckpt_deleted = delete_old_checkpoints_by_hotkey(config.ckpt.checkpoint_path)
 
     return {
         "status": "ok",
-        "step": step,
         "stored_path": str(dest_path),
         "bytes": bytes_written,
         "sha256": computed,
