@@ -13,7 +13,7 @@ from torch import nn
 from mycelia.shared.config import MinerConfig, ValidatorConfig
 from mycelia.shared.app_logging import structlog
 from mycelia.shared.expert_manager import ExpertManager, create_expert_groups
-from mycelia.shared.modeling.mycelia import get_model
+from mycelia.shared.modeling.mycelia import get_base_model
 from mycelia.shared import chain
 from mycelia.shared.checkpoint import (
     get_resume_info,
@@ -25,7 +25,7 @@ from mycelia.shared.helper import *
 logger = structlog.get_logger(__name__)
 
 
-def _default_model(rank: int, config: MinerConfig | ValidatorConfig, expert_manager: ExpertManager) -> Tuple[nn.Module, dict]:
+def get_model_from_checkpoint(rank: int, config: MinerConfig | ValidatorConfig, expert_manager: ExpertManager) -> Tuple[nn.Module, dict]:
     resume = False
     miner_version = 0 
     validator_version = 0
@@ -33,7 +33,7 @@ def _default_model(rank: int, config: MinerConfig | ValidatorConfig, expert_mana
     if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
         resume, model_version, latest_checkpoint_path = start_model_from(rank, config)
 
-    model = get_model(
+    model = get_base_model(
         config, 
         expert_manager=expert_manager, 
         group_ids = [config.moe.my_expert_group_id] if config.role == 'miner' else None,
@@ -53,7 +53,7 @@ def _default_model(rank: int, config: MinerConfig | ValidatorConfig, expert_mana
 
 
 # TODO: fill function
-def _fetch_validator_endpoint_from_chain(round_hint: Optional[str] = None) -> Optional[str]:
+def fetch_validator_endpoint_from_chain(round_hint: Optional[str] = None) -> Optional[str]:
     """
     Ask chain for the *current* validator node endpoint (e.g., https://validator-1:8080).
     You implement this inside shared/blockchain.py
@@ -67,7 +67,7 @@ def _fetch_validator_endpoint_from_chain(round_hint: Optional[str] = None) -> Op
         return None
 
 
-def load_base_model(
+def load_model(
     rank: int, config: MinerConfig | ValidatorConfig, expert_manager: ExpertManager, round_hint: Optional[str] = None, 
 ) -> Tuple[nn.Module, dict]:
     """
@@ -77,22 +77,9 @@ def load_base_model(
     3) Else, initialize a default model.
     """
     config = config or MinerConfig()
-    api_base = _fetch_validator_endpoint_from_chain(round_hint)
+    api_base = fetch_validator_endpoint_from_chain(round_hint)
 
     if api_base:
         pass
 
-    return _default_model(rank=rank, config=config, expert_manager = expert_manager)
-
-
-# --- Helper: export/save current model to artifact (used by validator) ---
-# TODO: fill function
-def export_model_artifact(model: nn.Module) -> Tuple[bytes, str]:
-    """
-    Serialize the model to bytes + return format string.
-    Default: state_dict via torch.save
-    """
-    buffer = io.BytesIO()
-    torch.save(model.state_dict(), buffer)
-    buffer.seek(0)
-    return buffer.read(), "state_dict"
+    return get_model_from_checkpoint(rank=rank, config=config, expert_manager = expert_manager)

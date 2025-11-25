@@ -12,7 +12,7 @@ A validator runs two cooperating components:
    * **Peers/Clients** who may need the **full model**
    * **Miners** who may need a **partial model** (e.g. 2 out of the 8 experts & shared weights)
 
-Both read the same `config.json`.
+Both read the same ``.
 
 ---
 
@@ -31,17 +31,17 @@ Both read the same `config.json`.
 ---
 
 ## Paths & Layout
-All the miner/validator configuration are controlled via a config.json file. 
+All the miner/validator configuration are controlled via a  file. 
 
 You may create a template config file by running 
 ```python mycelia/shared/config.py --get_template <validator/miner> --coldkey_name <your coldkey name> --hotkey_name <your hotkey name> --run_name <your naming to specify this run>```
 
-Then, you may modify any specifics in the config.json file if needed.
+Then, you may modify any specifics in the  file if needed.
 
 Afterwards, when you are running the validator, simply use `--path` to point to the validator’s **config file**:
 
 ```
-~/subnet-MoE/checkpoints/validator/<your hotkey>/<run name>/config.json
+~/subnet-MoE/checkpoints/validator/<your hotkey>/<run name>/
 ```
 > when a path is not provided, it would use the default config from .../mycelia/config.py
 
@@ -53,7 +53,7 @@ Continuously gathers miners to evaluate, runs standardized evaluation, aggregate
 
 ```bash
 python mycelia/validator/run.py \
-  --path /home/isabella/crucible/subnet-MoE/checkpoints/validator/hk3/foundation/config.json
+  --path /home/isabella/crucible/subnet-MoE/checkpoints/validator/hk3/foundation/
 ```
 
 **What it does (typical flow):**
@@ -75,14 +75,14 @@ Serves the updated model to two groups:
 
 ```bash
 python3 mycelia/shared/server.py \
-  --path /home/isabella/crucible/subnet-MoE/checkpoints/validator/hk3/foundation/config.json
+  --path /home/isabella/crucible/subnet-MoE/checkpoints/validator/hk3/foundation/
 ```
 
 **Notes:**
 
 * Starts an HTTP (or RPC) server as configured.
 * Exposes endpoints for full vs partial model artifacts.
-* Supports basic authentication/authorization if enabled in `config.json`.
+* Supports basic authentication/authorization if enabled in ``.
 * Logs requests and maintains simple indices under `serve/`.
 
 ---
@@ -93,17 +93,17 @@ Use two terminals (or `tmux`/`screen`):
 
 ```bash
 # Terminal A: constant evaluation
-python mycelia/validator/run.py --path .../mycelia/validator/hk3/foundation/config.json 
+python mycelia/validator/run.py --path .../mycelia/validator/hk3/foundation/ 
 
 # Terminal B: model serving
-python3 mycelia/shared/server.py --path .../mycelia/validator/hk3/foundation/config.json
+python3 mycelia/shared/server.py --path .../mycelia/validator/hk3/foundation/
 ```
 
 ---
 
 ## Tips
 
-* Keep both processes pointed at the **same** `config.json`.
+* Keep both processes pointed at the **same** ``.
 * Separate directories per validator/hotkey keep artifacts clean (`hk3/`, `hk4/`, …).
 * Consider enabling **log rotation** for long-running services.
 * If serving public endpoints, place the server behind a reverse proxy (nginx/traefik) and enable TLS.

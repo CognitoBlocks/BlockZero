@@ -22,7 +22,7 @@ from transformers import get_cosine_schedule_with_warmup, PreTrainedTokenizerBas
 from mycelia.shared.config import MinerConfig, parse_args
 from mycelia.shared.app_logging import structlog, configure_logging
 from mycelia.shared.metrics import MetricLogger
-from mycelia.shared.model import load_base_model
+from mycelia.shared.model import load_model
 from mycelia.shared.modeling.mycelia import get_base_tokenizer, partial_moe
 from mycelia.shared.dataloader import get_dataloader, HFStreamingTorchDataset
 from mycelia.miner.train_helper import free_cuda_models, get_status
@@ -143,7 +143,7 @@ def setup_training(config, rank: int, device: torch.device, tokenizer: PreTraine
 
     # === model & Experts manager ===
     expert_manager = ExpertManager(config)
-    model, model_version = load_base_model(rank, config, expert_manager)
+    model, model_version = load_model(rank, config, expert_manager)
     model = model.to(device)
     global_model = copy.deepcopy(model).cpu()
 
@@ -399,7 +399,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 and inner_opt_step % config.ckpt.checkpoint_interval == 0
             ):
                 logp(f"saving checkpoint")
-                ckpt_path = os.path.join(config.ckpt.checkpoint_path, f"globalopt_{model_version['globalopt']}_inneropt_{inner_opt_step}")
+                ckpt_path = os.path.join(config.ckpt.checkpoint_path, f"globalver_{model_version['globalver']}_inneropt_{inner_opt_step}")
 
                 save_checkpoint(
                     checkpoint_path=ckpt_path,
@@ -427,7 +427,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
             # === reload model ===
             if (
                 is_inner_optimizer_step and
-                start_model_from(rank, config)[1]['global_opt'] == model_version['globalopt']
+                start_model_from(rank, config)[1]['global_opt'] == model_version['globalver']
             ):
                 dist.barrier(device_ids=[rank])  # make sure everything is saved and everyone is ready to load
                 logp("freeing cuda memory")

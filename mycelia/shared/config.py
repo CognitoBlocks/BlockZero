@@ -250,18 +250,19 @@ class WorkerConfig(BaseConfig):
         self.update_by_task()
         
         # If an existing config exists, bump run_name when the configs don't match.
-        config_path = os.path.join(self.ckpt.checkpoint_path, "config.json")
+        config_path = os.path.join(self.ckpt.checkpoint_path, "config.yaml")
         while os.path.exists(config_path):
             logger.info(f"found existing config path {config_path}")
             with open(config_path, "r", encoding="utf-8") as f:
-                existing_config_dict = json.load(f)
+                existing_config_dict = yaml.safe_load(f)
+
             bumped = self.bump_run_name_if_diff(existing_config_dict)
 
             if not bumped:  # landed on the same config
                 return
             else:
                 # bumped so need to check on the config at the new folder
-                config_path = os.path.join(self.ckpt.checkpoint_path, "config.json")
+                config_path = os.path.join(self.ckpt.checkpoint_path, "config.yaml")
 
         # === create checkpoint directory ===
         os.makedirs(self.task.base_path, exist_ok=True)
@@ -300,7 +301,7 @@ class WorkerConfig(BaseConfig):
             self.chain.uid = subtensor.metagraph(netuid=self.chain.netuid).hotkeys.index(self.chain.hotkey_ss58)
         except bittensor.KeyFileError as e:
             logger.warning(
-                f"Cannot find the wallet key by name coldkey name: {self.chain.coldkey_name}, hotkey name: {self.chain.hotkey_name}, please make sure it has been set correctly if you are reloading from a config.json or use --hotkey_name & --coldkey_name when you are creating a config file from a template.",
+                f"Cannot find the wallet key by name coldkey name: {self.chain.coldkey_name}, hotkey name: {self.chain.hotkey_name}, please make sure it has been set correctly if you are reloading from a  or use --hotkey_name & --coldkey_name when you are creating a config file from a template.",
                 error=str(e),
             )
             return
@@ -405,7 +406,7 @@ class WorkerConfig(BaseConfig):
     # ---- Persistence ----
     def write(self) -> None:
         """
-        Persist this config to `<checkpoint_path>/config.json`.
+        Persist this config to `<checkpoint_path>/`.
 
         Creates the directory if it does not exist.
         """
@@ -416,7 +417,7 @@ class WorkerConfig(BaseConfig):
         target = os.path.join(self.ckpt.checkpoint_path, "config.yaml")
 
         with fsspec.open(target, "w", encoding="utf-8") as f:
-            yaml.dump(config, f, sort_keys=False)
+            yaml.dump(data, f, sort_keys=False)
 
         logger.info(f"Wrote config to {target}")
 

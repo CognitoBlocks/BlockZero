@@ -133,8 +133,6 @@ class SparseMoeBlock(Qwen3NextSparseMoeBlock):
 
         # Loop over all available experts in the model and perform the computation on each expert
         expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
-        print('expert keys', self.experts.keys())
-        print('expert_hit', expert_hit)
         for expert_idx in expert_hit:
             if not str(expert_idx.item()) in self.experts:
                 continue
@@ -204,7 +202,7 @@ def get_moe_model_config(config: MinerConfig, topk: int, group_ids: List | None,
 
     # full/partial dependent configuration
     base_config.num_experts_per_tok = int(topk)
-    base_config.group_ids = group_ids
+    base_config.group_ids = group_ids # in list, cause you may load a partial model that contains multiple group id 
     
     # merge our subnet config to the base config
     base_config.n_group = config.moe.num_worker_groups

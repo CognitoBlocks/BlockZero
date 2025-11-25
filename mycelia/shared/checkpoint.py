@@ -1,6 +1,7 @@
 import os
 import torch
 import fsspec
+from typing import Tuple
 
 from pathlib import Path
 import re
@@ -15,26 +16,28 @@ from mycelia.shared.helper import parse_dynamic_filename
 
 logger = structlog.getLogger(__name__)
 
-def start_model_from(rank: int, config: MinerConfig) -> Tuple(bool, int | None, int | None, str | Path):
+def start_model_from(rank: int, config: MinerConfig) -> Tuple[bool, int | None, int | None, str | Path]:
 
     validator_ckpt_found, validator_version, latest_validator_ckpt = get_resume_info(rank, config, config.miner.validator_checkpoint_path)
     miner_ckpt_found, miner_version, latest_miner_ckpt = get_resume_info(rank, config, config.ckpt.checkpoint_path)
 
-    if miner_ckpt_found:
-        miner_ckpt_meta = parse_dynamic_filename(latest_miner_ckpt)
-    else:    
-        return validator_ckpt_found, {'gloablopt': validator_version, 'inneropt': 0}, latest_validator_ckpt
+    if not miner_ckpt_found:    
+        logger.info('miner checkpoint not found')
+        return validator_ckpt_found, validator_version['globalver'], latest_validator_ckpt
     
     if not validator_ckpt_found:
-        return miner_ckpt_found, {'gloablopt': miner_ckpt_meta['globalopt'], 'inneropt': miner_version}, latest_miner_ckpt/'model.pt'
+        logger.info('validator checkpoint not found')
+        return miner_ckpt_found, miner_version, latest_miner_ckpt/'model.pt'
     
-    if miner_ckpt_meta['globalopt'] >= validator_version:
-        return miner_ckpt_found, {'gloablopt': miner_ckpt_meta['globalopt'], 'inneropt': miner_version}, latest_miner_ckpt/'model.pt'
+    if miner_version['globalver'] >= validator_version['globalver']:
+        logger.info(f'miner checkpoint version {miner_version["globalver"], miner_version["inneropt"]} > validator checkpoint version {validator_version["globalver"]}')
+        return miner_ckpt_found, miner_version, latest_miner_ckpt/'model.pt'
     else:
-        return validator_ckpt_found, {'gloablopt': miner_ckpt_meta['globalopt'], 'inneropt': 0}, latest_validator_ckpt
+        logger.info(f'validator checkpoint version {validator_version["globalver"]} > miner checkpoint version {miner_version["globalver"], miner_version["inneropt"]}')
+        return validator_ckpt_found, miner_version['globalver'], latest_validator_ckpt
 
 
-def get_resume_info(rank: int, config: MinerConfig | ValidatorConfig, path : Path | None = None) -> tuple[bool, dict, str | None]:
+def get_resume_info(rank: int, config: MinerConfig | ValidatorConfig, path : Path | None = None) -> tuple[bool, dict, Path | None]:
     """
     Retrieves the resume information for a given rank and checkpoint configuration.
 
@@ -68,8 +71,8 @@ def get_resume_info(rank: int, config: MinerConfig | ValidatorConfig, path : Pat
             logger.info(f"rank {rank}: No checkpoints found in {config.ckpt.checkpoint_path}, starting from scratch")
             return False, {}, None
 
-        latest_ckpt = ckpt_files[0][0]
-        version = ckpt_files[0][1]
+        latest_ckpt = ckpt_files[0]['filename']
+        version = ckpt_files[0]
         logger.info(f"rank {rank}: Latest checkpoint found in {latest_ckpt}")
         return True, version, latest_ckpt
 
@@ -294,14 +297,14 @@ def get_sorted_checkpoints(checkpoint_path: str):
             continue
 
         # ensure both fields exist and are numeric
-        meta["globalopt"] = int(meta.get("globalopt") or 0)
-        meta["inneropt"] = int(meta.get("inneropt") or 0)
+        meta["globalver"] = int(meta.get("globalver") or -1)
+        meta["inneropt"] = int(meta.get("inneropt") or -1)
         ckpt_files[f] = meta
 
-    # sort descending by globalopt, then inneropt
+    # sort descending by globalver, then inneropt
     sorted_ckpt_files = sorted(
-        ckpt_files.items(),
-        key=lambda item: (-item[1]["globalopt"], -item[1]["inneropt"]),
+        ckpt_files.values(),
+        key=lambda item: (-item["globalver"], -item["inneropt"]),
     )
 
     return sorted_ckpt_files

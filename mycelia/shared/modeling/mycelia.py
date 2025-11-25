@@ -60,7 +60,7 @@ logger = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------
 # Loading helpers
 # ---------------------------------------------------------------------
-def get_model(
+def get_base_model(
     config: MinerConfig | ValidatorConfig,
     expert_manager: ExpertManager,
     group_ids: List | None = None, 

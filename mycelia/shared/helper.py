@@ -27,7 +27,7 @@ def convert_to_str(obj):
     if isinstance(obj, tuple):
         return tuple(convert_to_str(i) for i in obj)
 
-    if not isinstance(obj, int):
+    if not isinstance(obj, int) and not isinstance(obj, float) and obj is not None:
         return str(obj)
     
     return obj   
@@ -88,4 +88,6 @@ def parse_dynamic_filename(filename: str) -> dict:
         meta[key] = value
         i += 2
 
+    meta['filename'] = Path(filename)
+    
     return meta
