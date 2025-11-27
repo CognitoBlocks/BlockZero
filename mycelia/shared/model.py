@@ -32,7 +32,7 @@ def get_model_from_checkpoint(rank: int, config: MinerConfig | ValidatorConfig, 
     latest_checkpoint_path = None
     if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
         resume, model_version, latest_checkpoint_path = start_model_from(rank, config)
-
+        
     model = get_base_model(
         config, 
         expert_manager=expert_manager, 

@@ -8,6 +8,7 @@ import hashlib
 from time import time
 import hashlib
 import os
+import zipfile
 from typing import Any, Dict, Optional
 import requests
 from requests import Response
@@ -218,6 +219,19 @@ def download_model(
                     rate = (downloaded - start_at) / max(1e-6, (now - t0))
                     print(f"\rDownloading: {bar} @ {human(rate)}/s", end="", flush=True)
                     last_print = now
+
+        # --- If the downloaded file is a zip, unzip it ---
+        try:
+            if zipfile.is_zipfile(out):
+                print(f"Detected zip archive at {out}, extracting...")
+                with zipfile.ZipFile(out, "r") as zf:
+                    zf.extractall(out.parent)
+                print(f"Extracted files to {out.parent}")
+                # optional: remove the zip after extraction
+                # out.unlink()
+        except Exception as e:
+            # Don't fail the whole download if extraction goes wrong
+            print(f"Warning: failed to extract zip archive {out}: {e}")
 
         # final line
         elapsed = max(1e-6, time() - t0)

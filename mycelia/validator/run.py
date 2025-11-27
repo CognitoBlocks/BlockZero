@@ -285,7 +285,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
         outer_optimizer,
         outer_scaler,
         start_step,
-        em,
+        expert_manager,
         train_dataloader,
     ) = setup_training(config, rank, device, tokenizer)
 
@@ -415,7 +415,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
 
             # === save checkpoint ===
             logger.info(f"(7) Saving checkpoint")
-            ckpt_path = os.path.join(config.ckpt.checkpoint_path, f"global_opt_step_{int(global_opt_step)}")
+            ckpt_path = os.path.join(config.ckpt.checkpoint_path, f"globalopt_{int(global_opt_step)}")
 
             save_checkpoint(
                 checkpoint_path=ckpt_path,
@@ -426,6 +426,8 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                 data_loader=train_dataloader,
                 save_global_state=rank == 0,
                 rank=rank,
+                expert_manager=expert_manager,
+                save_model_by_expert_group=True,
             )
 
             # === Comit to chain for new model ===

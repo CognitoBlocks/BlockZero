@@ -2,13 +2,16 @@
 import os
 import re
 import aiofiles
+import tempfile
+import zipfile
 import hashlib
 import mimetypes
 import contextlib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 import uvicorn
+import glob
 
 import bittensor
 from fastapi import FastAPI, HTTPException, Header, Request, File, UploadFile, Form
@@ -139,10 +142,7 @@ async def get_checkpoint(
     origin_hotkey_ss58: str = Form(None, description="Sender's hotkey"),
     block: int = Form(None, description="The block that the message was sent."), # insecure, do not use this field for validation, TODO: change it to block hash? 
     signature: str = Form(None, description="Signed message"),
-
-    # uid: str = Form(..., description="Unique client/user identifier"),
-    # hotkey: Optional[str] = Form(None, description="Optional client routing key"),
-    expert_group_id: Optional[int] = Form(None, description="Optional expert group to fetch")
+    expert_group_ids: Optional[List[int]] = Form(None, description="List of expert groups to fetch")
 ):
     """GET to download the configured checkpoint immediately."""
     logger.info(f"checkpoint, A")
@@ -164,10 +164,65 @@ async def get_checkpoint(
     if not latest_checkpoint_path:
         raise HTTPException(status_code=500, detail="CHECKPOINT_PATH env var is not set")
 
-    latest_checkpoint_path = os.path.join(latest_checkpoint_path, f"model.pt")
-    logger.info(f"checkpoint, last {latest_checkpoint_path}")
-    result = file_response_for(Path(latest_checkpoint_path), f"step{start_step}")
-    return result
+    # Case 1: no expert group requested → old behavior
+    if expert_group_ids is None:
+        latest_checkpoint_path = os.path.join(latest_checkpoint_path, f"model.pt")
+        logger.info(f"checkpoint, last {latest_checkpoint_path}")
+        result = file_response_for(Path(latest_checkpoint_path), f"step{start_step}")
+        return result
+    
+    else:
+        # Case 2: specific expert group requested → zip pre-split files directly
+        ckpt_dir = latest_checkpoint_path  # directory that contains group_*.pt / shared*.pt
+        expert_group_ids.sort()
+
+        # Deterministic zip name for this combination of groups + step
+        zip_name = f"expert_group_step{start_step}_{','.join(str(x) for x in expert_group_ids)}.zip"
+        zip_path = os.path.join(ckpt_dir, zip_name)
+
+        # If the zip already exists, skip re-creating it
+        if os.path.exists(zip_path):
+            return FileResponse(
+                zip_path,
+                filename=zip_name,
+                media_type="application/zip",
+            )
+
+        # All files related to this expert group, e.g.:
+        #   group_{gid}.pt
+        #   group_{gid}_rank0.pt
+        #   group_{gid}_shard1.pt
+        model_files = []
+        for expert_group_id in expert_group_ids:
+            group_pattern = os.path.join(ckpt_dir, f"group_{expert_group_id}*.pt")
+            model_files += glob.glob(group_pattern)
+
+        # All shared files, e.g.:
+        #   shared.pt
+        #   shared_rank0.pt
+        shared_pattern = os.path.join(ckpt_dir, "shared*.pt")
+        model_files += glob.glob(shared_pattern)
+
+        # Create a temp dir for the zip
+        tmp_dir = tempfile.mkdtemp(
+            prefix=zip_name.replace('.zip', '_'),
+            dir=ckpt_dir,
+        )
+
+        zip_name = f"expert_group_{','.join(str(x) for x in expert_group_ids)}.zip"
+        zip_path = os.path.join(tmp_dir, zip_name)
+
+        # Write all related files into the zip (group + shared)
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for path in model_files:
+                arcname = os.path.basename(path)
+                zf.write(path, arcname=arcname)
+
+        return FileResponse(
+            zip_path,
+            filename=zip_name,
+            media_type="application/zip",
+        )
 
 
 # miners submit checkpoint

@@ -7,17 +7,28 @@ from pathlib import Path
 import re
 import os
 
+import os
+import torch
+from typing import Dict, Tuple, Optional, List
+
 from copy import deepcopy
 from mycelia.shared.config import MinerConfig, ValidatorConfig
 from fsspec.generic import GenericFileSystem
 from torchdata.stateful_dataloader import StatefulDataLoader
 from mycelia.shared.app_logging import structlog
-from mycelia.shared.helper import parse_dynamic_filename
+from mycelia.shared.helper import parse_dynamic_filename, get_nested_attr
+from mycelia.shared.expert_manager import ExpertManager, ExpertAssignments, get_layer_expert_id
 
 logger = structlog.getLogger(__name__)
+ 
 
 def start_model_from(rank: int, config: MinerConfig) -> Tuple[bool, int | None, int | None, str | Path]:
 
+    # if it is a validator, then just start from its own checkpoint 
+    if get_nested_attr(config, "miner.validator_checkpoint_path", True): 
+        logger.info('returning regular validator checkpoint')
+        return get_resume_info(rank, config, config.ckpt.checkpoint_path)
+    
     validator_ckpt_found, validator_version, latest_validator_ckpt = get_resume_info(rank, config, config.miner.validator_checkpoint_path)
     miner_ckpt_found, miner_version, latest_miner_ckpt = get_resume_info(rank, config, config.ckpt.checkpoint_path)
 
@@ -77,6 +88,67 @@ def get_resume_info(rank: int, config: MinerConfig | ValidatorConfig, path : Pat
         return True, version, latest_ckpt
 
 
+
+def save_state_dict_by_expert_group(
+    state_dict: Dict[str, torch.Tensor],
+    expert_groups: ExpertAssignments,
+    save_dir: str | Path,
+):
+    """
+    Split a full model state_dict into multiple groups:
+      - one per expert_group
+      - one "shared" group for params not belonging to any expert group.
+
+    The resulting files are saved as:
+      {save_dir}/group_{gid}.pt
+      {save_dir}/shared.pt
+    """
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    # output buckets
+    grouped_state = {gid: {} for gid in expert_groups.keys()}
+    grouped_state["shared"] = {}
+
+    # Build fast-lookup structure:
+    # expert_lookup[(layer_id, org_expert_id)] = group_id
+    expert_lookup = {}  # maps (layer, expert) -> group_id
+    for gid, layer_map in expert_groups.items():
+        for layer_id, mappings in layer_map.items():
+            for my_eid, org_eid in mappings:
+                expert_lookup[(layer_id, my_eid)] = gid
+
+    # Iterate model weights
+    for name, tensor in state_dict.items():
+
+        layer_id, expert_id = get_layer_expert_id(name)
+
+        # CASE 1: Not an expert parameter → goes to shared
+        if layer_id is None or expert_id is None:
+            grouped_state["shared"][name] = tensor
+            continue
+
+        # CASE 2: Check if this expert (layer_id, expert_id) belongs to any group
+        key = (layer_id, expert_id)
+        gid = expert_lookup.get(key, None)
+
+        if gid is None:
+            # expert exists but not assigned to any group → shared
+            grouped_state["shared"][name] = tensor
+        else:
+            grouped_state[gid][name] = tensor
+
+    # Save the groups
+    paths = {}
+    for gid, sd in grouped_state.items():
+        fname = f"model_expgroup_{gid}.pt" if gid != "shared" else "shared.pt"
+        path = os.path.join(save_dir, fname)
+        torch.save({"state_dict": sd}, path)
+        paths[gid] = path
+
+    return paths
+
+
 def save_checkpoint(
     checkpoint_path: str,
     model: torch.nn.Module,
@@ -89,6 +161,8 @@ def save_checkpoint(
     loss: float | None = None,
     data_loader: StatefulDataLoader | None = None,
     save_global_state: bool = True,
+    save_model_by_expert_group: bool = False,
+    expert_manager: ExpertManager | None = None,
 ) -> None:
     """
     Saves the current model checkpoint.
@@ -97,15 +171,19 @@ def save_checkpoint(
         None
     """
     # === save model, optimizer ===
-    checkpoint = {
-        "model_state_dict": {k: v.detach().to("cpu", non_blocking=True) for k, v in model.state_dict().items()},
-        "loss": loss,
-    }
 
-    target = os.path.join(checkpoint_path, f"model.pt")
-    if not os.path.exists(target):
-        with fsspec.open(target, "wb") as f:
-            torch.save(checkpoint, f)
+    if save_model_by_expert_group and expert_manager is not None:
+        state_dict = {k: v.detach().to("cpu", non_blocking=True) for k, v in model.state_dict().items()}
+        save_state_dict_by_expert_group(state_dict, expert_manager.expert_group_assignment, checkpoint_path)
+    else:
+        checkpoint = {
+            "model_state_dict": {k: v.detach().to("cpu", non_blocking=True) for k, v in model.state_dict().items()},
+            "loss": loss,
+        }
+        target = os.path.join(checkpoint_path, f"model.pt")
+        if not os.path.exists(target):
+            with fsspec.open(target, "wb") as f:
+                torch.save(checkpoint, f)
 
     # === save optimizer ===
     if inner_optimizer is not None:
@@ -292,6 +370,8 @@ def get_sorted_checkpoints(checkpoint_path: str):
 
     ckpt_files = {}
     for f in fs.ls(root, detail=False):
+        if "yaml" in f.lower():    # safer, catches .YAML/.Yaml/.yml too
+            continue
         meta = parse_dynamic_filename(f)
         if meta is None:
             continue
