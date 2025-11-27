@@ -14,7 +14,7 @@ logger = structlog.get_logger(__name__)
 
 
 def get_init_peer_id():
-    return ['/ip4/127.0.0.1/tcp/41001/p2p/12D3KooWJbtD23NdFUF7wFCFx6Jz2QTW7C6jM9LmGFgpe4cW4s4Y']
+    return ["/ip4/127.0.0.1/tcp/41001/p2p/12D3KooWJbtD23NdFUF7wFCFx6Jz2QTW7C6jM9LmGFgpe4cW4s4Y"]
 
 
 def connect_with_peers():
@@ -95,6 +95,7 @@ def unpack_to_grads(buff_meta):
 
 from hivemind.averaging.allreduce import AveragingMode
 
+
 def build_grad_buff_from_model(
     model: nn.Module,
     expert_group_assignment: Dict[int, Dict[int, List[int]]],
@@ -165,6 +166,11 @@ def build_averagers_from_buff(
             allreduce_timeout=120,
             client_mode=False,
         )
-        logger.info("build hivemind averager - shared", prefix=prefix, mode=group_averagers[group_id].mode, client_mode = group_averagers[group_id].client_mode)
+        logger.info(
+            "build hivemind averager - shared",
+            prefix=prefix,
+            mode=group_averagers[group_id].mode,
+            client_mode=group_averagers[group_id].client_mode,
+        )
 
     return group_averagers

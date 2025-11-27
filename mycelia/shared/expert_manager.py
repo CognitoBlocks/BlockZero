@@ -19,9 +19,10 @@ logger = structlog.getLogger(__name__)
 # ------------------------------------------------------------
 # Expert Manager
 # ------------------------------------------------------------
-ExpertMapping = Tuple[int, int]                     # (my_expert_idx, org_expert_idx)
-LayerAssignments = Dict[int, List[ExpertMapping]]   # layer_id -> list of mappings
-ExpertAssignments = Dict[int, LayerAssignments]     # group_id -> layer assignments
+ExpertMapping = Tuple[int, int]  # (my_expert_idx, org_expert_idx)
+LayerAssignments = Dict[int, List[ExpertMapping]]  # layer_id -> list of mappings
+ExpertAssignments = Dict[int, LayerAssignments]  # group_id -> layer assignments
+
 
 class ExpertManager:
     """
@@ -74,7 +75,7 @@ class ExpertManager:
                     expert_ids.add(my_expert_idx)
 
         return len(expert_ids)
-    
+
     def get_num_experts_in_group(self, group_id) -> int:
         """
         Total count of unique my_expert_idx across all groups/layers.
@@ -86,7 +87,7 @@ class ExpertManager:
                 expert_ids.add(my_expert_idx)
 
         return len(expert_ids)
-    
+
     def set_expert_layers(self, model: nn.Module) -> List[int]:
         """
         Inspect model state_dict keys to locate layers that include experts.
@@ -122,7 +123,7 @@ class ExpertManager:
         expert_assignments: ExpertAssignments = {}
 
         for task_folder in task_folders:
-            logger.info('loading task folder', task_folder)
+            logger.info("loading task folder", task_folder)
             # Load per-task config (to get expert_group_id)
             task_config = TaskCfg.from_path(task_folder / "config.yaml")
 
@@ -175,10 +176,7 @@ class ExpertManager:
 
         if duplicates:
             # Show a concise but useful error
-            msg = (
-                "Duplicate mycelia_expert_idx found within expert groups/layers:\n"
-                + "\n".join(duplicates[:10])
-            )
+            msg = "Duplicate mycelia_expert_idx found within expert groups/layers:\n" + "\n".join(duplicates[:10])
             if len(duplicates) > 10:
                 msg += f"\n... and {len(duplicates) - 10} more"
             raise ValueError(msg)
@@ -195,7 +193,7 @@ class ExpertManager:
         """
         if self.expert_layers is None:
             return
-          
+
         expected = set(self.expert_layers)
         errors = []
 
@@ -203,7 +201,7 @@ class ExpertManager:
             actual = set(layers.keys())
 
             missing = expected - actual
-            extra   = actual - expected
+            extra = actual - expected
 
             if missing or extra:
                 msg = [f"Group {group_id} layer mismatch:"]
@@ -216,15 +214,16 @@ class ExpertManager:
                 errors.append("\n".join(msg))
 
         if errors:
-            raise ValueError(
-                "Expert layer validation failed:\n\n" + "\n\n".join(errors)
-            )
+            raise ValueError("Expert layer validation failed:\n\n" + "\n\n".join(errors))
+
+
 # ------------------------------------------------------------
 # Utilities
 # ------------------------------------------------------------
 def is_expert_param(name: str) -> bool:
     """Heuristic to detect MoE expert parameters by name."""
     return "expert" in name  # customize if needed (e.g., "experts.")
+
 
 def get_layer_expert_id(layer_name: str) -> Tuple[Optional[int], Optional[int]]:
     """
@@ -243,7 +242,9 @@ def get_layer_expert_id(layer_name: str) -> Tuple[Optional[int], Optional[int]]:
     return layer_id, expert_id
 
 
-def split_into_groups(lst: List[int], num_groups: int, shuffle: bool = False, seed: int | None = 123) -> Dict[int, List[int]]:
+def split_into_groups(
+    lst: List[int], num_groups: int, shuffle: bool = False, seed: int | None = 123
+) -> Dict[int, List[int]]:
     """
     Deterministically split a list of items into `num_groups` interleaved buckets.
 
@@ -277,9 +278,9 @@ def split_into_groups(lst: List[int], num_groups: int, shuffle: bool = False, se
         return {i: shuffled[i::num_groups] for i in range(num_groups)}
 
     else:
-        return { i: lst[i * (len(lst)//num_groups) : (i + 1) * (len(lst)//num_groups)] for i in range(num_groups) }
-   
-    
+        return {i: lst[i * (len(lst) // num_groups) : (i + 1) * (len(lst) // num_groups)] for i in range(num_groups)}
+
+
 def create_expert_groups(
     my_rank: int, rank_group_assignment: Mapping[int, Iterable[int]]
 ) -> Tuple[int, Dict[int, dist.ProcessGroup]]:
@@ -319,6 +320,7 @@ def create_expert_groups(
         raise ValueError(f"Rank {my_rank} not present in any provided group assignment")
 
     return group_ids, expert_groups
+
 
 # ------------------------------------------------------------
 # Synchronization primitives

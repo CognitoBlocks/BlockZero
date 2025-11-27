@@ -27,8 +27,9 @@ from mycelia.shared.helper import *
 
 logger = structlog.get_logger(__name__)
 
+
 class TopKRouter(nn.Module):
-    def __init__(self, config, available_experts = None):
+    def __init__(self, config, available_experts=None):
         super().__init__()
         self.top_k = config.num_experts_per_tok
         self.num_experts = config.num_experts
@@ -61,7 +62,7 @@ class TopKRouter(nn.Module):
         routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
         if self.norm_topk_prob:
             routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
-        
+
         # we cast back to the input dtype
         routing_weights = routing_weights.to(hidden_states.dtype)
         return router_logits, routing_weights, selected_experts
@@ -69,10 +70,10 @@ class TopKRouter(nn.Module):
 
 class SparseMoeBlock(Qwen3NextSparseMoeBlock):
     def __init__(
-            self, 
-            config, 
-            layer_id: int,
-        ):
+        self,
+        config,
+        layer_id: int,
+    ):
         super().__init__(config)
 
         if config.expert_group_assignment is not None:
@@ -83,23 +84,19 @@ class SparseMoeBlock(Qwen3NextSparseMoeBlock):
 
             allowed_expert_id = []
             for group_id in group_ids:
-                allowed_expert_id += [my_expert_id for my_expert_id, org_expert_id in config.expert_group_assignment[group_id][layer_id]]
+                allowed_expert_id += [
+                    my_expert_id for my_expert_id, org_expert_id in config.expert_group_assignment[group_id][layer_id]
+                ]
         else:
             allowed_expert_id = list(range(config.num_experts))
-        
+
         self.available_experts = torch.as_tensor([int(k) for k in allowed_expert_id])
         self.gate = TopKRouter(config, self.available_experts)
 
         self.experts = nn.ModuleDict(
-            {
-                str(i): Qwen3NextMLP(
-                    config,
-                    intermediate_size=config.moe_intermediate_size
-                )
-                for i in allowed_expert_id
-            }
+            {str(i): Qwen3NextMLP(config, intermediate_size=config.moe_intermediate_size) for i in allowed_expert_id}
         )
-    
+
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """ """
         batch_size, sequence_length, hidden_dim = hidden_states.shape
@@ -140,21 +137,23 @@ class SparseMoeBlock(Qwen3NextSparseMoeBlock):
 
         final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
         return final_hidden_states, router_logits
-    
+
+
 class DecoderLayer(Qwen3NextDecoderLayer):
     def __init__(
-            self, 
-            config: Qwen3NextConfig, 
-            layer_idx: int,
-        ):
+        self,
+        config: Qwen3NextConfig,
+        layer_idx: int,
+    ):
         super().__init__(config, layer_idx)
         if (layer_idx not in config.mlp_only_layers) and (
             config.num_experts > 0 and (layer_idx + 1) % config.decoder_sparse_step == 0
         ):
             self.mlp = SparseMoeBlock(
                 config,
-                layer_id = layer_idx,
+                layer_id=layer_idx,
             )
+
 
 class CustomPreTrainedModel(Qwen3NextPreTrainedModel):
     config: Qwen3NextConfig
@@ -172,26 +171,29 @@ class CustomPreTrainedModel(Qwen3NextPreTrainedModel):
     }
     _is_stateful = True
 
+
 class CustomQwen3NextModel(Qwen3NextModel):
     def __init__(self, config: Qwen3NextConfig):
         super().__init__(config)
-        self.layers = nn.ModuleList(
-            [DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
-        )
+        self.layers = nn.ModuleList([DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)])
 
-def get_moe_model_config(config: MinerConfig, topk: int, group_ids: List | None, expert_manager: ExpertManager) -> PretrainedConfig:
 
+def get_moe_model_config(
+    config: MinerConfig, topk: int, group_ids: List | None, expert_manager: ExpertManager
+) -> PretrainedConfig:
     # get the base config from qwen model
     base_config = AutoConfig.from_pretrained(config.model.model_path)
 
     # full/partial dependent configuration
     base_config.num_experts_per_tok = int(topk)
-    base_config.group_ids = group_ids # in list, cause you may load a partial model that contains multiple group id 
-    
+    base_config.group_ids = group_ids  # in list, cause you may load a partial model that contains multiple group id
+
     # merge our subnet config to the base config
     base_config.n_group = config.moe.num_worker_groups
     base_config.max_position_embeddings = config.task.data.sequence_length
-    base_config.num_experts = expert_manager.num_experts # this stays the same regardless of full/partial cause we keep the same router size either case
+    base_config.num_experts = (
+        expert_manager.num_experts
+    )  # this stays the same regardless of full/partial cause we keep the same router size either case
     base_config.output_router_logits = get_nested_attr(config, "moe.aux_load_balance", False)
     base_config.router_aux_loss_coef = get_nested_attr(config, "moe.router_aux_loss_coef", False)
     base_config.expert_group_assignment = expert_manager.expert_group_assignment

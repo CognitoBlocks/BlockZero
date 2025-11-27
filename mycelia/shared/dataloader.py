@@ -15,6 +15,7 @@ from mycelia.shared.helper import import_from_string
 
 logger = logging.getLogger(__name__)
 
+
 # -----------------------------
 # Dataset
 # -----------------------------
@@ -43,17 +44,16 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
         self.seq_length = seq_length
 
     def __iter__(self):
-        format_fn_partial = partial(self.tokenize_and_format, tokenizer = self.tokenizer, sequence_length = self.seq_length)
+        format_fn_partial = partial(self.tokenize_and_format, tokenizer=self.tokenizer, sequence_length=self.seq_length)
         return iter(self.hf_iterable.map(format_fn_partial, remove_columns=self.hf_iterable.column_names))
-        
+
     @staticmethod
     def tokenize_and_format(
-            example: Dict[str, str], tokenizer: PreTrainedTokenizerBase, sequence_length: int
-        ) -> Dict[str, list]:
-        
+        example: Dict[str, str], tokenizer: PreTrainedTokenizerBase, sequence_length: int
+    ) -> Dict[str, list]:
         text = example.get("text", "")
-        return tokenizer(text, truncation=True, max_length=sequence_length, padding="max_length") # type: ignore 
-    
+        return tokenizer(text, truncation=True, max_length=sequence_length, padding="max_length")  # type: ignore
+
     @classmethod
     def get_tokenised_dataset(
         cls,
@@ -95,7 +95,7 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
         )
 
         return tokenized_stream
-    
+
 
 # -----------------------------
 # Dataloader
@@ -145,11 +145,11 @@ def get_dataloader(
         DatasetCls = import_from_string(dataset_class_path)
 
     tokenised_dataset = DatasetCls.get_tokenised_dataset(
-        config = config,
-        tokenizer = tokenizer, 
-        rank = rank,
-        world_size = world_size,
-        train = train,
+        config=config,
+        tokenizer=tokenizer,
+        rank=rank,
+        world_size=world_size,
+        train=train,
     )
 
     # Collator for causal LM (no MLM)
@@ -164,6 +164,3 @@ def get_dataloader(
         num_workers=4,  # tune based on CPU/disk throughput
     )
     return loader
-
-
-

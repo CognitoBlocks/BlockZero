@@ -87,7 +87,9 @@ def cleanup() -> None:
     torch.cuda.synchronize()
 
 
-def setup_training(config, rank: int, device: torch.device, tokenizer: PreTrainedTokenizerBase) -> Tuple[
+def setup_training(
+    config, rank: int, device: torch.device, tokenizer: PreTrainedTokenizerBase
+) -> Tuple[
     torch.nn.Module,  # model
     torch.nn.Module,  # global_model
     torch.optim.Optimizer,  # inner_optimizer
@@ -98,7 +100,7 @@ def setup_training(config, rank: int, device: torch.device, tokenizer: PreTraine
     # int,  # start_step
     "ExpertManager",  # em
     StatefulDataLoader,
-    dict, # current model version
+    dict,  # current model version
 ]:
     """
     Build model(s), experts layout, optimizers, scheduler, scaler, and optionally resume from a checkpoint.
@@ -193,7 +195,7 @@ def setup_training(config, rank: int, device: torch.device, tokenizer: PreTraine
         scheduler,
         expert_manager,
         train_dataloader,
-        model_version
+        model_version,
     )
 
 
@@ -240,7 +242,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
         # start_step,
         em,
         train_dataloader,
-        model_version
+        model_version,
     ) = setup_training(config, rank, device, tokenizer)
 
     # === training ===
@@ -254,7 +256,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
     outer_optimizer.zero_grad()
     try:
         for step, batch in enumerate(
-            iterable=train_dataloader, start=model_version['inneropt'] * config.local_par.gradient_accumulation_steps
+            iterable=train_dataloader, start=model_version["inneropt"] * config.local_par.gradient_accumulation_steps
         ):
             # for each step, we run 1 backward
             # for each inner_opt_step, we run local optimization; gradient_accumulation_steps = 1 real step
@@ -276,7 +278,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
 
             inner_opt_step = step // config.local_par.gradient_accumulation_steps
             is_inner_optimizer_step = step % config.local_par.gradient_accumulation_steps == 0
-            is_start_step = step == model_version['inneropt'] * config.local_par.gradient_accumulation_steps
+            is_start_step = step == model_version["inneropt"] * config.local_par.gradient_accumulation_steps
 
             # === Training and inner optimization ===
             if (
@@ -352,7 +354,6 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
 
             # === local validation and log metric ===
             if is_inner_optimizer_step and inner_opt_step % config.log.metric_interval == 0:
-
                 logp(f"reached barrier, waiting for partial evaluation")
                 dist.barrier(device_ids=[rank])
 
@@ -390,7 +391,9 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 and inner_opt_step % config.ckpt.checkpoint_interval == 0
             ):
                 logp(f"saving checkpoint")
-                ckpt_path = os.path.join(config.ckpt.checkpoint_path, f"globalver_{model_version['globalver']}_inneropt_{inner_opt_step}")
+                ckpt_path = os.path.join(
+                    config.ckpt.checkpoint_path, f"globalver_{model_version['globalver']}_inneropt_{inner_opt_step}"
+                )
 
                 save_checkpoint(
                     checkpoint_path=ckpt_path,
@@ -417,8 +420,8 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
 
             # === reload model ===
             if (
-                is_inner_optimizer_step and
-                start_model_from(rank, config)[1]['global_opt'] == model_version['globalver']
+                is_inner_optimizer_step
+                and start_model_from(rank, config)[1]["global_opt"] == model_version["globalver"]
             ):
                 dist.barrier(device_ids=[rank])  # make sure everything is saved and everyone is ready to load
                 logp("freeing cuda memory")
@@ -435,7 +438,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                     # start_step,
                     em,
                     train_dataloader,
-                    model_version
+                    model_version,
                 ) = setup_training(config, rank, device, tokenizer)
 
             # === Clean up ===

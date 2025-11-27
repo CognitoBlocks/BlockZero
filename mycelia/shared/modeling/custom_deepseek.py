@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import os
@@ -187,8 +186,8 @@ class CustomDeekSeekMoE(DeepseekV3ForCausalLM):
 
         self.model.layers = nn.ModuleList(layers)
 
-def get_moe_model_config(config: MinerConfig, topk: int, org_model_config: AutoConfig = None) -> PretrainedConfig:
 
+def get_moe_model_config(config: MinerConfig, topk: int, org_model_config: AutoConfig = None) -> PretrainedConfig:
     # get the base config from qwen model
     base_config = AutoConfig.from_pretrained("deepseek-ai/DeepSeek-V3")  # TODO: need user permission
     # base_config = AutoConfig.from_pretrained(config.model.model_path, trust_remote_code=True) #TODO: need user permission

@@ -19,35 +19,42 @@ from mycelia.shared.helper import get_nested_attr, parse_dynamic_filename
 
 
 logger = structlog.getLogger(__name__)
- 
 
-def start_model_from(rank: int, config: MinerConfig) -> Tuple[bool, Dict , str | Path | None]:
 
-    # if it is a validator, then just start from its own checkpoint 
-    if get_nested_attr(config, "miner.validator_checkpoint_path", True): 
-        logger.info('returning regular validator checkpoint')
+def start_model_from(rank: int, config: MinerConfig) -> Tuple[bool, Dict, str | Path | None]:
+    # if it is a validator, then just start from its own checkpoint
+    if get_nested_attr(config, "miner.validator_checkpoint_path", True):
+        logger.info("returning regular validator checkpoint")
         return get_resume_info(rank, config, config.ckpt.checkpoint_path)
-    
-    validator_ckpt_found, validator_version, latest_validator_ckpt = get_resume_info(rank, config, config.miner.validator_checkpoint_path)
+
+    validator_ckpt_found, validator_version, latest_validator_ckpt = get_resume_info(
+        rank, config, config.miner.validator_checkpoint_path
+    )
     miner_ckpt_found, miner_version, latest_miner_ckpt = get_resume_info(rank, config, config.ckpt.checkpoint_path)
 
-    if not miner_ckpt_found:    
-        logger.info('miner checkpoint not found')
-        return validator_ckpt_found, validator_version['globalver'], latest_validator_ckpt
-    
+    if not miner_ckpt_found:
+        logger.info("miner checkpoint not found")
+        return validator_ckpt_found, validator_version["globalver"], latest_validator_ckpt
+
     if not validator_ckpt_found and latest_miner_ckpt is not None:
-        logger.info('validator checkpoint not found')
-        return miner_ckpt_found, miner_version, latest_miner_ckpt/'model.pt'
-    
-    if miner_version['globalver'] >= validator_version['globalver'] and latest_miner_ckpt is not None:
-        logger.info(f'miner checkpoint version {miner_version["globalver"], miner_version["inneropt"]} > validator checkpoint version {validator_version["globalver"]}')
-        return miner_ckpt_found, miner_version, latest_miner_ckpt/'model.pt'
+        logger.info("validator checkpoint not found")
+        return miner_ckpt_found, miner_version, latest_miner_ckpt / "model.pt"
+
+    if miner_version["globalver"] >= validator_version["globalver"] and latest_miner_ckpt is not None:
+        logger.info(
+            f'miner checkpoint version {miner_version["globalver"], miner_version["inneropt"]} > validator checkpoint version {validator_version["globalver"]}'
+        )
+        return miner_ckpt_found, miner_version, latest_miner_ckpt / "model.pt"
     else:
-        logger.info(f'validator checkpoint version {validator_version["globalver"]} > miner checkpoint version {miner_version["globalver"], miner_version["inneropt"]}')
-        return validator_ckpt_found, miner_version['globalver'], latest_validator_ckpt
+        logger.info(
+            f'validator checkpoint version {validator_version["globalver"]} > miner checkpoint version {miner_version["globalver"], miner_version["inneropt"]}'
+        )
+        return validator_ckpt_found, miner_version["globalver"], latest_validator_ckpt
 
 
-def get_resume_info(rank: int, config: MinerConfig | ValidatorConfig, path : Path | None = None) -> Tuple[bool, dict, Path | None]:
+def get_resume_info(
+    rank: int, config: MinerConfig | ValidatorConfig, path: Path | None = None
+) -> Tuple[bool, dict, Path | None]:
     """
     Retrieves the resume information for a given rank and checkpoint configuration.
 
@@ -70,9 +77,9 @@ def get_resume_info(rank: int, config: MinerConfig | ValidatorConfig, path : Pat
         try:
             if path == None:
                 path = config.ckpt.checkpoint_path
-            
+
             ckpt_files = get_sorted_checkpoints(path)
-            
+
         except FileNotFoundError:
             logger.info(f"rank {rank}: Checkpoint path {config.ckpt.checkpoint_path} not found, starting from scratch")
             return False, {}, None
@@ -81,11 +88,10 @@ def get_resume_info(rank: int, config: MinerConfig | ValidatorConfig, path : Pat
             logger.info(f"rank {rank}: No checkpoints found in {config.ckpt.checkpoint_path}, starting from scratch")
             return False, {}, None
 
-        latest_ckpt = ckpt_files[0]['filename']
+        latest_ckpt = ckpt_files[0]["filename"]
         version = ckpt_files[0]
         logger.info(f"rank {rank}: Latest checkpoint found in {latest_ckpt}")
         return True, version, latest_ckpt
-
 
 
 def save_state_dict_by_expert_group(
@@ -119,7 +125,6 @@ def save_state_dict_by_expert_group(
 
     # Iterate model weights
     for name, tensor in state_dict.items():
-
         layer_id, expert_id = get_layer_expert_id(name)
 
         # CASE 1: Not an expert parameter → goes to shared
@@ -364,12 +369,13 @@ def load_checkpoint(
 
     return global_state_dict["loss"]
 
+
 def get_sorted_checkpoints(checkpoint_path: str):
     fs, root = fsspec.core.url_to_fs(checkpoint_path)
 
     ckpt_files = {}
     for f in fs.ls(root, detail=False):
-        if "yaml" in f.lower():    # safer, catches .YAML/.Yaml/.yml too
+        if "yaml" in f.lower():  # safer, catches .YAML/.Yaml/.yml too
             continue
         meta = parse_dynamic_filename(f)
         if meta is None:
@@ -389,7 +395,6 @@ def get_sorted_checkpoints(checkpoint_path: str):
     return sorted_ckpt_files
 
 
-
 def delete_old_checkpoints(checkpoint_path: str, topk: int) -> list[str]:
     """
     Deletes old checkpoints, keeping only the top 'k' most recent ones.
@@ -403,7 +408,7 @@ def delete_old_checkpoints(checkpoint_path: str, topk: int) -> list[str]:
     """
     fs = GenericFileSystem()
     sorted_ckpt_files = get_sorted_checkpoints(checkpoint_path)
-     
+
     ckpt_deleted = []
     for ckpt_file, order in sorted_ckpt_files[:-topk]:
         fs.rm(ckpt_file, recursive=True)
@@ -411,7 +416,7 @@ def delete_old_checkpoints(checkpoint_path: str, topk: int) -> list[str]:
     return ckpt_deleted
 
 
-def delete_old_checkpoints_by_hotkey(folder_path : Path):
+def delete_old_checkpoints_by_hotkey(folder_path: Path):
     """
     Deletes all non-latest submission files coming from the same hotkey.
     Keeps only the file with the highest block number per hotkey.

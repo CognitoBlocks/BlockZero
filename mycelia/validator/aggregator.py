@@ -8,7 +8,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Literal, Optional, Tuple
 
 
-
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 

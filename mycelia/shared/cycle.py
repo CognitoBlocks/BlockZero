@@ -24,7 +24,7 @@ def should_submit_model(
     block = subtensor.block
     schedule = get_validation_schedule(config, subtensor)
     phase_status = get_phase_status(schedule, block)
-    should_submit = phase_status == "submission" 
+    should_submit = phase_status == "submission"
     block_till = schedule["submission_start_block"] - block
     if block_till < 0 and should_submit == False:
         block_till += config.cycle.validation_period
@@ -33,7 +33,6 @@ def should_submit_model(
 
 
 def should_start_validation(config: ValidatorConfig, subtensor: bittensor.Subtensor) -> Tuple[bool, int]:
-
     schedule = get_validation_schedule(config, subtensor)
     phase_status = get_phase_status(schedule, subtensor.block)
     should_start = phase_status == "validating"
@@ -47,7 +46,6 @@ def should_start_validation(config: ValidatorConfig, subtensor: bittensor.Subten
 def search_model_submission_destination(
     wallet: bittensor.wallet, config: MinerConfig, subtensor: bittensor.Subtensor
 ) -> bittensor.Axon:
-
     validator_miner_assignment = get_validator_miner_assignment(config, subtensor)
 
     for validator, miners in validator_miner_assignment.items():
@@ -116,7 +114,9 @@ def scan_for_new_model(
     hash_counts = Counter(mh for (_mv, mh, _uid, _ip, _port, hotkey) in newer_candidates)
     majority_hash, _count = hash_counts.most_common(1)[0]
 
-    filtered = [(mv, mh, uid, ip, port, hotkey) for (mv, mh, uid, ip, port, hotkey) in newer_candidates if mh == majority_hash]
+    filtered = [
+        (mv, mh, uid, ip, port, hotkey) for (mv, mh, uid, ip, port, hotkey) in newer_candidates if mh == majority_hash
+    ]
     if not filtered:
         return False, []
 
@@ -239,7 +239,6 @@ def get_validator_miner_assignment(config: WorkerConfig, subtensor: bittensor.Su
 def get_validation_schedule(
     config: WorkerConfig, subtensor: bittensor.Subtensor, block=None, last=False
 ) -> Dict[str, int]:
-
     if block == None:
         block = subtensor.block
 
@@ -298,7 +297,6 @@ def load_submission_files(folder: str = "miner_submission"):
 
 
 def gather_validation_job(config: ValidatorConfig, subtensor: bittensor.Subtensor, step: int) -> List[MinerEvalJob]:
-
     validation_schedule = get_validation_schedule(config, subtensor, last=True)
     validator_miner_assignment = get_validator_miner_assignment(config, subtensor)
     miner_assignment = validator_miner_assignment[config.chain.hotkey_ss58]
@@ -312,7 +310,10 @@ def gather_validation_job(config: ValidatorConfig, subtensor: bittensor.Subtenso
         ):
             miner_jobs.append(
                 MinerEvalJob(
-                    uid=submission_meta["uid"], hotkey=submission_meta["hotkey"], model_path= config.vali.miner_submission_path / file_name, step=step
+                    uid=submission_meta["uid"],
+                    hotkey=submission_meta["hotkey"],
+                    model_path=config.vali.miner_submission_path / file_name,
+                    step=step,
                 )
             )
 

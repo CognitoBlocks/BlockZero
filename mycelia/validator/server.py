@@ -140,9 +140,11 @@ async def get_checkpoint(
     authorization: Optional[str] = Header(default=None),
     target_hotkey_ss58: str = Form(None, description="Receiver's hotkey"),
     origin_hotkey_ss58: str = Form(None, description="Sender's hotkey"),
-    block: int = Form(None, description="The block that the message was sent."), # insecure, do not use this field for validation, TODO: change it to block hash? 
+    block: int = Form(
+        None, description="The block that the message was sent."
+    ),  # insecure, do not use this field for validation, TODO: change it to block hash?
     signature: str = Form(None, description="Signed message"),
-    expert_group_ids: Optional[List[int]] = Form(None, description="List of expert groups to fetch")
+    expert_group_ids: Optional[List[int]] = Form(None, description="List of expert groups to fetch"),
 ):
     """GET to download the configured checkpoint immediately."""
     logger.info(f"checkpoint, A")
@@ -152,10 +154,10 @@ async def get_checkpoint(
     verify_message(
         origin_hotkey_ss58=origin_hotkey_ss58,
         message=construct_block_message(
-            target_hotkey_ss58=target_hotkey_ss58, # TODO: assert hotkey is valid within the metagraph
-            block=block # TODO: change to block hash and assert it is not too far from current
+            target_hotkey_ss58=target_hotkey_ss58,  # TODO: assert hotkey is valid within the metagraph
+            block=block,  # TODO: change to block hash and assert it is not too far from current
         ),
-        signature_hex=signature
+        signature_hex=signature,
     )
 
     resume, start_step, latest_checkpoint_path = get_resume_info(rank=0, config=config)
@@ -170,7 +172,7 @@ async def get_checkpoint(
         logger.info(f"checkpoint, last {latest_checkpoint_path}")
         result = file_response_for(Path(latest_checkpoint_path), f"step{start_step}")
         return result
-    
+
     else:
         # Case 2: specific expert group requested → zip pre-split files directly
         ckpt_dir = latest_checkpoint_path  # directory that contains group_*.pt / shared*.pt
@@ -205,7 +207,7 @@ async def get_checkpoint(
 
         # Create a temp dir for the zip
         tmp_dir = tempfile.mkdtemp(
-            prefix=zip_name.replace('.zip', '_'),
+            prefix=zip_name.replace(".zip", "_"),
             dir=ckpt_dir,
         )
 
@@ -231,7 +233,9 @@ async def submit_checkpoint(
     authorization: Optional[str] = Header(default=None),
     target_hotkey_ss58: str = Form(None, description="Receiver's hotkey"),
     origin_hotkey_ss58: str = Form(None, description="Sender's hotkey"),
-    block: int = Form(None, description="The block that the message was sent."), # insecure, do not use this field for validation, TODO: change it to block hash? 
+    block: int = Form(
+        None, description="The block that the message was sent."
+    ),  # insecure, do not use this field for validation, TODO: change it to block hash?
     signature: str = Form(None, description="Signed message"),
     file: UploadFile = File(..., description="The checkpoint file, e.g. model.pt"),
 ):
@@ -284,17 +288,12 @@ async def submit_checkpoint(
 
     logger.info(f"Stored checkpoint at {dest_path} ({bytes_written} bytes) sha256={computed}")
 
-
     verify_message(
         origin_hotkey_ss58=origin_hotkey_ss58,
-        message=construct_model_message(
-            model_path=dest_path,
-            target_hotkey_ss58=target_hotkey_ss58,
-            block=block
-        ),
-        signature_hex=signature
+        message=construct_model_message(model_path=dest_path, target_hotkey_ss58=target_hotkey_ss58, block=block),
+        signature_hex=signature,
     )
-    
+
     logger.info(f"Verified submission at {dest_path}.")
 
     ckpt_deleted = delete_old_checkpoints_by_hotkey(config.ckpt.checkpoint_path)

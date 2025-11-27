@@ -24,7 +24,6 @@ logger = structlog.get_logger(__name__)
 
 
 def main(config):
-
     config.write()
 
     wallet, subtensor = setup_chain_worker(config)
@@ -59,7 +58,6 @@ def main(config):
 
                 while (not download_success) and (retries < max_retries):
                     for download_meta in download_metas:
-
                         logger.info("downloading from candidate... ", download_meta)
 
                         # Resolve URL if not provided; fall back to ip/port + default route
@@ -84,12 +82,12 @@ def main(config):
                         try:
                             download_model(
                                 url=url,
-                                my_hotkey=wallet.hotkey, #type: ignore
-                                target_hotkey_ss58=download_meta['target_hotksy_ss58'],
-                                block = subtensor.block,
+                                my_hotkey=wallet.hotkey,  # type: ignore
+                                target_hotkey_ss58=download_meta["target_hotksy_ss58"],
+                                block=subtensor.block,
                                 expert_group_id=config.expert_group_id,
-                                token=getattr(config.miner, "token", ""), 
-                                out=out_path
+                                token=getattr(config.miner, "token", ""),
+                                out=out_path,
                             )
                             # If download_model doesn't raise, consider it a success
                             download_success = True
@@ -131,9 +129,9 @@ def main(config):
             submit_model(
                 url=f"http://{destination_axon.ip}:{destination_axon.port}/submit-checkpoint",
                 token="",
-                my_hotkey = wallet.hotkey, #type: ignore
-                target_hotkey_ss58 = destination_axon.hotkey, 
-                block = subtensor.block,
+                my_hotkey=wallet.hotkey,  # type: ignore
+                target_hotkey_ss58=destination_axon.hotkey,
+                block=subtensor.block,
                 model_path=f"{latest_checkpoint_path}/model.pt",
             )
 

@@ -1,8 +1,9 @@
 from pathlib import Path
 import importlib
-from typing import Type, Dict, Any 
-import torch 
+from typing import Type, Dict, Any
+import torch
 import torch.nn.functional as F
+
 
 def route_tokens_to_experts(router_logits):
     routing_weights = F.softmax(router_logits, dim=-1, dtype=torch.float)
@@ -11,6 +12,7 @@ def route_tokens_to_experts(router_logits):
         routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
     routing_weights = routing_weights.to(router_logits.dtype)
     return selected_experts, routing_weights
+
 
 def convert_to_str(obj):
     """
@@ -29,8 +31,9 @@ def convert_to_str(obj):
 
     if not isinstance(obj, int) and not isinstance(obj, float) and obj is not None:
         return str(obj)
-    
-    return obj   
+
+    return obj
+
 
 def deep_update(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
     for k, v in overrides.items():
@@ -49,12 +52,14 @@ def import_from_string(path: str) -> Type:
     module = importlib.import_module(module_path)
     return getattr(module, class_name)
 
+
 def get_nested_attr(obj, attr_chain, default=None):
     for attr in attr_chain.split("."):
         obj = getattr(obj, attr, None)
         if obj is None:
             return default
     return obj
+
 
 def parse_dynamic_filename(filename: str) -> dict:
     """
@@ -88,6 +93,6 @@ def parse_dynamic_filename(filename: str) -> dict:
         meta[key] = value
         i += 2
 
-    meta['filename'] = Path(filename)
-    
+    meta["filename"] = Path(filename)
+
     return meta

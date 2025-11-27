@@ -6,12 +6,13 @@ import bittensor as bt
 import torch
 from substrateinterface import Keypair
 
+
 @dataclass
 class SignedMessage:
     target_hotkey_ss58: str
     origin_hotkey_ss58: str
     block: int
-    signature: str   # hex string or raw bytes
+    signature: str  # hex string or raw bytes
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -20,9 +21,11 @@ class SignedMessage:
     def from_dict(cls, d: dict):
         return cls(**d)
 
+
 @dataclass
 class SignedDownloadRequestMessage(SignedMessage):
     expert_group_id: int | None
+
 
 @dataclass
 class SignedModelSubmitMessage(SignedMessage):
@@ -55,13 +58,9 @@ def hash_model_bytes(model_bytes: bytes) -> bytes:
     Blake2b-256 hash (32 bytes) of the model.
     """
     return hashlib.blake2b(model_bytes, digest_size=32).digest()
-    
 
-def construct_model_message(
-    model_path: str | Path,
-    target_hotkey_ss58: str,
-    block: int
-):
+
+def construct_model_message(model_path: str | Path, target_hotkey_ss58: str, block: int):
     """
     Sign:
         model_hash(32 bytes) || construct_block_message(...)
@@ -106,10 +105,7 @@ def sign_message(origin_hotkey: Keypair, message: bytes):
     return origin_hotkey.sign(message).hex()
 
 
-
-def verify_message(origin_hotkey_ss58: str,
-                 message: bytes,
-                 signature_hex: str) -> bool:
+def verify_message(origin_hotkey_ss58: str, message: bytes, signature_hex: str) -> bool:
     """
     Verify the signature for the message: pubkey || block
     signed by the hotkey at `my_hotkey_ss58_address`.

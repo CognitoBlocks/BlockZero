@@ -74,7 +74,9 @@ def setup_chain_worker(config):
     return wallet, subtensor
 
 
-def setup_training(config, rank: int, device: torch.device, tokenizer: PreTrainedTokenizerBase) -> Tuple[
+def setup_training(
+    config, rank: int, device: torch.device, tokenizer: PreTrainedTokenizerBase
+) -> Tuple[
     torch.nn.Module,  # model
     torch.nn.Module,  # global_model
     torch.optim.Optimizer,  # outer_optimizer
@@ -170,16 +172,17 @@ def sync_grad_across_validators(
     group_averagers: Dict[str | int, DecentralizedAverager], group_grad_buff_meta: Dict[str | int, Any]
 ):
     for group_id, avg in group_averagers.items():
-
         if avg.total_size <= 0:
-            logger.info("skip averager", group_id = group_id, mode=avg.mode, total_size = avg.total_size)
+            logger.info("skip averager", group_id=group_id, mode=avg.mode, total_size=avg.total_size)
             continue
 
         pack_grads(group_grad_buff_meta[group_id])
         info = avg.step(allow_retries=False)
         unpack_to_grads(group_grad_buff_meta[group_id])
 
-        logger.info('sync grad across validator', group = group_id,  mode=avg.mode, successes = ("averaged" if info else "no group"))
+        logger.info(
+            "sync grad across validator", group=group_id, mode=avg.mode, successes=("averaged" if info else "no group")
+        )
 
 
 def run_global_optimization(
@@ -211,10 +214,16 @@ def run_global_optimization(
     new_expert_name, new_expert_sum = get_weight_sum(model, shared=False)
 
     logger.info(
-        f"outer optimizer step (shared)", param_name = old_shared_name, old_sum = round(float(old_shared_sum), 6), new_sum = round(float(new_shared_sum), 6)
+        f"outer optimizer step (shared)",
+        param_name=old_shared_name,
+        old_sum=round(float(old_shared_sum), 6),
+        new_sum=round(float(new_shared_sum), 6),
     )
     logger.info(
-        f"outer optimizer step (expert)", param_name = old_expert_name, old_sum = round(float(old_expert_sum), 6), new_sum = round(float(new_expert_sum), 6)
+        f"outer optimizer step (expert)",
+        param_name=old_expert_name,
+        old_sum=round(float(old_expert_sum), 6),
+        new_sum=round(float(new_expert_sum), 6),
     )
 
     global_model.to("cpu")
@@ -279,7 +288,9 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
     score_aggregator = MinerScoreAggregator()
 
     # === set up averager ===
-    group_grad_buff_meta = build_grad_buff_from_model(model=base_model, expert_group_assignment=em.expert_group_assignment)
+    group_grad_buff_meta = build_grad_buff_from_model(
+        model=base_model, expert_group_assignment=em.expert_group_assignment
+    )
 
     dht = connect_with_peers()
 
@@ -315,15 +326,14 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             # for each inner_opt_step, we run local optimization; gradient_accumulation_steps = 1 real step
             # for each global_opt_interval number of inner_opt_step, we synchronise weight from different ddp worker, and then run global optimization
 
-
-            # === Wait till next period === 
+            # === Wait till next period ===
             should_start = False
             while not should_start:
                 should_start, block_till = should_start_validation(config, subtensor)
-                logger.info("(0) Checking for start", should_start = should_start, block_till = block_till)
+                logger.info("(0) Checking for start", should_start=should_start, block_till=block_till)
                 if block_till > 0:
                     time.sleep((block_till) * 12)
-            
+
             # === Get miner ===
             logger.info("(1) Gathering miner job")
             miner_jobs = gather_validation_job(config, subtensor, step=global_opt_step)
@@ -331,47 +341,48 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
 
             # === Get miner model and evaluate the miners ===
             logger.info("(2) Evaluating miners")
-            asyncio.run(run_evaluation(
-                config = config,
-                step = global_opt_step,
-                device = base_model.device,
-                miners = miner_jobs,
-                score_aggregator = score_aggregator,
-                base_model = base_model,
-                tokenizer = tokenizer
-            ))
+            asyncio.run(
+                run_evaluation(
+                    config=config,
+                    step=global_opt_step,
+                    device=base_model.device,
+                    miners=miner_jobs,
+                    score_aggregator=score_aggregator,
+                    base_model=base_model,
+                    tokenizer=tokenizer,
+                )
+            )
 
-            logger.info("eval result", scores = score_aggregator.uid_score_pairs())
+            logger.info("eval result", scores=score_aggregator.uid_score_pairs())
 
             # === aggragate miner gradient change locally ===
             logger.info(f"(3) Aggregating miner gradient change")
-            asyncio.run(aggregate_miner_gradient_change(
-                base_model = base_model,
-                global_model = global_model,
-                device = torch.device('cpu'), # all gradient aggregation done on cpu
-                rank = rank,
-                outer_optimizer = outer_optimizer,
-                miner_jobs = miner_jobs,
-                score_aggregator = score_aggregator
-            ))
+            asyncio.run(
+                aggregate_miner_gradient_change(
+                    base_model=base_model,
+                    global_model=global_model,
+                    device=torch.device("cpu"),  # all gradient aggregation done on cpu
+                    rank=rank,
+                    outer_optimizer=outer_optimizer,
+                    miner_jobs=miner_jobs,
+                    score_aggregator=score_aggregator,
+                )
+            )
 
             # === aggragate miner gradient change ===
             logger.info(f"(4) Syncing gradient across validators")
-            sync_grad_across_validators(
-                group_averagers,
-                group_grad_buff_meta
-            )
+            sync_grad_across_validators(group_averagers, group_grad_buff_meta)
 
             # === global optimizer ===
             logger.info(f"(5) Running global model optimisation step")
             run_global_optimization(
-                model = base_model,
-                global_model = global_model,
-                device = device,
-                rank = rank,
-                outer_optimizer = outer_optimizer,
-                miner_jobs = miner_jobs,
-                score_aggregator = score_aggregator
+                model=base_model,
+                global_model=global_model,
+                device=device,
+                rank=rank,
+                outer_optimizer=outer_optimizer,
+                miner_jobs=miner_jobs,
+                score_aggregator=score_aggregator,
             )
 
             # === validation and log metric ===
@@ -382,13 +393,13 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
 
             metrics = (
                 get_status(
-                    config = config,
-                    model = base_model,
-                    step = global_opt_step,
-                    training_time = training_time,
-                    total_training_time = total_training_time,
-                    inner_opt_step = None,
-                    global_opt_step = global_opt_step,
+                    config=config,
+                    model=base_model,
+                    step=global_opt_step,
+                    training_time=training_time,
+                    total_training_time=total_training_time,
+                    inner_opt_step=None,
+                    global_opt_step=global_opt_step,
                     loss_batch=loss_batch,
                     aux_loss_batch=aux_loss_batch,
                 )

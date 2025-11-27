@@ -15,19 +15,21 @@ from mycelia.shared.modeling.mycelia import get_base_model
 logger = structlog.get_logger(__name__)
 
 
-def get_model_from_checkpoint(rank: int, config: MinerConfig | ValidatorConfig, expert_manager: ExpertManager) -> Tuple[nn.Module, dict]:
+def get_model_from_checkpoint(
+    rank: int, config: MinerConfig | ValidatorConfig, expert_manager: ExpertManager
+) -> Tuple[nn.Module, dict]:
     resume = False
-    miner_version = 0 
+    miner_version = 0
     validator_version = 0
     latest_checkpoint_path = None
     if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
         resume, model_version, latest_checkpoint_path = start_model_from(rank, config)
-        
+
     model = get_base_model(
-        config, 
-        expert_manager=expert_manager, 
-        group_ids = [config.moe.my_expert_group_id] if config.role == 'miner' else None,
-        partial=(config.role == 'miner')
+        config,
+        expert_manager=expert_manager,
+        group_ids=[config.moe.my_expert_group_id] if config.role == "miner" else None,
+        partial=(config.role == "miner"),
     ).to(config.model.device)
 
     if get_nested_attr(config, "ckpt.resume_from_ckpt", False) and resume and latest_checkpoint_path:
@@ -58,7 +60,10 @@ def fetch_validator_endpoint_from_chain(round_hint: Optional[str] = None) -> Opt
 
 
 def load_model(
-    rank: int, config: MinerConfig | ValidatorConfig, expert_manager: ExpertManager, round_hint: Optional[str] = None, 
+    rank: int,
+    config: MinerConfig | ValidatorConfig,
+    expert_manager: ExpertManager,
+    round_hint: Optional[str] = None,
 ) -> Tuple[nn.Module, dict]:
     """
     Main entry point used by miners (and potentially validator itself).
@@ -72,4 +77,4 @@ def load_model(
     if api_base:
         pass
 
-    return get_model_from_checkpoint(rank=rank, config=config, expert_manager = expert_manager)
+    return get_model_from_checkpoint(rank=rank, config=config, expert_manager=expert_manager)

@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from mycelia.shared.config import WorkerConfig
 
+
 # --- Info gather ---
 def get_active_validator_info() -> Optional[Dict]:
     raise NotImplemented

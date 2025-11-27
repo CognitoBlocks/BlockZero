@@ -26,9 +26,9 @@ logger = structlog.get_logger(__name__)
 def get_base_model(
     config: MinerConfig | ValidatorConfig,
     expert_manager: ExpertManager,
-    group_ids: List | None = None, 
+    group_ids: List | None = None,
     state_dicts: List = [],
-    partial = False
+    partial=False,
 ) -> Optional[nn.Module]:
     """
     Load a base Causal LM by `config.model.model_path` and optionally convert to MoE.
@@ -45,11 +45,11 @@ def get_base_model(
     if model is not None and get_nested_attr(config, "model.torch_compile", False):
         model = torch.compile(model)
 
-    if len(state_dicts) > 0: 
+    if len(state_dicts) > 0:
         merged_stated_dict, missing = merge_state_dicts_with_priority(state_dicts, model)
-        assert len(missing) == 0 
+        assert len(missing) == 0
         model.load_state_dict(merged_stated_dict, strict=True)  # partial by design
-    
+
     return model
 
 
@@ -67,6 +67,7 @@ from collections import OrderedDict
 import torch
 from typing import List, Dict, Tuple, Optional
 
+
 def merge_state_dicts_with_priority(
     state_dicts: List[Dict[str, torch.Tensor]],
     model: Optional[torch.nn.Module] = None,
@@ -78,7 +79,7 @@ def merge_state_dicts_with_priority(
     Args:
         state_dicts: list of state dicts, in priority order.
                      state_dicts[0] has highest priority, state_dicts[-1] lowest.
-        model: optional model, used to filter out unexpected keys 
+        model: optional model, used to filter out unexpected keys
                and check for missing keys.
 
     Returns:

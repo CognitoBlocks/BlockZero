@@ -25,6 +25,7 @@ from mycelia.shared.schema import (
     construct_model_message,
     sign_message,
 )
+
 CHUNK = 1024 * 1024  # 1 MiB
 
 
@@ -53,7 +54,7 @@ def submit_model(
     token: str,
     model_path: str,
     my_hotkey: Keypair,
-    target_hotkey_ss58: str, 
+    target_hotkey_ss58: str,
     block: int,
     timeout_s: int = 300,
     retries: int = 3,
@@ -86,7 +87,10 @@ def submit_model(
         target_hotkey_ss58=target_hotkey_ss58,
         origin_hotkey_ss58=my_hotkey.ss58_address,
         block=block,
-        signature=sign_message(my_hotkey, construct_model_message(target_hotkey_ss58=target_hotkey_ss58, block = block, model_path = model_path) )
+        signature=sign_message(
+            my_hotkey,
+            construct_model_message(target_hotkey_ss58=target_hotkey_ss58, block=block, model_path=model_path),
+        ),
     ).to_dict()
 
     if extra_form:
@@ -158,16 +162,16 @@ def submit_model(
 
 
 def download_model(
-        url: str, 
-        my_hotkey: Keypair,
-        target_hotkey_ss58: str, 
-        block: int,
-        token: str, 
-        out: str | Path, 
-        expert_group_id: int | None = None,
-        resume: bool = False, 
-        timeout: int = 30
-    ):
+    url: str,
+    my_hotkey: Keypair,
+    target_hotkey_ss58: str,
+    block: int,
+    token: str,
+    out: str | Path,
+    expert_group_id: int | None = None,
+    resume: bool = False,
+    timeout: int = 30,
+):
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     mode = "wb"
     start_at = 0
@@ -183,7 +187,7 @@ def download_model(
         origin_hotkey_ss58=my_hotkey.ss58_address,
         expert_group_id=expert_group_id,
         block=block,
-        signature=sign_message(my_hotkey, construct_block_message(target_hotkey_ss58, block = block))
+        signature=sign_message(my_hotkey, construct_block_message(target_hotkey_ss58, block=block)),
     ).to_dict()
 
     with requests.get(url, headers=headers, stream=True, timeout=timeout, data=data) as r:

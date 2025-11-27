@@ -13,6 +13,7 @@ from mycelia.shared.evaluate import evaluate_model
 
 logger = structlog.get_logger(__name__)
 
+
 # -----------------------------------------------------------------------------
 @dataclasses.dataclass(frozen=True)
 class MinerEvalJob:
@@ -95,6 +96,6 @@ async def run_evaluation(config, step, device, miners, score_aggregator, base_mo
 
     # Signal evaluator workers to stop
     for _ in eval_workers:
-        await miners_q.put(None) 
-    
+        await miners_q.put(None)
+
     await asyncio.gather(*eval_workers)
