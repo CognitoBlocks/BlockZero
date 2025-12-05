@@ -112,13 +112,13 @@ def build_grad_buff_from_model(
     all_named = list(iter_named_grads(model))
     all_named.sort(key=lambda kv: kv[0])  # deterministic order
     name_to_tensor = dict(all_named)
-    expert_group_to_names = {group_id: [] for group_id, _ in list(expert_group_assignment.values())[0].items()}
+    expert_group_to_names = {group_id: [] for group_id, _ in expert_group_assignment.keys()}
 
     for name, p in name_to_tensor.items():
         layer_id, expert_id = get_layer_expert_id(name)
         if layer_id and expert_id is not None:
-            for group_id, expert_ids in expert_group_assignment[layer_id].items():
-                if expert_id in expert_ids:
+            for group_id, layer_to_expert_ids in expert_group_assignment.items():
+                if expert_id in layer_to_expert_ids[layer_id]:
                     expert_group_to_names[group_id].append(name)
 
     # 2) Build gradient buffer per expert group
