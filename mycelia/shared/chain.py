@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+from collections import Counter
 import json
-from typing import Dict, Optional
+from pathlib import Path
+import time
+from typing import Dict, Optional, Tuple, List
 
-import bittensor as bt
+import bittensor 
 from pydantic import BaseModel
 
+from mycelia.shared.app_logging import structlog
 from mycelia.shared.config import WorkerConfig
+from mycelia.shared.client import download_model
+from mycelia.shared.checkpoint import ModelMeta
 
+
+logger = structlog.get_logger(__name__)
 
 # --- Info gather ---
 def get_active_validator_info() -> Optional[Dict]:
@@ -19,22 +27,21 @@ def get_active_miner_info():
 
 
 # --- Status structure and submission (for miner validator communication)---
-class WorkerStatus(BaseModel):
+class WorkerChainCommit(BaseModel):
     ip: str
     port: int
     active: bool
     stake: float
     validator_permit: bool
 
-
-class ValidatorStatus(BaseModel):
+class ValidatorChainCommit(BaseModel):
     model_hash: str | None = None
     model_version: int | None = None
     expert_group: int | None = None  # block
     miner_seed: int | None = None
 
 
-class MinerStatus(BaseModel):
+class MinerChainCommit(BaseModel):
     expert_group: int | None = None
 
 
@@ -42,39 +49,168 @@ def commit_status(
     config: WorkerConfig,
     wallet: bt.Wallet,
     subtensor: bt.Subtensor,
-    status: ValidatorStatus | MinerStatus,
+    status: ValidatorChainCommit | MinerChainCommit,
 ):
     subtensor.set_commitment(wallet=wallet, netuid=config.chain.netuid, data=status.model_dump_json())
 
 
-def get_status(config: WorkerConfig, subtensor: bt.Subtensor):
+def get_chain_commits(config: WorkerConfig, subtensor: bt.Subtensor) -> Tuple(WorkerChainCommit, bittensor.Neuron):
     all_commitments = subtensor.get_all_commitments(netuid=config.chain.netuid)
     metagraph = subtensor.metagraph(netuid=config.chain.netuid)
-    parsed: Dict[str, WorkerStatus] = {}
+    parsed = []
 
     for hotkey, commit in all_commitments.items():
         uid = metagraph.hotkeys.index(hotkey)
         status_dict = json.loads(commit)
 
         try:
-            status = (
-                ValidatorStatus.model_validate(status_dict)
+            chain_commit = (
+                ValidatorChainCommit.model_validate(status_dict)
                 if "model_hash" in status_dict
-                else MinerStatus.model_validate(status_dict)
+                else MinerChainCommit.model_validate(status_dict)
             )
         except Exception:
-            status = None
+            chain_commit = None
 
-        parsed[hotkey] = {"status": status, "neuron": metagraph.neurons[uid]}
+        parsed.append((chain_commit, metagraph.neurons[uid]))
 
     return parsed
 
+# --- setup chain worker ---
+def setup_chain_worker(config):
+    wallet = bittensor.wallet(name=config.chain.coldkey_name, hotkey=config.chain.hotkey_name)
+    subtensor = bittensor.subtensor(network=config.chain.network)
+    serve_axon(
+        config=config,
+        wallet=wallet,
+        subtensor=subtensor,
+    )
+    return wallet, subtensor
 
 def serve_axon(config: WorkerConfig, wallet: bt.Wallet, subtensor: bt.Subtensor):
-    axon = bt.Axon(wallet=wallet, external_port=config.chain.port, ip=config.chain.ip)
+    axon = bittensor.Axon(wallet=wallet, external_port=config.chain.port, ip=config.chain.ip)
     axon.serve(netuid=348, subtensor=subtensor)
-
 
 # --- Chain weight submission ---
 def submit_weight() -> str:
     raise NotImplemented
+
+# --- Get model from chain ---
+def scan_chain_for_new_model(
+    current_model_meta: ModelMeta | None,
+    config: WorkerConfig,
+    subtensor: bittensor.subtensor,
+) -> Tuple[bool, List[dict]]:
+    """
+    Returns:
+        should_download: True if a newer model (by version) is available and a majority
+                         agree on the model_hash among those newer entries.
+        download_meta:   list of dicts with fields: uid, ip, port, model_hash, model_version
+                         filtered to entries that (a) are newer and (b) match the majority hash.
+    """
+    commits: Tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(config, subtensor)
+
+    max_model_version = max([getattr(c, 'model_version', 0) for c, n in commits])
+    if current_model_meta is not None:
+        max_model_version = max(max_model_version, current_model_meta.global_ver)
+
+    # 1) collect candidates that are newer than the current version
+    most_updated_commits = [(c, n) for c, n in commits if getattr(c, 'model_version', 0) >= max_model_version]
+
+    # 2) majority filter by model_hash among the newer candidates
+    hash_counts = Counter([ c.model_hash for c, n in most_updated_commits if getattr(c, 'model_hash', False)])
+    majority_hash, _count = hash_counts.most_common(1)[0]
+
+    filtered_commits = [(c, n) for c, n in most_updated_commits if getattr(c, 'model_hash', False) == majority_hash]
+    if not filtered_commits:
+        return False, []
+
+    # 3) prepare download_meta for each entry (uid, ip, port, model_hash, model_version)
+    download_meta = []
+    for commit, neuron in filtered_commits:
+        # Only include entries with reachable metadata
+        download_meta.append(
+            {
+                "uid": neuron.uid,
+                "ip": neuron.axon_info.ip,
+                "port": neuron.axon_info.port,
+                "model_hash": commit.model_hash,
+                "model_version": commit.model_version,
+                "target_hotkey_ss58": neuron.hotkey,
+            }
+        )
+
+    # should_download if there is at least one newer entry agreeing on a majority hash
+    should_download = len(download_meta) > 0
+
+    return should_download, download_meta
+
+def fetch_model_from_chain(current_model_meta: ModelMeta | None, config: WorkerConfig, subtensor: bittensor.Subtensor, wallet: bittensor.Wallet) -> None:
+    should_download, download_metas = scan_chain_for_new_model(
+        current_model_meta, config, subtensor
+    )
+
+    logger.info("Fetching model from chain", should_download=should_download)
+
+    if should_download and download_metas:
+        download_success = False
+        retries = 0
+        max_retries = 3
+        base_delay_s = 5  # backoff base
+
+        while (not download_success) and (retries < max_retries):
+            for download_meta in download_metas:
+                logger.info("Downloading from candidate", download_meta)
+
+                # Resolve URL if not provided; fall back to ip/port + default route
+                url = download_meta.get("url")
+                if not url:
+                    ip = download_meta.get("ip")
+                    port = download_meta.get("port")
+                    # Best-effort defaults; customize if your API differs
+                    protocol = getattr(getattr(config, "miner", object()), "protocol", "http")
+                    if ip and port:
+                        url = f"{protocol}://{ip}:{port}/get-checkpoint"
+                    else:
+                        logger.warning("Skipping meta without URL or ip:port: %s", download_meta)
+                        continue
+
+                # Output path (reload each attempt so block height is fresh)
+                out_path = Path(config.ckpt.validator_checkpoint_path) / (
+                    f"uid_{download_meta.get('uid')}_hotkey_{download_meta.get('hotkey')}_globalver_{download_meta.get('model_version')}_block_{subtensor.block}.pt"
+                )
+
+                try:
+                    download_model(
+                        url=url,
+                        my_hotkey=wallet.hotkey,  # type: ignore
+                        target_hotkey_ss58=download_meta["target_hotksy_ss58"],
+                        block=subtensor.block,
+                        expert_group_id=config.expert_group_id,
+                        token=getattr(config.miner, "token", ""),
+                        out=out_path,
+                    )
+                    # If download_model doesn't raise, consider it a success
+                    download_success = True
+                    current_model_version = download_meta["model_version"]
+                    current_model_hash = download_meta["model_hash"]
+                    logger.info(
+                        "✅ Downloaded checkpoint",
+                        out_path = out_path,
+                        current_model_version = current_model_version,
+                        current_model_hash = current_model_hash,
+                    )
+                    break
+                except Exception as e:
+                    logger.warning("Download failed", url)
+
+            if not download_success:
+                retries += 1
+                if retries < max_retries:
+                    delay = base_delay_s * (2 ** (retries - 1))
+                    logger.info("Retrying", delay = delay, retries = retries + 1, max_retries = max_retries)
+                    time.sleep(delay)
+
+        if not download_success:
+            logger.error("❌ All download attempts failed after %d retries.", retries)
+

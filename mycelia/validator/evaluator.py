@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import dataclasses
+from dataclasses import dataclass
 from typing import Optional
 
 import torch
@@ -15,7 +15,7 @@ logger = structlog.get_logger(__name__)
 
 
 # -----------------------------------------------------------------------------
-@dataclasses.dataclass(frozen=True)
+@dataclass(frozen=True)
 class MinerEvalJob:
     uid: str
     hotkey: str

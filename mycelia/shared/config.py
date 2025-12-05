@@ -164,6 +164,7 @@ class CheckpointCfg(BaseConfig):
     checkpoint_interval: Optional[PositiveInt] = None
     full_validation_interval: Optional[PositiveInt] = None
     checkpoint_topk: PositiveInt = 5
+    validator_checkpoint_path: Path = Path("validator_checkpoint")
 
 
 class LoggingCfg(BaseConfig):
@@ -188,7 +189,6 @@ class ValidatorCfg(BaseConfig):
 
 class MinerCfg(BaseConfig):
     eval_interval: int = 100  # blocks
-    validator_checkpoint_path: Path = Path("checkpoints/miner/validator_checkpoint")
 
 
 class TaskCfg(BaseConfig):
@@ -257,14 +257,14 @@ class WorkerConfig(BaseConfig):
         os.makedirs(self.ckpt.base_checkpoint_path, exist_ok=True)
         os.makedirs(self.ckpt.checkpoint_path, exist_ok=True)
         os.makedirs(self.log.base_metric_path, exist_ok=True)
-        if hasattr(self, "miner"):
-            os.makedirs(self.miner.validator_checkpoint_path, exist_ok=True)
+        os.makedirs(self.ckpt.validator_checkpoint_path, exist_ok=True)
 
     def _refresh_paths(self) -> None:
         self.ckpt.base_checkpoint_path = self.run.root_path / self.ckpt.base_checkpoint_path
         self.ckpt.checkpoint_path = (
             self.ckpt.base_checkpoint_path / self.chain.coldkey_name / self.chain.hotkey_name / self.run.run_name
         )
+        self.ckpt.validator_checkpoint_path =  self.ckpt.base_checkpoint_path / self.ckpt.validator_checkpoint_path
 
         self.log.base_metric_path = self.run.root_path / self.log.base_metric_path
         self.log.metric_path = self.log.base_metric_path / f"{self.run.run_name}.csv"
@@ -274,9 +274,7 @@ class WorkerConfig(BaseConfig):
 
         if hasattr(self, "vali"):
             self.vali.miner_submission_path = self.run.root_path / self.vali.miner_submission_path
-
-        if hasattr(self, "miner"):
-            self.miner.validator_checkpoint_path = self.run.root_path / self.miner.validator_checkpoint_path
+            
 
     def _fill_wallet_data(self):
         wallet = bittensor.wallet(name=self.chain.coldkey_name, hotkey=self.chain.hotkey_name)
@@ -418,7 +416,7 @@ class MinerConfig(WorkerConfig):
         config exists and differs.
         """
         super().__init__(**data)
-        os.makedirs(self.miner.validator_checkpoint_path, exist_ok=True)
+        os.makedirs(self.ckpt.validator_checkpoint_path, exist_ok=True)
 
     @model_validator(mode="after")
     def _derive_all(self):

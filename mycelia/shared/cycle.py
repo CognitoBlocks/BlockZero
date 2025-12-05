@@ -1,16 +1,14 @@
 import hashlib
-from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import bittensor
 
 from mycelia.shared.app_logging import configure_logging, structlog
-from mycelia.shared.chain import MinerStatus, get_status, serve_axon
+from mycelia.shared.chain import MinerChainCommit, get_chain_commits, serve_axon
 from mycelia.shared.config import MinerConfig, ValidatorConfig, WorkerConfig
 from mycelia.shared.helper import parse_dynamic_filename
 from mycelia.validator.evaluator import MinerEvalJob
-
 
 configure_logging()
 logger = structlog.get_logger(__name__)
@@ -56,89 +54,6 @@ def search_model_submission_destination(
     metagraph = subtensor.metagraph(netuid=config.chain.netuid)
     uid = metagraph.hotkeys.index(assigned_validator_hotkey)
     return metagraph.axons[uid]
-
-
-def scan_for_new_model(
-    current_model_version: int,
-    current_model_hash: str,
-    config: MinerConfig,
-    subtensor: bittensor.subtensor,
-) -> Tuple[bool, List[dict]]:
-    """
-    Returns:
-        should_download: True if a newer model (by version) is available and a majority
-                         agree on the model_hash among those newer entries.
-        download_meta:   list of dicts with fields: uid, ip, port, model_hash, model_version
-                         filtered to entries that (a) are newer and (b) match the majority hash.
-    """
-    status_map = get_status(config, subtensor)
-
-    # ---- helpers ------------------------------------------------------------
-    def extract_entry_fields(entry: Any):
-        """Normalize entry into (status_obj, neuron_obj)."""
-        if isinstance(entry, dict) and ("status" in entry or "neuron" in entry):
-            return entry.get("status", None), entry.get("neuron", None)
-        # Otherwise assume the value itself is a status object (older code paths)
-        return entry, None
-
-    def get_version_and_hash(status_obj) -> Tuple[Optional[int], Optional[str]]:
-        mv = getattr(status_obj, "model_version", None)
-        mh = getattr(status_obj, "model_hash", None)
-        return mv, mh
-
-    def get_uid(neuron_obj) -> Optional[int]:
-        return getattr(neuron_obj, "uid", None) if neuron_obj is not None else None
-
-    # ------------------------------------------------------------------------
-
-    # 1) collect candidates that are newer than the current version
-    newer_candidates = []  # (model_version, model_hash, uid, ip, port)
-    for _hotkey, entry in status_map.items():
-        status_obj, neuron_obj = extract_entry_fields(entry)
-        if status_obj is None:
-            continue
-        mv, mh = get_version_and_hash(status_obj)
-        if mv is None or mh is None:
-            continue
-        if mv > current_model_version:
-            uid = get_uid(neuron_obj)
-            ip = neuron_obj.axon_info.ip
-            port = neuron_obj.axon_info.port
-            hotkey = neuron_obj.hotkey
-            newer_candidates.append((mv, mh, uid, ip, port, hotkey))
-
-    if not newer_candidates:
-        return False, []
-
-    # 2) majority filter by model_hash among the newer candidates
-    hash_counts = Counter(mh for (_mv, mh, _uid, _ip, _port, hotkey) in newer_candidates)
-    majority_hash, _count = hash_counts.most_common(1)[0]
-
-    filtered = [
-        (mv, mh, uid, ip, port, hotkey) for (mv, mh, uid, ip, port, hotkey) in newer_candidates if mh == majority_hash
-    ]
-    if not filtered:
-        return False, []
-
-    # 3) prepare download_meta for each entry (uid, ip, port, model_hash, model_version)
-    download_meta = []
-    for mv, mh, uid, ip, port, hotkey in filtered:
-        # Only include entries with reachable metadata
-        download_meta.append(
-            {
-                "uid": uid,
-                "ip": ip,
-                "port": port,
-                "model_hash": mh,
-                "model_version": mv,
-                "target_hotkey_ss58": hotkey,
-            }
-        )
-
-    # should_download if there is at least one newer entry agreeing on a majority hash
-    should_download = len(download_meta) > 0
-
-    return should_download, download_meta
 
 
 def setup_chain_worker(config):
@@ -216,21 +131,20 @@ def assign_miners_to_validators(
 
 
 def get_validator_miner_assignment(config: WorkerConfig, subtensor: bittensor.Subtensor):
-    status = get_status(config, subtensor)
+    commits: Tuple(WorkerChainCommit, bittensor.Neuron) = get_chain_commits(config, subtensor)
 
     validator_seeds: Dict[str, int] = {
-        hotkey: entry["status"].miner_seed
-        for hotkey, entry in status.items()
-        if entry.get("status")
-        and getattr(entry["status"], "expert_group", None) == config.moe.my_expert_group_id
-        and getattr(entry["status"], "miner_seed", None) is not None
+        neuron.hotkey: commit.miner_seed
+        for commit, neuron in commits
+        if getattr(commit, "expert_group", None) == config.moe.my_expert_group_id
+        and getattr(commit, "miner_seed", None) is not None
     }
 
     miners: List[str] = [
-        hk
-        for hk, e in status.items()
-        if isinstance(e.get("status"), MinerStatus)
-        and getattr(e["status"], "expert_group", None) == config.moe.my_expert_group_id
+        neuron.hotkey
+        for commit, neuron in commits
+        if isinstance(commit, MinerChainCommit)
+        and getattr(commit, "expert_group", None) == config.moe.my_expert_group_id
     ]
 
     return assign_miners_to_validators(validator_seeds, miners)  # type: ignore

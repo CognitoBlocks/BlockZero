@@ -16,6 +16,8 @@ from transformers import (
     get_cosine_schedule_with_warmup,
 )
 
+import bittensor 
+
 from mycelia.miner.train_helper import free_cuda_models, get_status
 from mycelia.shared.app_logging import configure_logging, structlog
 from mycelia.shared.checkpoint import (
@@ -24,8 +26,10 @@ from mycelia.shared.checkpoint import (
     load_checkpoint,
     save_checkpoint,
     start_model_from,
+    ModelMeta
 )
 from mycelia.shared.config import MinerConfig, parse_args
+from mycelia.shared.chain import setup_chain_worker
 from mycelia.shared.dataloader import get_dataloader
 from mycelia.shared.evaluate import evaluate_model
 from mycelia.shared.expert_manager import ExpertManager
@@ -88,7 +92,7 @@ def cleanup() -> None:
 
 
 def setup_training(
-    config, rank: int, device: torch.device, tokenizer: PreTrainedTokenizerBase
+    config, rank: int, device: torch.device, tokenizer: PreTrainedTokenizerBase, subtensor: bittensor.Subtensor, wallet: bittensor.Wallet, current_model_meta: ModelMeta
 ) -> Tuple[
     torch.nn.Module,  # model
     torch.nn.Module,  # global_model
@@ -121,7 +125,7 @@ def setup_training(
         expert_groups (Sequence[Sequence[int]]): Grouping returned by `create_expert_groups`; typically a list
             (or other sequence) of groups where each group lists the ranks/experts belonging to it.
         group_ids (int): This rank’s group id from `create_expert_groups`.
-        em (ExpertManager): The instantiated ExpertManager for this model/rank.
+        expert_manager (ExpertManager): The instantiated ExpertManager for this model/rank.
 
     Notes:
         - Param group layouts are taken from the *target* optimizers created here.
@@ -136,7 +140,7 @@ def setup_training(
 
     # === model & Experts manager ===
     expert_manager = ExpertManager(config)
-    model, model_version = load_model(rank, config, expert_manager)
+    model, model_meta = load_model(rank, config, expert_manager)
     model = model.to(device)
     global_model = copy.deepcopy(model).cpu()
 
@@ -195,7 +199,7 @@ def setup_training(
         scheduler,
         expert_manager,
         train_dataloader,
-        model_version,
+        model_meta,
     )
 
 
@@ -217,6 +221,9 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
 
     # === set logging ===
     metric_logger = MetricLogger(config, rank)
+
+    # === set up chain worker ===
+    wallet, subtensor = setup_chain_worker(config)
 
     # === mis ===
     device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
@@ -240,10 +247,10 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
         outer_scaler,
         scheduler,
         # start_step,
-        em,
+        expert_manager,
         train_dataloader,
-        model_version,
-    ) = setup_training(config, rank, device, tokenizer)
+        current_model_meta,
+    ) = setup_training(config, rank, device, tokenizer, subtensor, wallet, current_model_meta=None)
 
     # === training ===
     loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
@@ -256,7 +263,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
     outer_optimizer.zero_grad()
     try:
         for step, batch in enumerate(
-            iterable=train_dataloader, start=model_version["inneropt"] * config.local_par.gradient_accumulation_steps
+            iterable=train_dataloader, start=current_model_meta.inner_opt * config.local_par.gradient_accumulation_steps
         ):
             # for each step, we run 1 backward
             # for each inner_opt_step, we run local optimization; gradient_accumulation_steps = 1 real step
@@ -278,7 +285,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
 
             inner_opt_step = step // config.local_par.gradient_accumulation_steps
             is_inner_optimizer_step = step % config.local_par.gradient_accumulation_steps == 0
-            is_start_step = step == model_version["inneropt"] * config.local_par.gradient_accumulation_steps
+            is_start_step = step == current_model_version.inner_opt * config.local_par.gradient_accumulation_steps
 
             # === Training and inner optimization ===
             if (
@@ -392,7 +399,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
             ):
                 logp(f"saving checkpoint")
                 ckpt_path = os.path.join(
-                    config.ckpt.checkpoint_path, f"globalver_{model_version['globalver']}_inneropt_{inner_opt_step}"
+                    config.ckpt.checkpoint_path, f"globalver_{current_model_meta.global_ver}_inneropt_{inner_opt_step}"
                 )
 
                 save_checkpoint(
@@ -421,7 +428,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
             # === reload model ===
             if (
                 is_inner_optimizer_step
-                and start_model_from(rank, config)[1]["global_opt"] == model_version["globalver"]
+                and start_model_from(rank, config, primary_ckpt_path=config.ckpt.validator_checkpoint_path, secondary_ckpt_path=config.ckpt.checkpoint_path)[1] == current_model_version
             ):
                 dist.barrier(device_ids=[rank])  # make sure everything is saved and everyone is ready to load
                 logp("freeing cuda memory")
@@ -436,10 +443,10 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                     outer_scaler,
                     scheduler,
                     # start_step,
-                    em,
+                    expert_manager,
                     train_dataloader,
-                    model_version,
-                ) = setup_training(config, rank, device, tokenizer)
+                    current_model_version,
+                ) = setup_training(config, rank, device, tokenizer, subtensor, wallet, current_model_meta)
 
             # === Clean up ===
             if is_inner_optimizer_step:

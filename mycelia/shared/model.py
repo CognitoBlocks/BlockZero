@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import time
+from dataclasses import dataclass
 from typing import Optional, Tuple
 
+import bittensor
+from pathlib import Path
 from torch import nn
 
-from mycelia.shared import chain
 from mycelia.shared.app_logging import structlog
-from mycelia.shared.checkpoint import load_checkpoint, start_model_from
+from mycelia.shared.checkpoint import ModelMeta, load_checkpoint, start_model_from
+from mycelia.shared.chain import fetch_model_from_chain
 from mycelia.shared.config import MinerConfig, ValidatorConfig
 from mycelia.shared.expert_manager import ExpertManager
 from mycelia.shared.helper import *
@@ -14,17 +18,13 @@ from mycelia.shared.modeling.mycelia import get_base_model
 
 logger = structlog.get_logger(__name__)
 
-
 def get_model_from_checkpoint(
     rank: int, config: MinerConfig | ValidatorConfig, expert_manager: ExpertManager
-) -> Tuple[nn.Module, dict]:
+) -> Tuple[nn.Module, ModelMeta]:
     resume = False
-    miner_version = 0
-    validator_version = 0
     latest_checkpoint_path = None
-    if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
-        resume, model_version, latest_checkpoint_path = start_model_from(rank, config)
 
+    # get base model 
     model = get_base_model(
         config,
         expert_manager=expert_manager,
@@ -32,38 +32,28 @@ def get_model_from_checkpoint(
         partial=(config.role == "miner"),
     ).to(config.model.device)
 
-    if get_nested_attr(config, "ckpt.resume_from_ckpt", False) and resume and latest_checkpoint_path:
-        load_checkpoint(
-            config=config, checkpoint_path=latest_checkpoint_path, model=model, rank=rank, device=config.model.device
-        )
+    # load from checkpoint 
+    if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
+        resume, model_version, latest_checkpoint_path = start_model_from(rank, config, primary_ckpt_path=config.ckpt.validator_checkpoint_path, secondary_ckpt_path=config.ckpt.checkpoint_path)
+
+        if resume and latest_checkpoint_path:
+            load_checkpoint(
+                config=config, checkpoint_path=latest_checkpoint_path, model=model, rank=rank, device=config.model.device
+            )
+        else: 
+            logger.info('Tried to resume from checkpoint, but no checkpoint found.')
 
     model = model.to(config.model.device)
-
     model.gradient_checkpointing_enable()
-
     return model, model_version
-
-
-# TODO: fill function
-def fetch_validator_endpoint_from_chain(round_hint: Optional[str] = None) -> Optional[str]:
-    """
-    Ask chain for the *current* validator node endpoint (e.g., https://validator-1:8080).
-    You implement this inside shared/blockchain.py
-    """
-    try:
-        info = chain.get_active_validator_info()  # must return {"api_base": "...", ...}
-        endpoint = (info or {}).get("api_base")
-        return endpoint
-    except Exception as e:
-        logger.warning("model.chain_lookup_failed", error=str(e))
-        return None
-
 
 def load_model(
     rank: int,
     config: MinerConfig | ValidatorConfig,
     expert_manager: ExpertManager,
-    round_hint: Optional[str] = None,
+    subtensor: bittensor.Subtensor,
+    wallet: bittensor.Wallet,
+    current_model_meta: ModelMeta | None = None
 ) -> Tuple[nn.Module, dict]:
     """
     Main entry point used by miners (and potentially validator itself).
@@ -71,10 +61,11 @@ def load_model(
     2) If available, ping and fetch current model.
     3) Else, initialize a default model.
     """
-    config = config or MinerConfig()
-    api_base = fetch_validator_endpoint_from_chain(round_hint)
-
-    if api_base:
-        pass
-
+    # download new model from chain into file 
+    fetch_model_from_chain(
+        current_model_meta = current_model_meta,
+        config = config,
+        subtensor = subtensor,
+        wallet = wallet
+    )
     return get_model_from_checkpoint(rank=rank, config=config, expert_manager=expert_manager)

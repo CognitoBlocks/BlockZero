@@ -2,6 +2,7 @@ import os
 from copy import deepcopy
 from pathlib import Path
 from typing import Dict, Tuple
+from dataclasses import dataclass
 
 import fsspec
 import torch
@@ -15,46 +16,72 @@ from mycelia.shared.expert_manager import (
     ExpertManager,
     get_layer_expert_id,
 )
-from mycelia.shared.helper import get_nested_attr, parse_dynamic_filename
-
+from mycelia.shared.helper import parse_dynamic_filename
 
 logger = structlog.getLogger(__name__)
 
+@dataclass
+class ModelMeta:
+    global_ver: int = 0 # -1 if not specified
+    inner_opt: int = -1 # -1 if do not exist 
+    path: Path | None = None
+    role: str | None = None# [miner, validator]
+    model_hash: str | None = None
 
-def start_model_from(rank: int, config: MinerConfig) -> Tuple[bool, Dict, str | Path | None]:
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ModelMeta):
+            return NotImplemented
+        return (
+            self.global_ver == other.global_ver and
+            self.inner_opt == other.inner_opt and
+            self.model_hash == other.model_hash
+        )
+
+    def __lt__(self, other: "ModelMeta") -> bool:
+        if not isinstance(other, ModelMeta):
+            return NotImplemented
+
+        # Compare by global_ver first
+        if self.global_ver != other.global_ver:
+            return self.global_ver < other.global_ver
+
+        # Then compare by inner_opt
+        return self.inner_opt < other.inner_opt
+    
+def start_model_from(rank: int, config: MinerConfig, primary_ckpt_path: Path, secondary_ckpt_path: Path | None) -> Tuple[bool, ModelMeta, str | Path | None]:
     # if it is a validator, then just start from its own checkpoint
-    if get_nested_attr(config, "miner.validator_checkpoint_path", True):
-        logger.info("returning regular validator checkpoint")
+    if secondary_ckpt_path is None:
+        logger.info("returning primary checkpoint")
         return get_resume_info(rank, config, config.ckpt.checkpoint_path)
 
-    validator_ckpt_found, validator_version, latest_validator_ckpt = get_resume_info(
-        rank, config, config.miner.validator_checkpoint_path
-    )
-    miner_ckpt_found, miner_version, latest_miner_ckpt = get_resume_info(rank, config, config.ckpt.checkpoint_path)
+    primary_ckpt_found, primary_model_meta, latest_primary_ckpt = get_resume_info(rank, config, primary_ckpt_path)
+    secondary_ckpt_found, secondary_model_meta, latest_secondary_ckpt = get_resume_info(rank, config, secondary_ckpt_path)
 
-    if not miner_ckpt_found:
-        logger.info("miner checkpoint not found")
-        return validator_ckpt_found, validator_version["globalver"], latest_validator_ckpt
+    # --- handling either miner / validator checkpoint not found ---
+    if not secondary_ckpt_found:
+        logger.info("secondary checkpoint not found")
+        return primary_ckpt_found, primary_model_meta, latest_primary_ckpt
 
-    if not validator_ckpt_found and latest_miner_ckpt is not None:
-        logger.info("validator checkpoint not found")
-        return miner_ckpt_found, miner_version, latest_miner_ckpt / "model.pt"
+    if not primary_ckpt_found and latest_secondary_ckpt is not None:
+        logger.info("primary checkpoint not found")
+        return secondary_ckpt_found, secondary_model_meta, latest_secondary_ckpt / "model.pt"
 
-    if miner_version["globalver"] >= validator_version["globalver"] and latest_miner_ckpt is not None:
+    # --- Return based on more updated version ---
+    if secondary_model_meta >= primary_model_meta and latest_secondary_ckpt is not None:
         logger.info(
-            f'miner checkpoint version {miner_version["globalver"], miner_version["inneropt"]} > validator checkpoint version {validator_version["globalver"]}'
+            f'secondary checkpoint version {secondary_model_meta} > primary checkpoint version {primary_model_meta}'
         )
-        return miner_ckpt_found, miner_version, latest_miner_ckpt / "model.pt"
+        return secondary_ckpt_found, secondary_model_meta, latest_secondary_ckpt / "model.pt"
     else:
         logger.info(
-            f'validator checkpoint version {validator_version["globalver"]} > miner checkpoint version {miner_version["globalver"], miner_version["inneropt"]}'
+            f'primary checkpoint version {primary_model_meta} > secondary checkpoint version {secondary_model_meta}'
         )
-        return validator_ckpt_found, miner_version["globalver"], latest_validator_ckpt
+        return primary_ckpt_found, secondary_model_meta, latest_primary_ckpt
 
 
 def get_resume_info(
     rank: int, config: MinerConfig | ValidatorConfig, path: Path | None = None
-) -> Tuple[bool, dict, Path | None]:
+) -> Tuple[bool, ModelMeta, Path | None]:
     """
     Retrieves the resume information for a given rank and checkpoint configuration.
 
@@ -70,7 +97,7 @@ def get_resume_info(
     Check if we should resume from a checkpoint, if yes return the path to the checkpoint, otherwise return None
     """
     if config.ckpt.resume_from_ckpt is None:
-        return False, {}, None
+        return False, ModelMeta(), None
 
     elif isinstance(config.ckpt.resume_from_ckpt, bool):
         # Using fsspec to list directory contents
@@ -81,17 +108,17 @@ def get_resume_info(
             ckpt_files = get_sorted_checkpoints(path)
 
         except FileNotFoundError:
-            logger.info(f"rank {rank}: Checkpoint path {config.ckpt.checkpoint_path} not found, starting from scratch")
-            return False, {}, None
+            logger.info(f"rank {rank}: Checkpoint path {config.ckpt.checkpoint_path} not found")
+            return False, ModelMeta(), None
 
         if len(ckpt_files) == 0:
-            logger.info(f"rank {rank}: No checkpoints found in {config.ckpt.checkpoint_path}, starting from scratch")
-            return False, {}, None
+            logger.info(f"rank {rank}: No checkpoints found in {config.ckpt.checkpoint_path}")
+            return False, ModelMeta(), None
 
         latest_ckpt = ckpt_files[0]["filename"]
-        version = ckpt_files[0]
+        model_meta = ckpt_files[0]
         logger.info(f"rank {rank}: Latest checkpoint found in {latest_ckpt}")
-        return True, version, latest_ckpt
+        return True, model_meta, latest_ckpt
 
 
 def save_state_dict_by_expert_group(
@@ -370,10 +397,10 @@ def load_checkpoint(
     return global_state_dict["loss"]
 
 
-def get_sorted_checkpoints(checkpoint_path: str):
+def get_sorted_checkpoints(checkpoint_path: str) -> Dict[Path, ModelMeta]:
     fs, root = fsspec.core.url_to_fs(checkpoint_path)
 
-    ckpt_files = {}
+    ckpt_files = []
     for f in fs.ls(root, detail=False):
         if "yaml" in f.lower():  # safer, catches .YAML/.Yaml/.yml too
             continue
@@ -382,14 +409,17 @@ def get_sorted_checkpoints(checkpoint_path: str):
             continue
 
         # ensure both fields exist and are numeric
-        meta["globalver"] = int(meta.get("globalver") or -1)
-        meta["inneropt"] = int(meta.get("inneropt") or -1)
-        ckpt_files[f] = meta
+        model_meta = ModelMeta(
+            global_ver = int(meta.get("globalver") or None),
+            inner_opt = int(meta.get("inneropt") or None),
+            path = Path(f)
+        )
+        ckpt_files.append(model_meta)
 
     # sort descending by globalver, then inneropt
-    sorted_ckpt_files = sorted(
-        ckpt_files.values(),
-        key=lambda item: (-item["globalver"], -item["inneropt"]),
+    return sorted(
+        ckpt_files,
+        key=lambda item: (-item.global_ver, -item.inner_opt),
     )
 
     return sorted_ckpt_files

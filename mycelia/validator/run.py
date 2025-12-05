@@ -15,10 +15,10 @@ from transformers import PreTrainedTokenizerBase
 
 from mycelia.miner.train_helper import get_status
 from mycelia.shared.app_logging import configure_logging, structlog
-from mycelia.shared.chain import ValidatorStatus, commit_status, serve_axon
+from mycelia.shared.chain import ValidatorChainCommit, commit_status, setup_chain_worker
 from mycelia.shared.checkpoint import (
+    ModelMeta,
     delete_old_checkpoints,
-    get_resume_info,
     load_checkpoint,
     save_checkpoint,
 )
@@ -63,19 +63,8 @@ def cleanup() -> None:
     torch.cuda.synchronize()
 
 
-def setup_chain_worker(config):
-    wallet = bittensor.wallet(name=config.chain.coldkey_name, hotkey=config.chain.hotkey_name)
-    subtensor = bittensor.subtensor(network=config.chain.network)
-    serve_axon(
-        config=config,
-        wallet=wallet,
-        subtensor=subtensor,
-    )
-    return wallet, subtensor
-
-
 def setup_training(
-    config, rank: int, device: torch.device, tokenizer: PreTrainedTokenizerBase
+    config, rank: int, device: torch.device, tokenizer: PreTrainedTokenizerBase, subtensor: bittensor.Subtensor, wallet: bittensor.Wallet, current_model_meta: ModelMeta
 ) -> Tuple[
     torch.nn.Module,  # model
     torch.nn.Module,  # global_model
@@ -92,13 +81,11 @@ def setup_training(
     resume = False
     start_step = 0
     latest_checkpoint_path = None
-    if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
-        resume, start_step, latest_checkpoint_path = get_resume_info(rank, config)
 
     # === model & Experts manager ===
     logger.info(f"rank {rank} setup training - load model and expert manager")
     expert_manager = ExpertManager(config)
-    base_model, version = load_model(rank, config, expert_manager)
+    base_model, model_meta = load_model(rank, config, expert_manager, subtensor, wallet, current_model_meta)
     base_model = base_model.to(device)
     global_model = copy.deepcopy(base_model).cpu()
 
@@ -140,7 +127,7 @@ def setup_training(
         global_model,
         outer_optimizer,
         outer_scaler,
-        start_step,
+        model_meta.global_ver,
         expert_manager,
         train_dataloader,
     )
@@ -257,6 +244,9 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
     os.makedirs(config.log.base_metric_path, exist_ok=True)
     os.makedirs(config.vali.miner_submission_path, exist_ok=True)
 
+    # === set up chain worker ===
+    wallet, subtensor = setup_chain_worker(config)
+
     # === set logging ===
     metric_logger = MetricLogger(config, rank)
 
@@ -280,7 +270,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
         start_step,
         expert_manager,
         train_dataloader,
-    ) = setup_training(config, rank, device, tokenizer)
+    ) = setup_training(config, rank, device, tokenizer, subtensor, wallet, current_model_meta = None)
 
     global_opt_step = start_step
 
@@ -289,21 +279,18 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
 
     # === set up averager ===
     group_grad_buff_meta = build_grad_buff_from_model(
-        model=base_model, expert_group_assignment=em.expert_group_assignment
+        model=base_model, expert_group_assignment=expert_manager.expert_group_assignment
     )
 
     dht = connect_with_peers()
 
     group_averagers = build_averagers_from_buff(group_buff_metas=group_grad_buff_meta, dht=dht)
 
-    # === set up chain worker ===
-    wallet, subtensor = setup_chain_worker(config)
-
     commit_status(
         config,
         wallet,
         subtensor,
-        ValidatorStatus(
+        ValidatorChainCommit(
             model_hash="xxx",
             model_version=global_opt_step,
             expert_group=1,
@@ -430,7 +417,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                 config,
                 wallet,
                 subtensor,
-                ValidatorStatus(
+                ValidatorChainCommit(
                     model_hash="xxx",
                     model_version=global_opt_step,
                     expert_group=1,
