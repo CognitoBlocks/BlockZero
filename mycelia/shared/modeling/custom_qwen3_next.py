@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import List
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -23,7 +21,6 @@ from mycelia.shared.app_logging import structlog
 from mycelia.shared.config import MinerConfig
 from mycelia.shared.expert_manager import ExpertManager
 from mycelia.shared.helper import *
-
 
 logger = structlog.get_logger(__name__)
 
@@ -115,7 +112,7 @@ class SparseMoeBlock(Qwen3NextSparseMoeBlock):
         # Loop over all available experts in the model and perform the computation on each expert
         expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
         for expert_idx in expert_hit:
-            if not str(expert_idx.item()) in self.experts:
+            if str(expert_idx.item()) not in self.experts:
                 continue
             expert_layer = self.experts[str(expert_idx.item())]
             idx, top_x = torch.where(expert_mask[expert_idx].squeeze(0))
@@ -179,7 +176,7 @@ class CustomQwen3NextModel(Qwen3NextModel):
 
 
 def get_moe_model_config(
-    config: MinerConfig, topk: int, group_ids: List | None, expert_manager: ExpertManager
+    config: MinerConfig, topk: int, group_ids: list | None, expert_manager: ExpertManager
 ) -> PretrainedConfig:
     # get the base config from qwen model
     base_config = AutoConfig.from_pretrained(config.model.model_path)

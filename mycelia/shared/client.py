@@ -6,16 +6,17 @@ import sys
 import zipfile
 from pathlib import Path
 from time import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 import requests
 from requests import Response
 from requests.exceptions import (
     ConnectionError as ReqConnectionError,
+)
+from requests.exceptions import (
     RequestException,
     Timeout,
 )
-
 from substrateinterface import Keypair
 
 from mycelia.shared.schema import (
@@ -59,8 +60,8 @@ def submit_model(
     timeout_s: int = 300,
     retries: int = 3,
     backoff: float = 1.8,
-    extra_form: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    extra_form: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """
     Upload a model checkpoint with retries and robust error handling.
 
@@ -100,7 +101,7 @@ def submit_model(
 
     # --- retry loop for transient failures ---
     attempt = 0
-    last_exc: Optional[Exception] = None
+    last_exc: Exception | None = None
 
     while attempt <= retries:
         try:

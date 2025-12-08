@@ -3,14 +3,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Dict, Mapping, Optional
+from collections.abc import Mapping
+from typing import Any
 
 import pandas as pd
 import torch
+
 import wandb
-
 from mycelia.shared.config import MinerConfig, ValidatorConfig
-
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ class MetricLogger:
         os.makedirs(metrics_dir, exist_ok=True)
 
         run_name = f"[full] {config.run.run_name}" if validation else f"[partial] rank{rank}-{config.run.run_name}"
-        self.wandb_run: Optional[wandb.sdk.wandb_run.Run] = None
+        self.wandb_run: wandb.sdk.wandb_run.Run | None = None
 
         if config.log.wandb_resume:
             if validation:
@@ -78,7 +78,7 @@ class MetricLogger:
                 self.wandb_run = None
 
     # -------- helpers --------
-    def _wandb_log(self, metrics: Dict[str, Any]) -> None:
+    def _wandb_log(self, metrics: dict[str, Any]) -> None:
         try:
             self.wandb_run.log(metrics)
 
@@ -148,7 +148,7 @@ class MetricLogger:
         self._fsync_if_supported()
 
     @staticmethod
-    def _flatten_metrics(metrics: Mapping[str, Any]) -> Dict[str, Any]:
+    def _flatten_metrics(metrics: Mapping[str, Any]) -> dict[str, Any]:
         """
         Convert metrics dict into CSV/W&B-safe values.
 
@@ -162,7 +162,7 @@ class MetricLogger:
             - else -> stringified list (to keep CSV rectangular)
         * everything else -> as-is
         """
-        flat: Dict[str, Any] = {}
+        flat: dict[str, Any] = {}
         for k, v in metrics.items():
             if torch.is_tensor(v):
                 flat[k] = v.item() if v.ndim == 0 else v.detach().cpu().tolist()

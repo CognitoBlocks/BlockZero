@@ -4,7 +4,7 @@ import gc
 import os
 import secrets
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import bittensor
 import torch
@@ -23,7 +23,7 @@ from mycelia.shared.checkpoint import (
     save_checkpoint,
 )
 from mycelia.shared.config import ValidatorConfig, parse_args
-from mycelia.shared.cycle import gather_validation_job, should_start_validation
+from mycelia.shared.cycle import gather_validation_job, should_act
 from mycelia.shared.dataloader import get_dataloader
 from mycelia.shared.evaluate import evaluate_model
 from mycelia.shared.expert_manager import (
@@ -35,6 +35,7 @@ from mycelia.shared.helper import *
 from mycelia.shared.metrics import MetricLogger
 from mycelia.shared.model import load_model
 from mycelia.shared.modeling.mycelia import get_base_tokenizer
+from mycelia.sn_owner.cycle import PhaseNames
 from mycelia.validator.aggregator import MinerScoreAggregator
 from mycelia.validator.evaluator import (
     MinerEvalJob,
@@ -64,8 +65,14 @@ def cleanup() -> None:
 
 
 def setup_training(
-    config, rank: int, device: torch.device, tokenizer: PreTrainedTokenizerBase, subtensor: bittensor.Subtensor, wallet: bittensor.Wallet, current_model_meta: ModelMeta
-) -> Tuple[
+    config,
+    rank: int,
+    device: torch.device,
+    tokenizer: PreTrainedTokenizerBase,
+    subtensor: bittensor.Subtensor,
+    wallet: bittensor.Wallet,
+    current_model_meta: ModelMeta,
+) -> tuple[
     torch.nn.Module,  # model
     torch.nn.Module,  # global_model
     torch.optim.Optimizer,  # outer_optimizer
@@ -139,11 +146,11 @@ async def aggregate_miner_gradient_change(
     device: torch.device,
     rank: int,
     outer_optimizer: torch.optim.Optimizer,
-    miner_jobs: List[MinerEvalJob],
+    miner_jobs: list[MinerEvalJob],
     score_aggregator: MinerScoreAggregator,
 ):
     global_model.to(device)
-    miner_models: Dict[str, nn.Module] = {}
+    miner_models: dict[str, nn.Module] = {}
     for miner_job in miner_jobs:
         if score_aggregator.is_in_top(uid=miner_job.uid, cutoff=3, how="avg"):  # TODO: change it to ema
             miner_models[miner_job.uid] = await asyncio.to_thread(
@@ -156,7 +163,7 @@ async def aggregate_miner_gradient_change(
 
 
 def sync_grad_across_validators(
-    group_averagers: Dict[str | int, DecentralizedAverager], group_grad_buff_meta: Dict[str | int, Any]
+    group_averagers: dict[str | int, DecentralizedAverager], group_grad_buff_meta: dict[str | int, Any]
 ):
     for group_id, avg in group_averagers.items():
         if avg.total_size <= 0:
@@ -178,7 +185,7 @@ def run_global_optimization(
     device: torch.device,
     rank: int,
     outer_optimizer: torch.optim.Optimizer,
-    miner_jobs: List[MinerEvalJob],
+    miner_jobs: list[MinerEvalJob],
     score_aggregator: MinerScoreAggregator,
 ):
     # --- sync + outer step ---
@@ -201,13 +208,13 @@ def run_global_optimization(
     new_expert_name, new_expert_sum = get_weight_sum(model, shared=False)
 
     logger.info(
-        f"outer optimizer step (shared)",
+        "outer optimizer step (shared)",
         param_name=old_shared_name,
         old_sum=round(float(old_shared_sum), 6),
         new_sum=round(float(new_shared_sum), 6),
     )
     logger.info(
-        f"outer optimizer step (expert)",
+        "outer optimizer step (expert)",
         param_name=old_expert_name,
         old_sum=round(float(old_expert_sum), 6),
         new_sum=round(float(new_expert_sum), 6),
@@ -242,7 +249,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
     os.makedirs(config.ckpt.base_checkpoint_path, exist_ok=True)
     os.makedirs(config.ckpt.checkpoint_path, exist_ok=True)
     os.makedirs(config.log.base_metric_path, exist_ok=True)
-    os.makedirs(config.vali.miner_submission_path, exist_ok=True)
+    os.makedirs(config.ckpt.miner_submission_path, exist_ok=True)
 
     # === set up chain worker ===
     wallet, subtensor = setup_chain_worker(config)
@@ -270,7 +277,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
         start_step,
         expert_manager,
         train_dataloader,
-    ) = setup_training(config, rank, device, tokenizer, subtensor, wallet, current_model_meta = None)
+    ) = setup_training(config, rank, device, tokenizer, subtensor, wallet, current_model_meta=None)
 
     global_opt_step = start_step
 
@@ -316,7 +323,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             # === Wait till next period ===
             should_start = False
             while not should_start:
-                should_start, block_till = should_start_validation(config, subtensor)
+                should_start, block_till = should_act(config, PhaseNames.validate)
                 logger.info("(0) Checking for start", should_start=should_start, block_till=block_till)
                 if block_till > 0:
                     time.sleep((block_till) * 12)
@@ -343,7 +350,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             logger.info("eval result", scores=score_aggregator.uid_score_pairs())
 
             # === aggragate miner gradient change locally ===
-            logger.info(f"(3) Aggregating miner gradient change")
+            logger.info("(3) Aggregating miner gradient change")
             asyncio.run(
                 aggregate_miner_gradient_change(
                     base_model=base_model,
@@ -357,11 +364,11 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             )
 
             # === aggragate miner gradient change ===
-            logger.info(f"(4) Syncing gradient across validators")
+            logger.info("(4) Syncing gradient across validators")
             sync_grad_across_validators(group_averagers, group_grad_buff_meta)
 
             # === global optimizer ===
-            logger.info(f"(5) Running global model optimisation step")
+            logger.info("(5) Running global model optimisation step")
             run_global_optimization(
                 model=base_model,
                 global_model=global_model,
@@ -373,7 +380,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             )
 
             # === validation and log metric ===
-            logger.info(f"(6) Start local evaluation")
+            logger.info("(6) Start local evaluation")
             val_metric = evaluate_model(
                 rank=rank, step=global_opt_step, model=global_model, eval_dataloader=eval_dataloader, device=device
             )
@@ -396,7 +403,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             metric_logger.log(metrics)
 
             # === save checkpoint ===
-            logger.info(f"(7) Saving checkpoint")
+            logger.info("(7) Saving checkpoint")
             ckpt_path = os.path.join(config.ckpt.checkpoint_path, f"globalopt_{int(global_opt_step)}")
 
             save_checkpoint(
@@ -441,7 +448,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
 
             global_opt_step += 1
 
-    except Exception as E:
+    except Exception:
         logger.error("Quit training", exc_info=True)
         cleanup()
         metric_logger.close()

@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import random
 import re
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 
 import torch
 import torch.distributed as dist
@@ -13,15 +13,14 @@ import torch.nn as nn
 from mycelia.shared.app_logging import structlog
 from mycelia.shared.config import TaskCfg, WorkerConfig
 
-
 logger = structlog.getLogger(__name__)
 
 # ------------------------------------------------------------
 # Expert Manager
 # ------------------------------------------------------------
-ExpertMapping = Tuple[int, int]  # (my_expert_idx, org_expert_idx)
-LayerAssignments = Dict[int, List[ExpertMapping]]  # layer_id -> list of mappings
-ExpertAssignments = Dict[int, LayerAssignments]  # group_id -> layer assignments
+ExpertMapping = tuple[int, int]  # (my_expert_idx, org_expert_idx)
+LayerAssignments = dict[int, list[ExpertMapping]]  # layer_id -> list of mappings
+ExpertAssignments = dict[int, LayerAssignments]  # group_id -> layer assignments
 
 
 class ExpertManager:
@@ -36,11 +35,11 @@ class ExpertManager:
 
     Attributes
     ----------
-    expert_layers : List[int]
+    expert_layers : list[int]
         Indices of layers that contain experts (best-effort heuristic).
-    rank_group_assignment : Dict[int, List[int]]
+    rank_group_assignment : Dict[int, list[int]]
         Mapping of group_id -> ranks in that group.
-    expert_group_assignment : Dict[int, Dict[int, List[int]]]
+    expert_group_assignment : Dict[int, Dict[int, list[int]]]
         Mapping of layer -> (group_id -> expert IDs in that group).
     """
 
@@ -88,7 +87,7 @@ class ExpertManager:
 
         return len(expert_ids)
 
-    def set_expert_layers(self, model: nn.Module) -> List[int]:
+    def set_expert_layers(self, model: nn.Module) -> list[int]:
         """
         Inspect model state_dict keys to locate layers that include experts.
 
@@ -99,7 +98,7 @@ class ExpertManager:
         if num_layers is None:
             logger.warning("Model has no config.num_hidden_layers; scanning keys without layer bounds.")
 
-        expert_layers: List[int] = []
+        expert_layers: list[int] = []
         # If num_layers is unknown, fall back to a generous range (0..255).
         layer_range = range(num_layers if isinstance(num_layers, int) else 256)
         for l in layer_range:
@@ -128,16 +127,16 @@ class ExpertManager:
             task_config = TaskCfg.from_path(task_folder / "config.yaml")
 
             # Load raw JSON assignment
-            with open(task_folder / "expert_assignment.json", "r", encoding="utf-8") as f:
+            with open(task_folder / "expert_assignment.json", encoding="utf-8") as f:
                 raw_assignment = json.load(f)
 
-            # raw_assignment: Dict[str, List[List[int]]]
-            # Convert to: LayerAssignments (Dict[int, List[Tuple[int, int]]])
+            # raw_assignment: Dict[str, list[list[int]]]
+            # Convert to: LayerAssignments (Dict[int, list[tuple[int, int]]])
             layer_assignments: LayerAssignments = {}
             for layer_id_str, pair_list in raw_assignment.items():
                 layer_id = int(layer_id_str)
                 # Ensure we store tuples of ints, not lists
-                mappings: List[ExpertMapping] = [tuple(pair) for pair in pair_list]
+                mappings: list[ExpertMapping] = [tuple(pair) for pair in pair_list]
                 layer_assignments[layer_id] = mappings
 
             # Map this task's expert_group_id -> its layer assignments
@@ -160,7 +159,7 @@ class ExpertManager:
             If any `my_expert_idx` appears more than once in the same
             (group_id, layer_id).
         """
-        duplicates: List[str] = []
+        duplicates: list[str] = []
 
         for group_id, layers in self.expert_group_assignment.items():
             for layer_id, mappings in layers.items():
@@ -225,7 +224,7 @@ def is_expert_param(name: str) -> bool:
     return "expert" in name  # customize if needed (e.g., "experts.")
 
 
-def get_layer_expert_id(layer_name: str) -> Tuple[Optional[int], Optional[int]]:
+def get_layer_expert_id(layer_name: str) -> tuple[int | None, int | None]:
     """
     Extract (layer_id, expert_id) from a parameter name.
 
@@ -243,14 +242,14 @@ def get_layer_expert_id(layer_name: str) -> Tuple[Optional[int], Optional[int]]:
 
 
 def split_into_groups(
-    lst: List[int], num_groups: int, shuffle: bool = False, seed: int | None = 123
-) -> Dict[int, List[int]]:
+    lst: list[int], num_groups: int, shuffle: bool = False, seed: int | None = 123
+) -> dict[int, list[int]]:
     """
     Deterministically split a list of items into `num_groups` interleaved buckets.
 
     Parameters
     ----------
-    lst : List[int]
+    lst : list[int]
         Items to split (e.g., ranks or expert IDs).
     num_groups : int
         Number of buckets to produce.
@@ -259,7 +258,7 @@ def split_into_groups(
 
     Returns
     -------
-    Dict[int, List[int]]
+    Dict[int, list[int]]
         Mapping: group_id -> sublist of items.
 
     Notes
@@ -283,7 +282,7 @@ def split_into_groups(
 
 def create_expert_groups(
     my_rank: int, rank_group_assignment: Mapping[int, Iterable[int]]
-) -> Tuple[int, Dict[int, dist.ProcessGroup]]:
+) -> tuple[int, dict[int, dist.ProcessGroup]]:
     """
     Create torch.distributed process groups for each expert group.
 
@@ -296,7 +295,7 @@ def create_expert_groups(
 
     Returns
     -------
-    Tuple[int, Dict[int, ProcessGroup]]
+    tuple[int, Dict[int, ProcessGroup]]
         (group_ids, groups_by_id)
 
     Notes
@@ -307,7 +306,7 @@ def create_expert_groups(
     if not dist.is_available() or not dist.is_initialized():
         raise RuntimeError("torch.distributed must be initialized before creating groups")
 
-    expert_groups: Dict[int, dist.ProcessGroup] = {}
+    expert_groups: dict[int, dist.ProcessGroup] = {}
     group_ids: int | None = None
 
     for group_id, ranks in rank_group_assignment.items():
@@ -325,7 +324,7 @@ def create_expert_groups(
 # ------------------------------------------------------------
 # Synchronization primitives
 # ------------------------------------------------------------
-def _named_params(model: nn.Module) -> Dict[str, nn.Parameter]:
+def _named_params(model: nn.Module) -> dict[str, nn.Parameter]:
     """Return a dict name -> parameter for stable matching across models."""
     return dict(model.named_parameters())
 
@@ -451,7 +450,7 @@ def broadcast_weights(
             dist.broadcast(p.data, src=0)
 
 
-def get_weight_sum(model: nn.Module, shared: bool = True) -> Tuple[str, torch.Tensor]:
+def get_weight_sum(model: nn.Module, shared: bool = True) -> tuple[str, torch.Tensor]:
     """
     Return the (name, sum) for the first parameter that matches the filter.
 
@@ -464,7 +463,7 @@ def get_weight_sum(model: nn.Module, shared: bool = True) -> Tuple[str, torch.Te
 
     Returns
     -------
-    Optional[Tuple[str, Tensor]]
+    Optional[tuple[str, Tensor]]
         (parameter_name, tensor_sum) for the first matching parameter, or None if none match.
     """
     with torch.no_grad():

@@ -3,33 +3,30 @@ import datetime
 import gc
 import os
 import time
-from typing import Tuple
 
+import bittensor
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.utils import clip_grad_norm_
 from torchdata.stateful_dataloader import StatefulDataLoader
-
 from transformers import (
     PreTrainedTokenizerBase,
     get_cosine_schedule_with_warmup,
 )
 
-import bittensor 
-
 from mycelia.miner.train_helper import free_cuda_models, get_status
 from mycelia.shared.app_logging import configure_logging, structlog
+from mycelia.shared.chain import setup_chain_worker
 from mycelia.shared.checkpoint import (
+    ModelMeta,
     delete_old_checkpoints,
     get_resume_info,
     load_checkpoint,
     save_checkpoint,
     start_model_from,
-    ModelMeta
 )
 from mycelia.shared.config import MinerConfig, parse_args
-from mycelia.shared.chain import setup_chain_worker
 from mycelia.shared.dataloader import get_dataloader
 from mycelia.shared.evaluate import evaluate_model
 from mycelia.shared.expert_manager import ExpertManager
@@ -37,7 +34,6 @@ from mycelia.shared.helper import *
 from mycelia.shared.metrics import MetricLogger
 from mycelia.shared.model import load_model
 from mycelia.shared.modeling.mycelia import get_base_tokenizer
-
 
 configure_logging()
 logger = structlog.get_logger(__name__)
@@ -92,8 +88,14 @@ def cleanup() -> None:
 
 
 def setup_training(
-    config, rank: int, device: torch.device, tokenizer: PreTrainedTokenizerBase, subtensor: bittensor.Subtensor, wallet: bittensor.Wallet, current_model_meta: ModelMeta
-) -> Tuple[
+    config,
+    rank: int,
+    device: torch.device,
+    tokenizer: PreTrainedTokenizerBase,
+    subtensor: bittensor.Subtensor,
+    wallet: bittensor.Wallet,
+    current_model_meta: ModelMeta,
+) -> tuple[
     torch.nn.Module,  # model
     torch.nn.Module,  # global_model
     torch.optim.Optimizer,  # inner_optimizer
@@ -345,7 +347,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 is_inner_optimizer_step
                 and inner_opt_step % max(round(config.local_par.global_opt_interval * 0.02), 1) == 0
             ):
-                logp(f"optimizer step", loss_batch, aux_loss_batch)
+                logp("optimizer step", loss_batch, aux_loss_batch)
                 metrics = get_status(
                     config=config,
                     model=model,
@@ -361,10 +363,10 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
 
             # === local validation and log metric ===
             if is_inner_optimizer_step and inner_opt_step % config.log.metric_interval == 0:
-                logp(f"reached barrier, waiting for partial evaluation")
+                logp("reached barrier, waiting for partial evaluation")
                 dist.barrier(device_ids=[rank])
 
-                logp(f"start partial evaluation")
+                logp("start partial evaluation")
 
                 val_metric = evaluate_model(
                     rank=rank, step=inner_opt_step, model=model, eval_dataloader=eval_dataloader, device=device
@@ -388,7 +390,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
 
                 metric_logger.log(metrics)
 
-                logp(f"reached barrier, waiting for partial validation and metric logging to complete")
+                logp("reached barrier, waiting for partial validation and metric logging to complete")
                 dist.barrier(device_ids=[rank])
 
             # === save checkpoint ===
@@ -397,7 +399,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 and config.ckpt.checkpoint_interval is not None
                 and inner_opt_step % config.ckpt.checkpoint_interval == 0
             ):
-                logp(f"saving checkpoint")
+                logp("saving checkpoint")
                 ckpt_path = os.path.join(
                     config.ckpt.checkpoint_path, f"globalver_{current_model_meta.global_ver}_inneropt_{inner_opt_step}"
                 )
@@ -422,13 +424,19 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                         if ckpt_deleted:
                             logp(f"Deleted old checkpoints: {ckpt_deleted}")
 
-                logp(f"reached barrier, waiting for complete checkpoint saving")
+                logp("reached barrier, waiting for complete checkpoint saving")
                 dist.barrier(device_ids=[rank])
 
             # === reload model ===
             if (
                 is_inner_optimizer_step
-                and start_model_from(rank, config, primary_ckpt_path=config.ckpt.validator_checkpoint_path, secondary_ckpt_path=config.ckpt.checkpoint_path)[1] == current_model_version
+                and start_model_from(
+                    rank,
+                    config,
+                    primary_ckpt_path=config.ckpt.validator_checkpoint_path,
+                    secondary_ckpt_path=config.ckpt.checkpoint_path,
+                )[1]
+                == current_model_version
             ):
                 dist.barrier(device_ids=[rank])  # make sure everything is saved and everyone is ready to load
                 logp("freeing cuda memory")
@@ -455,7 +463,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 gc.collect()
                 torch.cuda.empty_cache()
 
-    except Exception as E:
+    except Exception:
         logger.error("Quit training", exc_info=True)
         cleanup()
         metric_logger.close()

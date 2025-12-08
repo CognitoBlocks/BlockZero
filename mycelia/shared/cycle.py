@@ -1,11 +1,14 @@
 import hashlib
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import bittensor
+import requests
+from pydantic import BaseModel
 
 from mycelia.shared.app_logging import configure_logging, structlog
-from mycelia.shared.chain import MinerChainCommit, get_chain_commits, serve_axon
+from mycelia.shared.chain import MinerChainCommit, WorkerChainCommit, get_chain_commits, serve_axon
 from mycelia.shared.config import MinerConfig, ValidatorConfig, WorkerConfig
 from mycelia.shared.helper import parse_dynamic_filename
 from mycelia.validator.evaluator import MinerEvalJob
@@ -14,31 +17,34 @@ configure_logging()
 logger = structlog.get_logger(__name__)
 
 
-def should_submit_model(
-    config: MinerConfig,
-    subtensor: bittensor.Subtensor,
-    last_submission_block: int,
-) -> Tuple[bool, int]:
-    block = subtensor.block
-    schedule = get_validation_schedule(config, subtensor)
-    phase_status = get_phase_status(schedule, block)
-    should_submit = phase_status == "submission"
-    block_till = schedule["submission_start_block"] - block
-    if block_till < 0 and should_submit == False:
-        block_till += config.cycle.validation_period
-    logger.info("should_submit_model", should_start=should_submit, block_till=block_till)
-    return should_submit, block_till
+class PhaseResponse(BaseModel):
+    block: int
+    cycle_length: int  # how long is one cycle
+    cycle_index: int  # which cycle are we in
+    cycle_block_index: int  # how far in block are we into a cycle
+    phase_name: str  # what is the name of the current phase
+    phase_index: int  # what is the id of the phase
+    phase_start_block: int  # the start block of the phase
+    phase_end_block: int  # the end block of the phase
+    blocks_into_phase: int  # how far in block are we in the current phase
+    blocks_remaining_in_phase: int  # how manuy block left in the phase
 
 
-def should_start_validation(config: ValidatorConfig, subtensor: bittensor.Subtensor) -> Tuple[bool, int]:
-    schedule = get_validation_schedule(config, subtensor)
-    phase_status = get_phase_status(schedule, subtensor.block)
-    should_start = phase_status == "validating"
-    block_till = schedule["interval_start_block"] - subtensor.block
-    if block_till < 0 and should_start == False:
-        block_till += config.cycle.validation_period
+@dataclass
+class PhaseNames:
+    distribute: str = "Distribute"  # miner download from validator
+    train: str = "Train"  # miner trian
+    commit: str = "Commit"  # miner commit hash and  vlaidators commit seed
+    submission: str = "Submission"  # submit model
+    validate: str = "Validate"  # validator validate
+    merge: str = "Merge"  # validator merge
 
-    return phase_status == "validating", block_till
+
+def should_act(config: MinerConfig, phase_name: PhaseNames) -> tuple[bool, int]:
+    phase: PhaseResponse = get_phase(config)
+    should_submit = phase.phase_name == phase_name
+    blocks_till = get_blocks_until_next_phase()[phase_name]
+    return should_submit, blocks_till
 
 
 def search_model_submission_destination(
@@ -77,9 +83,9 @@ def h256_int(*parts: Any) -> int:
 
 
 def assign_miners_to_validators(
-    validators: Dict[str, Any],  # {validator_id: seed}
-    miners: List[str],
-) -> Dict[str, List[str]]:
+    validators: dict[str, Any],  # {validator_id: seed}
+    miners: list[str],
+) -> dict[str, list[str]]:
     n_v = len(validators)
     n_m = len(miners)
     if n_v == 0:
@@ -107,7 +113,7 @@ def assign_miners_to_validators(
     miners_sorted = sorted(miners, key=lambda mid: h256_int("miner_order", mid, combined_seed))
 
     # --- 3) Preference per miner (based on validator seed + combined seed)
-    def validator_prefs(mid: str) -> List[str]:
+    def validator_prefs(mid: str) -> list[str]:
         return sorted(
             v_ids,
             key=lambda vid: h256_int("preference", mid, validators[vid], combined_seed),
@@ -115,7 +121,7 @@ def assign_miners_to_validators(
         )
 
     # --- 4) Assign miners evenly, respecting capacities
-    assignment: Dict[str, List[str]] = {vid: [] for vid in v_ids}
+    assignment: dict[str, list[str]] = {vid: [] for vid in v_ids}
     for mid in miners_sorted:
         prefs = validator_prefs(mid)
         for vid in prefs:
@@ -131,16 +137,16 @@ def assign_miners_to_validators(
 
 
 def get_validator_miner_assignment(config: WorkerConfig, subtensor: bittensor.Subtensor):
-    commits: Tuple(WorkerChainCommit, bittensor.Neuron) = get_chain_commits(config, subtensor)
+    commits: tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(config, subtensor)
 
-    validator_seeds: Dict[str, int] = {
+    validator_seeds: dict[str, int] = {
         neuron.hotkey: commit.miner_seed
         for commit, neuron in commits
         if getattr(commit, "expert_group", None) == config.moe.my_expert_group_id
         and getattr(commit, "miner_seed", None) is not None
     }
 
-    miners: List[str] = [
+    miners: list[str] = [
         neuron.hotkey
         for commit, neuron in commits
         if isinstance(commit, MinerChainCommit)
@@ -150,47 +156,28 @@ def get_validator_miner_assignment(config: WorkerConfig, subtensor: bittensor.Su
     return assign_miners_to_validators(validator_seeds, miners)  # type: ignore
 
 
-def get_validation_schedule(
-    config: WorkerConfig, subtensor: bittensor.Subtensor, block=None, last=False
-) -> Dict[str, int]:
-    if block == None:
-        block = subtensor.block
-
-    if last:
-        block = block - config.cycle.validation_period
-
-    interval_start_block = (block // config.cycle.validation_period) * config.cycle.validation_period + 1
-    interval_end_block = (block // config.cycle.validation_period + 1) * config.cycle.validation_period
-    submission_start_block = interval_end_block - config.cycle.submission_offset
-    validation_end_block = interval_start_block + config.cycle.validation_offset
-
-    return {
-        "interval_start_block": interval_start_block,
-        "interval_end_block": interval_end_block,
-        "submission_start_block": submission_start_block,
-        "validation_end_block": validation_end_block,
-    }
-
-
-def get_phase_status(schedule: dict, block: int) -> str:
+def get_phase(config: WorkerConfig) -> PhaseResponse:
     """
     Determine current phase based on block schedule.
 
     Returns:
         str: one of ["training", "submission", "waiting"]
     """
-    start = schedule["interval_start_block"]
-    validation = schedule["validation_end_block"]
-    submission = schedule["submission_start_block"]
-    end = schedule["interval_end_block"]
-    if start <= block < validation:
-        return "validating"
-    elif validation <= block < submission:
-        return "training"
-    elif submission <= block <= end:
-        return "submission"
-    else:
-        return "not_regcognised"
+    resp = requests.get(f"{config.cycle.owner_url}/get_phase")
+    resp.raise_for_status()
+    return PhaseResponse(**resp.json())
+
+
+def get_blocks_until_next_phase(config: WorkerConfig) -> PhaseResponse:
+    """
+    Determine current phase based on block schedule.
+
+    Returns:
+        str: one of ["training", "submission", "waiting"]
+    """
+    resp = requests.get(f"{config.cycle.owner_url}/blocks_until_next_phase")
+    resp.raise_for_status()
+    return resp.json()
 
 
 def load_submission_files(folder: str = "miner_submission"):
@@ -210,23 +197,19 @@ def load_submission_files(folder: str = "miner_submission"):
     return files_dict
 
 
-def gather_validation_job(config: ValidatorConfig, subtensor: bittensor.Subtensor, step: int) -> List[MinerEvalJob]:
-    validation_schedule = get_validation_schedule(config, subtensor, last=True)
+def gather_validation_job(config: ValidatorConfig, subtensor: bittensor.Subtensor, step: int) -> list[MinerEvalJob]:
     validator_miner_assignment = get_validator_miner_assignment(config, subtensor)
     miner_assignment = validator_miner_assignment[config.chain.hotkey_ss58]
-    miner_submission_files = load_submission_files(str(config.vali.miner_submission_path))
+    miner_submission_files = load_submission_files(str(config.ckpt.miner_submission_path))
 
     miner_jobs = []
     for file_name, submission_meta in miner_submission_files.items():
-        if (
-            submission_meta["hotkey"] in miner_assignment
-            and get_phase_status(validation_schedule, submission_meta["block"]) == "submission"
-        ):
+        if submission_meta["hotkey"] in miner_assignment and get_phase(config).phase_name == PhaseNames.submission:
             miner_jobs.append(
                 MinerEvalJob(
                     uid=submission_meta["uid"],
                     hotkey=submission_meta["hotkey"],
-                    model_path=config.vali.miner_submission_path / file_name,
+                    model_path=config.ckpt.miner_submission_path / file_name,
                     step=step,
                 )
             )

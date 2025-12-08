@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -40,13 +39,13 @@ def load_model_from_path(path: str, base_model, device: torch.device) -> nn.Modu
 async def evaluator_worker(
     name: str,
     config,
-    jobs_q: "asyncio.Queue[MinerEvalJob]",
+    jobs_q: asyncio.Queue[MinerEvalJob],
     aggregator: MinerScoreAggregator,
-    device: "torch.device",
+    device: torch.device,
     base_model: nn.Module,
     tokenizer,
     max_eval_batches: int = EVAL_MAX_BATCHES,
-    rank: Optional[int] = None,
+    rank: int | None = None,
 ):
     while True:
         job = await jobs_q.get()

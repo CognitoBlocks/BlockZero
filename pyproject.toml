@@ -43,11 +43,13 @@ packages = ["mycelia"]
 dependencies = {file = ["requirements.txt"]}
 
 [tool.ruff]
-line-length = 100
+line-length = 120
 target-version = "py310"
 lint.select = ["E", "F", "I", "W", "B", "UP"]
 lint.ignore = ["E203", "E266"]
 exclude = ["infra/grafana/**", "infra/prometheus.yml"]
+format.quote-style = "double"
+format.indent-style = "space"
 
 [tool.black]
 line-length = 100

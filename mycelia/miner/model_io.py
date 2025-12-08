@@ -2,24 +2,28 @@ import time
 
 from requests.exceptions import (
     ConnectionError as ReqConnectionError,
+)
+from requests.exceptions import (
     RequestException,
     Timeout,
 )
 
-from mycelia.shared.client import submit_model
 from mycelia.shared.app_logging import configure_logging, structlog
 from mycelia.shared.chain import MinerChainCommit, commit_status
 from mycelia.shared.checkpoint import delete_old_checkpoints, get_resume_info
+from mycelia.shared.client import submit_model
 from mycelia.shared.config import MinerConfig, parse_args
 from mycelia.shared.cycle import (
     search_model_submission_destination,
     setup_chain_worker,
-    should_submit_model,
+    should_act,
 )
 from mycelia.shared.model import fetch_model_from_chain
+from mycelia.sn_owner.cycle import PhaseNames
 
 configure_logging()
 logger = structlog.get_logger(__name__)
+
 
 def main(config: MinerConfig) -> None:
     config.write()
@@ -50,7 +54,7 @@ def main(config: MinerConfig) -> None:
 
             start_submit = False
             while not start_submit:
-                start_submit, block_till = should_submit_model(config, subtensor, last_submission_block)
+                start_submit, block_till = should_act(config, phase_name=PhaseNames.submit)
                 if block_till > 0:
                     time.sleep(block_till * 12)
 

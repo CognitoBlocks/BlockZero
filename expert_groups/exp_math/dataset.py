@@ -1,10 +1,8 @@
-from mycelia.shared.dataloader import DefaultStreamingTorchDataset
-from transformers import PreTrainedTokenizerBase
-from torch.utils.data import IterableDataset as TorchIterableDataset
+from typing import Any
 
-from typing import Callable, Dict, Any
 from transformers import PreTrainedTokenizerBase
-from torch.utils.data import IterableDataset as TorchIterableDataset
+
+from mycelia.shared.dataloader import DefaultStreamingTorchDataset
 
 
 # -------------------------------------------------------------
@@ -14,10 +12,10 @@ from torch.utils.data import IterableDataset as TorchIterableDataset
 class StreamingTorchDataset(DefaultStreamingTorchDataset):
     @staticmethod
     def tokenize_and_format(
-        example: Dict[str, Any],
+        example: dict[str, Any],
         tokenizer: PreTrainedTokenizerBase,
         sequence_length: int,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Default data formatting function.
 

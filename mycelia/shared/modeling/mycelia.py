@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -16,7 +15,6 @@ from mycelia.shared.modeling.custom_qwen3_next import (
     get_moe_model_config,
 )
 
-
 logger = structlog.get_logger(__name__)
 
 
@@ -26,10 +24,10 @@ logger = structlog.get_logger(__name__)
 def get_base_model(
     config: MinerConfig | ValidatorConfig,
     expert_manager: ExpertManager,
-    group_ids: List | None = None,
-    state_dicts: List = [],
+    group_ids: list | None = None,
+    state_dicts: list = [],
     partial=False,
-) -> Optional[nn.Module]:
+) -> nn.Module | None:
     """
     Load a base Causal LM by `config.model.model_path` and optionally convert to MoE.
 
@@ -63,15 +61,10 @@ def get_base_tokenizer(config: MinerConfig | ValidatorConfig):
     return tokenizer
 
 
-from collections import OrderedDict
-import torch
-from typing import List, Dict, Tuple, Optional
-
-
 def merge_state_dicts_with_priority(
-    state_dicts: List[Dict[str, torch.Tensor]],
-    model: Optional[torch.nn.Module] = None,
-) -> Tuple[OrderedDict, Optional[List[str]]]:
+    state_dicts: list[dict[str, torch.Tensor]],
+    model: torch.nn.Module | None = None,
+) -> tuple[OrderedDict, list[str] | None]:
     """
     Merge a list of state_dicts where earlier dicts have *higher* priority.
     Unexpected keys (not present in the model) are removed automatically.

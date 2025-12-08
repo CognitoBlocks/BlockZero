@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Dict, Optional
-
 import torch
 from torch import nn
 from tqdm import tqdm
@@ -19,9 +17,9 @@ def evaluate_model(
     model: nn.Module,
     eval_dataloader,
     device: torch.device,
-    max_eval_batches: Optional[int] = 50,
-    rank: Optional[int] = None,
-) -> Dict[str, float]:
+    max_eval_batches: int | None = 50,
+    rank: int | None = None,
+) -> dict[str, float]:
     """
     Run a lightweight eval pass and return scalar metrics.
 

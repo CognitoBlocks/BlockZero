@@ -1,6 +1,7 @@
-from pathlib import Path
 import importlib
-from typing import Type, Dict, Any
+from pathlib import Path
+from typing import Any
+
 import torch
 import torch.nn.functional as F
 
@@ -35,7 +36,7 @@ def convert_to_str(obj):
     return obj
 
 
-def deep_update(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+def deep_update(base: dict[str, Any], overrides: dict[str, Any]) -> dict[str, Any]:
     for k, v in overrides.items():
         if isinstance(v, dict) and isinstance(base.get(k), dict):
             base[k] = deep_update(base[k], v)
@@ -44,7 +45,7 @@ def deep_update(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, An
     return base
 
 
-def import_from_string(path: str) -> Type:
+def import_from_string(path: str) -> type:
     """
     Import a class from a string like 'package.module:ClassName'.
     """

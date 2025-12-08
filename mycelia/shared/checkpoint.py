@@ -1,8 +1,7 @@
 import os
 from copy import deepcopy
-from pathlib import Path
-from typing import Dict, Tuple
 from dataclasses import dataclass
+from pathlib import Path
 
 import fsspec
 import torch
@@ -20,21 +19,22 @@ from mycelia.shared.helper import parse_dynamic_filename
 
 logger = structlog.getLogger(__name__)
 
+
 @dataclass
 class ModelMeta:
-    global_ver: int = 0 # -1 if not specified
-    inner_opt: int = -1 # -1 if do not exist 
+    global_ver: int = 0  # -1 if not specified
+    inner_opt: int = -1  # -1 if do not exist
     path: Path | None = None
-    role: str | None = None# [miner, validator]
+    role: str | None = None  # [miner, validator]
     model_hash: str | None = None
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ModelMeta):
             return NotImplemented
         return (
-            self.global_ver == other.global_ver and
-            self.inner_opt == other.inner_opt and
-            self.model_hash == other.model_hash
+            self.global_ver == other.global_ver
+            and self.inner_opt == other.inner_opt
+            and self.model_hash == other.model_hash
         )
 
     def __lt__(self, other: "ModelMeta") -> bool:
@@ -47,15 +47,20 @@ class ModelMeta:
 
         # Then compare by inner_opt
         return self.inner_opt < other.inner_opt
-    
-def start_model_from(rank: int, config: MinerConfig, primary_ckpt_path: Path, secondary_ckpt_path: Path | None) -> Tuple[bool, ModelMeta, str | Path | None]:
+
+
+def start_model_from(
+    rank: int, config: MinerConfig, primary_ckpt_path: Path, secondary_ckpt_path: Path | None
+) -> tuple[bool, ModelMeta, str | Path | None]:
     # if it is a validator, then just start from its own checkpoint
     if secondary_ckpt_path is None:
         logger.info("returning primary checkpoint")
         return get_resume_info(rank, config, config.ckpt.checkpoint_path)
 
     primary_ckpt_found, primary_model_meta, latest_primary_ckpt = get_resume_info(rank, config, primary_ckpt_path)
-    secondary_ckpt_found, secondary_model_meta, latest_secondary_ckpt = get_resume_info(rank, config, secondary_ckpt_path)
+    secondary_ckpt_found, secondary_model_meta, latest_secondary_ckpt = get_resume_info(
+        rank, config, secondary_ckpt_path
+    )
 
     # --- handling either miner / validator checkpoint not found ---
     if not secondary_ckpt_found:
@@ -69,19 +74,19 @@ def start_model_from(rank: int, config: MinerConfig, primary_ckpt_path: Path, se
     # --- Return based on more updated version ---
     if secondary_model_meta >= primary_model_meta and latest_secondary_ckpt is not None:
         logger.info(
-            f'secondary checkpoint version {secondary_model_meta} > primary checkpoint version {primary_model_meta}'
+            f"secondary checkpoint version {secondary_model_meta} > primary checkpoint version {primary_model_meta}"
         )
         return secondary_ckpt_found, secondary_model_meta, latest_secondary_ckpt / "model.pt"
     else:
         logger.info(
-            f'primary checkpoint version {primary_model_meta} > secondary checkpoint version {secondary_model_meta}'
+            f"primary checkpoint version {primary_model_meta} > secondary checkpoint version {secondary_model_meta}"
         )
         return primary_ckpt_found, secondary_model_meta, latest_primary_ckpt
 
 
 def get_resume_info(
     rank: int, config: MinerConfig | ValidatorConfig, path: Path | None = None
-) -> Tuple[bool, ModelMeta, Path | None]:
+) -> tuple[bool, ModelMeta, Path | None]:
     """
     Retrieves the resume information for a given rank and checkpoint configuration.
 
@@ -122,7 +127,7 @@ def get_resume_info(
 
 
 def save_state_dict_by_expert_group(
-    state_dict: Dict[str, torch.Tensor],
+    state_dict: dict[str, torch.Tensor],
     expert_groups: ExpertAssignments,
     save_dir: str | Path,
 ):
@@ -211,7 +216,7 @@ def save_checkpoint(
             "model_state_dict": {k: v.detach().to("cpu", non_blocking=True) for k, v in model.state_dict().items()},
             "loss": loss,
         }
-        target = os.path.join(checkpoint_path, f"model.pt")
+        target = os.path.join(checkpoint_path, "model.pt")
         if not os.path.exists(target):
             with fsspec.open(target, "wb") as f:
                 torch.save(checkpoint, f)
@@ -222,7 +227,7 @@ def save_checkpoint(
             "optimizer_state_dict": inner_optimizer.state_dict(),
         }
 
-        target = os.path.join(checkpoint_path, f"inner_optimizer.pt")
+        target = os.path.join(checkpoint_path, "inner_optimizer.pt")
         if not os.path.exists(target):
             with fsspec.open(target, "wb") as f:
                 torch.save(opt_checkpoint, f)
@@ -231,7 +236,7 @@ def save_checkpoint(
         opt_checkpoint = {
             "optimizer_state_dict": outer_optimizer.state_dict(),
         }
-        target = os.path.join(checkpoint_path, f"outer_optimizer.pt")
+        target = os.path.join(checkpoint_path, "outer_optimizer.pt")
         if not os.path.exists(target):
             with fsspec.open(target, "wb") as f:
                 torch.save(opt_checkpoint, f)
@@ -279,7 +284,7 @@ def load_optimizer(checkpoint_path, optimizer):
     def _get_name_to_id(optimizer_state_dict):
         param_name = [pid for g in optimizer_state_dict["param_groups"] for pid in g["param_names"]]
         param_id = [pid for g in optimizer_state_dict["param_groups"] for pid in g["params"]]
-        param_name_to_id = {name: pid for name, pid in zip(param_name, param_id)}
+        param_name_to_id = {name: pid for name, pid in zip(param_name, param_id, strict=False)}
         return param_name_to_id
 
     def _get_name_to_param(optimizer_state_dict):
@@ -375,7 +380,7 @@ def load_checkpoint(
             rank_state_dict = torch.load(f, map_location=torch.device("cpu"))
         data_loader.load_state_dict(rank_state_dict["data_loader"])
 
-    with fsspec.open(os.path.join(checkpoint_path, f"global_state.pt"), "rb") as f:
+    with fsspec.open(os.path.join(checkpoint_path, "global_state.pt"), "rb") as f:
         global_state_dict = torch.load(f, map_location=torch.device("cpu"))
 
     if scheduler is not None:
@@ -397,7 +402,7 @@ def load_checkpoint(
     return global_state_dict["loss"]
 
 
-def get_sorted_checkpoints(checkpoint_path: str) -> Dict[Path, ModelMeta]:
+def get_sorted_checkpoints(checkpoint_path: str) -> dict[Path, ModelMeta]:
     fs, root = fsspec.core.url_to_fs(checkpoint_path)
 
     ckpt_files = []
@@ -410,9 +415,7 @@ def get_sorted_checkpoints(checkpoint_path: str) -> Dict[Path, ModelMeta]:
 
         # ensure both fields exist and are numeric
         model_meta = ModelMeta(
-            global_ver = int(meta.get("globalver") or None),
-            inner_opt = int(meta.get("inneropt") or None),
-            path = Path(f)
+            global_ver=int(meta.get("globalver") or None), inner_opt=int(meta.get("inneropt") or None), path=Path(f)
         )
         ckpt_files.append(model_meta)
 

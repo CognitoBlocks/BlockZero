@@ -8,12 +8,11 @@ import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
 
 import aiofiles
 import bittensor
 import uvicorn
-from fastapi import File, Form, FastAPI, Header, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -39,7 +38,7 @@ AUTH_TOKEN = os.getenv("AUTH_TOKEN")  # optional bearer token for auth
 
 
 # ---- Helpers ----
-def require_auth(authorization: Optional[str]) -> None:
+def require_auth(authorization: str | None) -> None:
     if not AUTH_TOKEN:
         return
     if not authorization or not authorization.startswith("Bearer "):
@@ -49,7 +48,7 @@ def require_auth(authorization: Optional[str]) -> None:
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
-def file_response_for(path: Path, download_name: Optional[str] = None) -> FileResponse:
+def file_response_for(path: Path, download_name: str | None = None) -> FileResponse:
     logger.info("file response for", path=path)
     if not path.exists() or not path.is_file():
         logger.info("file response for, path dosent exist", path.exists(), path.is_file())
@@ -87,9 +86,9 @@ def get_upload_root() -> Path:
 # ---- Schemas ----
 class SendBody(BaseModel):
     # Optional override; if not provided, uses CHECKPOINT_PATH
-    path: Optional[str] = None
+    path: str | None = None
     # Optional download file name (e.g., "model-v1.ckpt")
-    download_name: Optional[str] = None
+    download_name: str | None = None
 
 
 @app.on_event("startup")
@@ -137,19 +136,19 @@ async def status():
 # miners / client get model from validator
 @app.get("/get-checkpoint")
 async def get_checkpoint(
-    authorization: Optional[str] = Header(default=None),
+    authorization: str | None = Header(default=None),
     target_hotkey_ss58: str = Form(None, description="Receiver's hotkey"),
     origin_hotkey_ss58: str = Form(None, description="Sender's hotkey"),
     block: int = Form(
         None, description="The block that the message was sent."
     ),  # insecure, do not use this field for validation, TODO: change it to block hash?
     signature: str = Form(None, description="Signed message"),
-    expert_group_ids: Optional[List[int]] = Form(None, description="List of expert groups to fetch"),
+    expert_group_ids: list[int] | None = Form(None, description="List of expert groups to fetch"),
 ):
     """GET to download the configured checkpoint immediately."""
-    logger.info(f"checkpoint, A")
+    logger.info("checkpoint, A")
     require_auth(authorization)
-    logger.info(f"checkpoint, B")
+    logger.info("checkpoint, B")
 
     verify_message(
         origin_hotkey_ss58=origin_hotkey_ss58,
@@ -161,14 +160,14 @@ async def get_checkpoint(
     )
 
     resume, start_step, latest_checkpoint_path = get_resume_info(rank=0, config=config)
-    logger.info(f"checkpoint, C", latest_checkpoint_path)
+    logger.info("checkpoint, C", latest_checkpoint_path)
 
     if not latest_checkpoint_path:
         raise HTTPException(status_code=500, detail="CHECKPOINT_PATH env var is not set")
 
     # Case 1: no expert group requested → old behavior
     if expert_group_ids is None:
-        latest_checkpoint_path = os.path.join(latest_checkpoint_path, f"model.pt")
+        latest_checkpoint_path = os.path.join(latest_checkpoint_path, "model.pt")
         logger.info(f"checkpoint, last {latest_checkpoint_path}")
         result = file_response_for(Path(latest_checkpoint_path), f"step{start_step}")
         return result
@@ -230,7 +229,7 @@ async def get_checkpoint(
 # miners submit checkpoint
 @app.post("/submit-checkpoint")
 async def submit_checkpoint(
-    authorization: Optional[str] = Header(default=None),
+    authorization: str | None = Header(default=None),
     target_hotkey_ss58: str = Form(None, description="Receiver's hotkey"),
     origin_hotkey_ss58: str = Form(None, description="Sender's hotkey"),
     block: int = Form(
@@ -264,7 +263,7 @@ async def submit_checkpoint(
     model_name = f"hotkey_{target_hotkey_ss58}_block_{subtensor.block}.pt"
     hasher = hashlib.sha256()
     bytes_written = 0
-    dest_path = config.vali.miner_submission_path / model_name
+    dest_path = config.ckpt.miner_submission_path / model_name
     try:
         async with aiofiles.open(dest_path, "wb") as out:
             while True:

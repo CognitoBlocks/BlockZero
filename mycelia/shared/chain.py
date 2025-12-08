@@ -1,29 +1,28 @@
 from __future__ import annotations
 
-from collections import Counter
 import json
-from pathlib import Path
 import time
-from typing import Dict, Optional, Tuple, List
+from collections import Counter
+from pathlib import Path
 
-import bittensor 
+import bittensor
 from pydantic import BaseModel
 
 from mycelia.shared.app_logging import structlog
-from mycelia.shared.config import WorkerConfig
-from mycelia.shared.client import download_model
 from mycelia.shared.checkpoint import ModelMeta
-
+from mycelia.shared.client import download_model
+from mycelia.shared.config import WorkerConfig
 
 logger = structlog.get_logger(__name__)
 
+
 # --- Info gather ---
-def get_active_validator_info() -> Optional[Dict]:
-    raise NotImplemented
+def get_active_validator_info() -> dict | None:
+    raise NotImplementedError
 
 
 def get_active_miner_info():
-    raise NotImplemented
+    raise NotImplementedError
 
 
 # --- Status structure and submission (for miner validator communication)---
@@ -33,6 +32,7 @@ class WorkerChainCommit(BaseModel):
     active: bool
     stake: float
     validator_permit: bool
+
 
 class ValidatorChainCommit(BaseModel):
     model_hash: str | None = None
@@ -54,7 +54,7 @@ def commit_status(
     subtensor.set_commitment(wallet=wallet, netuid=config.chain.netuid, data=status.model_dump_json())
 
 
-def get_chain_commits(config: WorkerConfig, subtensor: bt.Subtensor) -> Tuple(WorkerChainCommit, bittensor.Neuron):
+def get_chain_commits(config: WorkerConfig, subtensor: bt.Subtensor) -> tuple(WorkerChainCommit, bittensor.Neuron):
     all_commitments = subtensor.get_all_commitments(netuid=config.chain.netuid)
     metagraph = subtensor.metagraph(netuid=config.chain.netuid)
     parsed = []
@@ -76,6 +76,7 @@ def get_chain_commits(config: WorkerConfig, subtensor: bt.Subtensor) -> Tuple(Wo
 
     return parsed
 
+
 # --- setup chain worker ---
 def setup_chain_worker(config):
     wallet = bittensor.wallet(name=config.chain.coldkey_name, hotkey=config.chain.hotkey_name)
@@ -87,20 +88,23 @@ def setup_chain_worker(config):
     )
     return wallet, subtensor
 
+
 def serve_axon(config: WorkerConfig, wallet: bt.Wallet, subtensor: bt.Subtensor):
     axon = bittensor.Axon(wallet=wallet, external_port=config.chain.port, ip=config.chain.ip)
     axon.serve(netuid=348, subtensor=subtensor)
 
+
 # --- Chain weight submission ---
 def submit_weight() -> str:
-    raise NotImplemented
+    raise NotImplementedError
+
 
 # --- Get model from chain ---
 def scan_chain_for_new_model(
     current_model_meta: ModelMeta | None,
     config: WorkerConfig,
     subtensor: bittensor.subtensor,
-) -> Tuple[bool, List[dict]]:
+) -> tuple[bool, list[dict]]:
     """
     Returns:
         should_download: True if a newer model (by version) is available and a majority
@@ -108,20 +112,20 @@ def scan_chain_for_new_model(
         download_meta:   list of dicts with fields: uid, ip, port, model_hash, model_version
                          filtered to entries that (a) are newer and (b) match the majority hash.
     """
-    commits: Tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(config, subtensor)
+    commits: tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(config, subtensor)
 
-    max_model_version = max([getattr(c, 'model_version', 0) for c, n in commits])
+    max_model_version = max([getattr(c, "model_version", 0) for c, n in commits])
     if current_model_meta is not None:
         max_model_version = max(max_model_version, current_model_meta.global_ver)
 
     # 1) collect candidates that are newer than the current version
-    most_updated_commits = [(c, n) for c, n in commits if getattr(c, 'model_version', 0) >= max_model_version]
+    most_updated_commits = [(c, n) for c, n in commits if getattr(c, "model_version", 0) >= max_model_version]
 
     # 2) majority filter by model_hash among the newer candidates
-    hash_counts = Counter([ c.model_hash for c, n in most_updated_commits if getattr(c, 'model_hash', False)])
+    hash_counts = Counter([c.model_hash for c, n in most_updated_commits if getattr(c, "model_hash", False)])
     majority_hash, _count = hash_counts.most_common(1)[0]
 
-    filtered_commits = [(c, n) for c, n in most_updated_commits if getattr(c, 'model_hash', False) == majority_hash]
+    filtered_commits = [(c, n) for c, n in most_updated_commits if getattr(c, "model_hash", False) == majority_hash]
     if not filtered_commits:
         return False, []
 
@@ -145,10 +149,11 @@ def scan_chain_for_new_model(
 
     return should_download, download_meta
 
-def fetch_model_from_chain(current_model_meta: ModelMeta | None, config: WorkerConfig, subtensor: bittensor.Subtensor, wallet: bittensor.Wallet) -> None:
-    should_download, download_metas = scan_chain_for_new_model(
-        current_model_meta, config, subtensor
-    )
+
+def fetch_model_from_chain(
+    current_model_meta: ModelMeta | None, config: WorkerConfig, subtensor: bittensor.Subtensor, wallet: bittensor.Wallet
+) -> None:
+    should_download, download_metas = scan_chain_for_new_model(current_model_meta, config, subtensor)
 
     logger.info("Fetching model from chain", should_download=should_download)
 
@@ -196,21 +201,20 @@ def fetch_model_from_chain(current_model_meta: ModelMeta | None, config: WorkerC
                     current_model_hash = download_meta["model_hash"]
                     logger.info(
                         "✅ Downloaded checkpoint",
-                        out_path = out_path,
-                        current_model_version = current_model_version,
-                        current_model_hash = current_model_hash,
+                        out_path=out_path,
+                        current_model_version=current_model_version,
+                        current_model_hash=current_model_hash,
                     )
                     break
-                except Exception as e:
+                except Exception:
                     logger.warning("Download failed", url)
 
             if not download_success:
                 retries += 1
                 if retries < max_retries:
                     delay = base_delay_s * (2 ** (retries - 1))
-                    logger.info("Retrying", delay = delay, retries = retries + 1, max_retries = max_retries)
+                    logger.info("Retrying", delay=delay, retries=retries + 1, max_retries=max_retries)
                     time.sleep(delay)
 
         if not download_success:
             logger.error("❌ All download attempts failed after %d retries.", retries)
-

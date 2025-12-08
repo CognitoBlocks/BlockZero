@@ -1,7 +1,7 @@
 import gc
 import logging
 from collections.abc import Iterable, Sequence
-from typing import Any, Dict, Optional, Union
+from typing import Any
 
 import torch
 
@@ -13,9 +13,9 @@ logger = logging.getLogger(__name__)
 
 
 def free_cuda_models(
-    models: Union[torch.nn.Module, Iterable[torch.nn.Module]],
-    optimizers: Optional[Iterable[torch.optim.Optimizer]] = None,
-    devices: Optional[Sequence[Union[int, str, torch.device]]] = None,
+    models: torch.nn.Module | Iterable[torch.nn.Module],
+    optimizers: Iterable[torch.optim.Optimizer] | None = None,
+    devices: Sequence[int | str | torch.device] | None = None,
     move_to_cpu_first: bool = True,
     clear_ipc: bool = True,
     sync_before: bool = True,
@@ -127,7 +127,7 @@ def get_status(
     global_opt_step: int | None = None,
     loss_batch: torch.Tensor | None | Any = None,
     aux_loss_batch: torch.Tensor | None | Any = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Build a dictionary of training metrics for monitoring and logging.
     Times are reported in hours, throughput in tokens/second.
@@ -145,7 +145,7 @@ def get_status(
 
     # Extract current learning rate (assume one param group or take first)
 
-    metrics: Dict[str, Any] = {
+    metrics: dict[str, Any] = {
         "step": step,
         "inner_opt_step": inner_opt_step,
         "global_opt_step": global_opt_step,

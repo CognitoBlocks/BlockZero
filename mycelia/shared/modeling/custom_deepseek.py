@@ -1,39 +1,21 @@
 from __future__ import annotations
 
-import os
-import re
-import copy
-import logging
-from typing import Dict, List, Optional, Tuple, Union
-from collections import OrderedDict
-
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from huggingface_hub import login
 from transformers import (
     AutoConfig,
-    AutoTokenizer,
-    LlamaConfig,
-    LlamaForCausalLM,
-    OlmoForCausalLM,
-    AutoModelForCausalLM,
     PretrainedConfig,
 )
 from transformers.models.deepseek_v3.modeling_deepseek_v3 import (
-    DeepseekV3MoE,
-    DeepseekV3MLP,
     DeepseekV3DecoderLayer,
     DeepseekV3ForCausalLM,
+    DeepseekV3MLP,
+    DeepseekV3MoE,
     DeepseekV3TopkRouter,
 )
-from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
-from transformers.utils.deprecation import deprecate_kwarg
-from transformers.modeling_outputs import MoeCausalLMOutputWithPast
 
-from mycelia.shared.config import MinerConfig, ValidatorConfig
-from mycelia.shared.expert_manager import get_layer_expert_id
 from mycelia.shared.app_logging import structlog
+from mycelia.shared.config import MinerConfig
 from mycelia.shared.helper import *
 
 logger = structlog.get_logger(__name__)
@@ -93,7 +75,7 @@ class SparseMoeBlock(DeepseekV3MoE):
         Must provide: hidden_size, num_experts, num_experts_per_tok, norm_topk_prob.
     group_ids : int
         The group this rank belongs to.
-    expert_group_assignment : Dict[int, Dict[int, List[int]]]
+    expert_group_assignment : Dict[int, Dict[int, list[int]]]
         Mapping: layer_id -> (group_id -> list of expert ids available to that group).
     layer_id : int
         The layer index used to pick the allowed experts.
@@ -105,7 +87,7 @@ class SparseMoeBlock(DeepseekV3MoE):
         layer_id: int,
         num_experts: int | None = None,
         group_ids: int | None = None,
-        expert_group_assignment: Dict[int, Dict[int, List[int]]] | None = None,
+        expert_group_assignment: dict[int, dict[int, list[int]]] | None = None,
     ):
         super().__init__(config)
         self.num_experts: int = config.num_experts
@@ -147,12 +129,12 @@ class CustomDeekSeekMoE(DeepseekV3ForCausalLM):
         self,
         config: MinerConfig,
         model_config: PretrainedConfig,
-        group_ids: Optional[int] = None,
-        expert_group_assignment: Optional[Dict[int, Dict[int, List[int]]]] = None,
+        group_ids: int | None = None,
+        expert_group_assignment: dict[int, dict[int, list[int]]] | None = None,
         partial: bool = False,
     ):
         super().__init__(model_config)
-        layers: List[nn.Module] = []
+        layers: list[nn.Module] = []
 
         for i in range(model_config.num_hidden_layers):
             layer = DeepseekV3DecoderLayer(model_config, layer_idx=i)

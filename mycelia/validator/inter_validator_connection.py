@@ -1,10 +1,9 @@
 import fnmatch
-from typing import Any, Dict, List, Tuple
-
-import torch
-import torch.nn as nn
+from typing import Any
 
 import hivemind
+import torch
+import torch.nn as nn
 from hivemind.averaging import DecentralizedAverager
 
 from mycelia.shared.app_logging import structlog
@@ -18,7 +17,7 @@ def get_init_peer_id():
 
 
 def connect_with_peers():
-    initial_peer_ids: List[str] = get_init_peer_id()
+    initial_peer_ids: list[str] = get_init_peer_id()
     dht = hivemind.DHT(start=True, initial_peers=initial_peer_ids)
     return dht
 
@@ -26,7 +25,7 @@ def connect_with_peers():
 # --- expert group selection helpers ---
 def names_for_expert(
     model: nn.Module, eid, expert_name_fmt: str, include_buffers: bool
-) -> List[Tuple[str, torch.Tensor]]:
+) -> list[tuple[str, torch.Tensor]]:
     """Collect all tensors whose names start with the expert module prefix."""
     prefix = expert_name_fmt.format(eid=eid)
     out = []
@@ -76,14 +75,14 @@ def build_buff_from_params(params):
 
 def pack_grads(buff_meta):
     with torch.no_grad():
-        for p, off, n in zip(buff_meta["params"], buff_meta["offsets"], buff_meta["numels"]):
+        for p, off, n in zip(buff_meta["params"], buff_meta["offsets"], buff_meta["numels"], strict=False):
             g = p.grad if p.grad is not None else torch.zeros_like(p)
             buff_meta["buff"][off : off + n].copy_(g.view(-1))
 
 
 def unpack_to_grads(buff_meta):
     with torch.no_grad():
-        for p, off, n in zip(buff_meta["params"], buff_meta["offsets"], buff_meta["numels"]):
+        for p, off, n in zip(buff_meta["params"], buff_meta["offsets"], buff_meta["numels"], strict=False):
             view = buff_meta["buff"][off : off + n].view_as(p).to(p.device)
             if p.grad is None:
                 p.grad = view.clone()
@@ -93,13 +92,11 @@ def unpack_to_grads(buff_meta):
 
 # --- getting averager ---
 
-from hivemind.averaging.allreduce import AveragingMode
-
 
 def build_grad_buff_from_model(
     model: nn.Module,
-    expert_group_assignment: Dict[int, Dict[int, List[int]]],
-) -> Dict[str | int, Dict]:
+    expert_group_assignment: dict[int, dict[int, list[int]]],
+) -> dict[str | int, dict]:
     """
     Returns:
       - group_averagers: dict[group_id] -> DecentralizedAverager averaging *all* experts in that group
@@ -122,7 +119,7 @@ def build_grad_buff_from_model(
                     expert_group_to_names[group_id].append(name)
 
     # 2) Build gradient buffer per expert group
-    group_buff_metas: Dict[str | int, Any] = {}
+    group_buff_metas: dict[str | int, Any] = {}
     for group_id in expert_group_to_names.keys():
         tensors_for_group = [name_to_tensor[name] for name in expert_group_to_names[group_id]]
         group_buff_metas[group_id] = build_buff_from_params(params=tensors_for_group)
@@ -136,13 +133,13 @@ def build_grad_buff_from_model(
 
 
 def build_averagers_from_buff(
-    group_buff_metas: Dict[int | str, Dict[str, torch.Tensor]],
+    group_buff_metas: dict[int | str, dict[str, torch.Tensor]],
     dht: hivemind.DHT,
     prefix_base: str = "expert_averaging",
     target_group_size: int = 4,
     min_group_size: int = 2,
     averaging_alpha: float = 1.0,
-) -> Dict[str | int, DecentralizedAverager]:
+) -> dict[str | int, DecentralizedAverager]:
     """
     Returns:
       - group_averagers: dict[group_id] -> DecentralizedAverager averaging *all* experts in that group
@@ -152,7 +149,7 @@ def build_averagers_from_buff(
       - We sort tensor names to keep a deterministic order across peers.
     """
 
-    group_averagers: Dict[str | int, DecentralizedAverager] = {}
+    group_averagers: dict[str | int, DecentralizedAverager] = {}
     for group_id, buff_meta in group_buff_metas.items():
         prefix = f"{prefix_base}/group{group_id}"
         group_averagers[group_id] = DecentralizedAverager(

@@ -9,14 +9,13 @@ Usage:
     python download_bittensor_subnetinfo_daily.py
 """
 
-import os
 import json
+import os
 import traceback
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone, date
+from datetime import date, datetime, timezone
 
 import bittensor as bt
-
 
 # ---------------- Configuration ---------------- #
 
@@ -41,9 +40,11 @@ TIME_TOLERANCE_SEC = 60 * 30  # 30 minutes
 def ensure_output_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
+
 def seri_subnet_info(subnet_info):
     subnet_info_dict = asdict(subnet_info)
     return {k: v if not isinstance(v, bt.Balance) else v.tao for k, v in subnet_info_dict.items()}
+
 
 def main():
     ensure_output_dir(OUTPUT_DIR)
@@ -61,7 +62,7 @@ def main():
         # Example:
         # archive_endpoints=["wss://your-archive-node:9944"],
     )
-    start_block = 5060000 
+    start_block = 5060000
     latest_block = subtensor.block
     for block in range(start_block, latest_block, 7200):
         day = (block - start_block) / 7200
@@ -71,7 +72,6 @@ def main():
         if os.path.exists(out_path):
             print(f"[SKIP] {block} -> {out_path} already exists")
             continue
-
 
         try:
             block_ts = subtensor.get_timestamp(block=block)

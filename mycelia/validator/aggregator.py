@@ -5,7 +5,7 @@ import json
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Literal
 
 
 def _utc_now() -> datetime:
@@ -16,7 +16,7 @@ def _utc_now() -> datetime:
 class MinerSeries:
     """Holds a single miner's (timestamp, score) points, kept sorted by time."""
 
-    points: List[Tuple[datetime, float]] = field(default_factory=list)
+    points: list[tuple[datetime, float]] = field(default_factory=list)
 
     def add(self, ts: datetime, score: float) -> None:
         if ts.tzinfo is None:
@@ -27,7 +27,7 @@ class MinerSeries:
         else:
             self.points.insert(i, (ts, score))
 
-    def slice(self, start: Optional[datetime], end: Optional[datetime]) -> List[Tuple[datetime, float]]:
+    def slice(self, start: datetime | None, end: datetime | None) -> list[tuple[datetime, float]]:
         if start and start.tzinfo is None:
             raise ValueError("start must be timezone-aware.")
         if end and end.tzinfo is None:
@@ -49,11 +49,11 @@ class MinerSeries:
     def latest(self) -> float:
         return float(self.points[-1][1]) if self.points else 0.0
 
-    def sum(self, start: Optional[datetime] = None, end: Optional[datetime] = None) -> float:
+    def sum(self, start: datetime | None = None, end: datetime | None = None) -> float:
         pts = self.slice(start, end) if (start or end) else self.points
         return float(sum(v for _, v in pts))
 
-    def avg(self, start: Optional[datetime] = None, end: Optional[datetime] = None) -> float:
+    def avg(self, start: datetime | None = None, end: datetime | None = None) -> float:
         pts = self.slice(start, end) if (start or end) else self.points
         return float(sum(v for _, v in pts) / len(pts)) if pts else 0.0
 
@@ -72,11 +72,11 @@ class MinerScoreAggregator:
     """
 
     def __init__(self):
-        self._miners: Dict[str, MinerState] = {}  # uid -> MinerState
+        self._miners: dict[str, MinerState] = {}  # uid -> MinerState
         self._lock = threading.RLock()
 
     # ---------- Recording ----------
-    def add_score(self, uid: str, hotkey: str, score: float, ts: Optional[datetime] = None) -> None:
+    def add_score(self, uid: str, hotkey: str, score: float, ts: datetime | None = None) -> None:
         """
         Add a score point for a uid at timestamp ts (UTC if omitted).
         If the provided hotkey differs from the stored hotkey for this uid,
@@ -115,8 +115,8 @@ class MinerScoreAggregator:
 
     # ---------- Retrieval ----------
     def get_history(
-        self, uid: str, start: Optional[datetime] = None, end: Optional[datetime] = None
-    ) -> List[Tuple[datetime, float]]:
+        self, uid: str, start: datetime | None = None, end: datetime | None = None
+    ) -> list[tuple[datetime, float]]:
         with self._lock:
             s = self._miners.get(uid)
             if not s:
@@ -124,31 +124,29 @@ class MinerScoreAggregator:
             return s.series.slice(start, end)
 
     # ---------- Aggregates ----------
-    def sum_over(self, uid: str, start: Optional[datetime] = None, end: Optional[datetime] = None) -> float:
+    def sum_over(self, uid: str, start: datetime | None = None, end: datetime | None = None) -> float:
         with self._lock:
             s = self._miners.get(uid)
             return s.series.sum(start, end) if s else 0.0
 
-    def avg_over(self, uid: str, start: Optional[datetime] = None, end: Optional[datetime] = None) -> float:
+    def avg_over(self, uid: str, start: datetime | None = None, end: datetime | None = None) -> float:
         with self._lock:
             s = self._miners.get(uid)
             return s.series.avg(start, end) if s else 0.0
 
-    def rolling_sum(self, uid: str, window: timedelta, now: Optional[datetime] = None) -> float:
+    def rolling_sum(self, uid: str, window: timedelta, now: datetime | None = None) -> float:
         if now is None:
             now = _utc_now()
         start = now - window
         return self.sum_over(uid, start, now)
 
-    def rolling_avg(self, uid: str, window: timedelta, now: Optional[datetime] = None) -> float:
+    def rolling_avg(self, uid: str, window: timedelta, now: datetime | None = None) -> float:
         if now is None:
             now = _utc_now()
         start = now - window
         return self.avg_over(uid, start, now)
 
-    def ema(
-        self, uid: str, alpha: float = 0.2, start: Optional[datetime] = None, end: Optional[datetime] = None
-    ) -> float:
+    def ema(self, uid: str, alpha: float = 0.2, start: datetime | None = None, end: datetime | None = None) -> float:
         if not (0 < alpha <= 1):
             raise ValueError("alpha must be in (0, 1].")
         pts = self.get_history(uid, start, end)
@@ -163,9 +161,9 @@ class MinerScoreAggregator:
     def uid_score_pairs(
         self,
         how: Literal["latest", "sum", "avg"] = "latest",
-        start: Optional[datetime] = None,
-        end: Optional[datetime] = None,
-    ) -> Dict[str, float]:
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> dict[str, float]:
         """
         Return {uid: score} for ALL miners.
         - how="latest" (default): most recent score per uid (0.0 if no points)
@@ -173,7 +171,7 @@ class MinerScoreAggregator:
         - how="avg": average of scores in [start, end] (0.0 if no points)
         """
         with self._lock:
-            out: Dict[str, float] = {}
+            out: dict[str, float] = {}
             for uid, state in self._miners.items():
                 if how == "latest":
                     out[uid] = state.series.latest()
@@ -190,8 +188,8 @@ class MinerScoreAggregator:
         uid: str,
         cutoff: int = 3,
         how: Literal["latest", "sum", "avg"] = "latest",
-        start: Optional[datetime] = None,
-        end: Optional[datetime] = None,
+        start: datetime | None = None,
+        end: datetime | None = None,
     ) -> bool:
         """
         Return True if the given uid's score is in the top 20 miners.
@@ -216,7 +214,7 @@ class MinerScoreAggregator:
         return scores[uid] >= cutoff
 
     # ---------- Maintenance ----------
-    def prune_older_than(self, older_than: timedelta, now: Optional[datetime] = None) -> None:
+    def prune_older_than(self, older_than: timedelta, now: datetime | None = None) -> None:
         if now is None:
             now = _utc_now()
         cutoff = now - older_than
@@ -238,7 +236,7 @@ class MinerScoreAggregator:
         return json.dumps(payload)
 
     @classmethod
-    def from_json(cls, data: str) -> "MinerScoreAggregator":
+    def from_json(cls, data: str) -> MinerScoreAggregator:
         raw = json.loads(data)
         agg = cls()
         with agg._lock:

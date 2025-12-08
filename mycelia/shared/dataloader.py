@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from functools import partial
-from typing import Callable, Dict, Iterator, Optional
 
 from datasets import load_dataset
 from datasets.distributed import split_dataset_by_node
@@ -11,7 +11,6 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers import DataCollatorForLanguageModeling, PreTrainedTokenizerBase
 
 from mycelia.shared.helper import import_from_string
-
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +48,8 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
 
     @staticmethod
     def tokenize_and_format(
-        example: Dict[str, str], tokenizer: PreTrainedTokenizerBase, sequence_length: int
-    ) -> Dict[str, list]:
+        example: dict[str, str], tokenizer: PreTrainedTokenizerBase, sequence_length: int
+    ) -> dict[str, list]:
         text = example.get("text", "")
         return tokenizer(text, truncation=True, max_length=sequence_length, padding="max_length")  # type: ignore
 
@@ -59,8 +58,8 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
         cls,
         config,
         tokenizer: PreTrainedTokenizerBase,
-        rank: Optional[int] = None,
-        world_size: Optional[int] = None,
+        rank: int | None = None,
+        world_size: int | None = None,
         train: bool = True,
     ):
         # Load streaming dataset. `disable_tqdm=True` silences progress bars.
@@ -103,8 +102,8 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
 def get_dataloader(
     config,
     tokenizer: PreTrainedTokenizerBase,
-    rank: Optional[int] = None,
-    world_size: Optional[int] = None,
+    rank: int | None = None,
+    world_size: int | None = None,
     train: bool = True,
     format_fn: Callable | None = None,
     data_collator: DataCollator | None = None,

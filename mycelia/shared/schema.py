@@ -1,6 +1,6 @@
+import hashlib
 from dataclasses import asdict, dataclass
 from pathlib import Path
-import hashlib
 
 import bittensor as bt
 import torch
