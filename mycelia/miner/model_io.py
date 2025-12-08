@@ -32,7 +32,6 @@ def main(config: MinerConfig) -> None:
 
     current_model_version = 0
     current_model_hash = "xxx"
-    last_submission_block = 0
 
     commit_status(
         config,
@@ -68,8 +67,6 @@ def main(config: MinerConfig) -> None:
                 block=subtensor.block,
                 model_path=f"{latest_checkpoint_path}/model.pt",
             )
-
-            last_submission_block = subtensor.block
 
         except (Timeout, ReqConnectionError) as e:
             logger.warning("Network issue: %s", e)

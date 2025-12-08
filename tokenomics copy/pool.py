@@ -1,5 +1,6 @@
 import torch
 
+
 class Pool:
     # Initialize the pool with initial internal reserves
     # -- (tao_in): Amount of TAO in the pool.
@@ -22,7 +23,6 @@ class Pool:
         self.tao_bought: float = 0
         self.log_messages: list = []
 
-
     # Helpers
     def __str__(self) -> str:
         return f"p = Pool(netuid = {self.name}, tao_in = {self.tao_in:.4f}, alpha_in = {self.alpha_in:.4f}, alpha_out  = {self.alpha_out:.4f})\n {self.log_messages}"
@@ -32,8 +32,8 @@ class Pool:
 
     def append_log_message(self, message):
         self.log_messages.append(message)
-        self.log_messages = self.log_messages[-min(1000, len(self.log_messages)):]
-    
+        self.log_messages = self.log_messages[-min(1000, len(self.log_messages)) :]
+
     def to_dict(self) -> dict:
         d = {
             "name": self.name,
@@ -46,7 +46,7 @@ class Pool:
             "market_cap": self.market_cap,
             "tao_emission": self.tao_emission,
             "alpha_emission": self.alpha_emission,
-            "target_alpha_in": self.target_alpha_in
+            "target_alpha_in": self.target_alpha_in,
         }
 
         self.tao_bought = 0
@@ -62,14 +62,14 @@ class Pool:
         self.alpha_in = d["alpha_in"]
         self.alpha_out = d["alpha_out"]
         self.k = d["k"]
-        self.alpha_emission = d['alpha_emission']
-        self.tao_emission = d['tao_emission']
-        self.tao_bought = d['tao_bought']
+        self.alpha_emission = d["alpha_emission"]
+        self.tao_emission = d["tao_emission"]
+        self.tao_bought = d["tao_bought"]
 
     @property
     def target_alpha_in(self) -> float:
-        return 0.05 * self.alpha_out + self.k / ((1 + 0.05 / (1-0.05)) * self.tao_in)
-    
+        return 0.05 * self.alpha_out + self.k / ((1 + 0.05 / (1 - 0.05)) * self.tao_in)
+
     @property
     def price(self) -> float:
         return self.tao_in / self.alpha_in
@@ -77,20 +77,21 @@ class Pool:
     @property
     def market_cap(self) -> float:
         return self.price * self.alpha_out
-    
-    def status_check(self, message = ""):
-        try: 
-            assert self.tao_in >= 0 
-            assert self.alpha_in >= 0 
-            assert self.alpha_out >= 0 
+
+    def status_check(self, message=""):
+        try:
+            assert self.tao_in >= 0
+            assert self.alpha_in >= 0
+            assert self.alpha_out >= 0
             assert self.price >= 0
-            assert self.k >= 0 
+            assert self.k >= 0
         except:
             self.exit(message)
 
     def exit(self, message):
         print(f"\n\nexit {self}, {message}\n\n")
-        import sys 
+        import sys
+
         sys.exit()
 
     # Return the amount of ALPHA if we were to buy with the passed TAO (does not change the pool)
@@ -121,7 +122,7 @@ class Pool:
         return alpha_out
 
     # Perform a sell operation with the passed ALPHA and return the TAO bought (changes the pool reserves)
-    def sell(self, alpha: float, message = "") -> float:
+    def sell(self, alpha: float, message="") -> float:
         if alpha > self.alpha_out or alpha < 0:
             self.exit(f"faulty sell A {alpha} | {message}")
 

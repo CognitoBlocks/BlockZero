@@ -5,6 +5,7 @@ import math
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 import bittensor
 import fsspec
@@ -41,7 +42,7 @@ class BaseConfig(BaseModel):
         return self.model_dump_json(**kwargs, indent=4)
 
     @classmethod
-    def from_path(cls, path: str | Path) -> Config:
+    def from_path(cls, path: str | Path) -> BaseConfig:
         """
         Load a MinerConfig from a JSON file.
 
@@ -94,7 +95,8 @@ class RunCfg(BaseConfig):
 
 
 class ModelCfg(BaseConfig):
-    model_path: str = "Qwen/Qwen3-Next-80B-A3B-Thinking"  # although we are calling a large model here, but we would only be training a partial of it for each miner
+    # although we are calling a large model here, but we would only be training a partial of it for each miner
+    model_path: str = "Qwen/Qwen3-Next-80B-A3B-Thinking"
     foundation: bool = True
     torch_compile: bool = True
     attn_implementation: str = "sdpa"
@@ -334,7 +336,7 @@ class WorkerConfig(BaseConfig):
             return ok
 
         # Sequence vs sequence: compare length then elementwise
-        if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        if isinstance(a, list | tuple) and isinstance(b, list | tuple):
             if len(a) != len(b):
                 logger.info(f"Length mismatch at '{path}': existing {len(b)} vs new {len(a)}")
                 return False
