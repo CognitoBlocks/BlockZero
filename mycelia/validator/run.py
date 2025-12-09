@@ -23,7 +23,7 @@ from mycelia.shared.checkpoint import (
     save_checkpoint,
 )
 from mycelia.shared.config import ValidatorConfig, parse_args
-from mycelia.shared.cycle import gather_validation_job, should_act
+from mycelia.shared.cycle import gather_validation_job, get_combined_validator_seed, should_act
 from mycelia.shared.dataloader import get_dataloader
 from mycelia.shared.evaluate import evaluate_model
 from mycelia.shared.expert_manager import (
@@ -31,7 +31,7 @@ from mycelia.shared.expert_manager import (
     get_weight_sum,
     populate_global_grads_from_local,
 )
-from mycelia.shared.helper import *
+from mycelia.shared.helper import get_nested_attr
 from mycelia.shared.metrics import MetricLogger
 from mycelia.shared.model import load_model
 from mycelia.shared.modeling.mycelia import get_base_tokenizer
@@ -86,7 +86,6 @@ def setup_training(
     """
     # === checkpoint info ===
     resume = False
-    start_step = 0
     latest_checkpoint_path = None
 
     # === model & Experts manager ===
@@ -158,7 +157,7 @@ async def aggregate_miner_gradient_change(
             )
 
     # each validator is only expected to validate 1 expert group at a time
-    for uid, miner_model in miner_models.items():
+    for _, miner_model in miner_models.items():
         populate_global_grads_from_local(global_model, miner_model, weight=1 / len(miner_models))
 
 
@@ -241,7 +240,6 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
     Returns:
         None
     """
-    eval_rref = None
     if rank == 0:
         config.write()
 
@@ -310,7 +308,6 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
     aux_loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
     training_time = 0
     total_training_time = 0
-    training_start_time = None
 
     outer_optimizer.zero_grad()
 
@@ -344,6 +341,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                     score_aggregator=score_aggregator,
                     base_model=base_model,
                     tokenizer=tokenizer,
+                    combinded_seed=get_combined_validator_seed(config, subtensor)
                 )
             )
 
@@ -452,7 +450,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
         logger.error("Quit training", exc_info=True)
         cleanup()
         metric_logger.close()
-        for idx, a in group_averagers.items():
+        for _, a in group_averagers.items():
             a.shutdown()
 
         if rank == 0:

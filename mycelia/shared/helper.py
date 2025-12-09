@@ -1,3 +1,4 @@
+import hashlib
 import importlib
 from pathlib import Path
 from typing import Any
@@ -97,3 +98,11 @@ def parse_dynamic_filename(filename: str) -> dict:
     meta["filename"] = Path(filename)
 
     return meta
+
+def h256_int(*parts: Any) -> int:
+    """Deterministic 256-bit hash -> int."""
+    m = hashlib.sha256()
+    for p in parts:
+        m.update(str(p).encode("utf-8"))
+        m.update(b"\x00")  # separator
+    return int.from_bytes(m.digest(), "big")

@@ -113,6 +113,7 @@ class DataCfg(BaseConfig):
     world_size: int = 10  # TODO
     rank: int = 1  # TODO
     dataset_class: str | None = None
+    vali_fraction: float = 0.1
 
 
 class MoECfg(BaseConfig):

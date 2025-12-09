@@ -10,7 +10,7 @@ from torch.utils.data import IterableDataset as TorchIterableDataset
 from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers import DataCollator, DataCollatorForLanguageModeling, PreTrainedTokenizerBase
 
-from mycelia.shared.helper import import_from_string
+from mycelia.shared.helper import h256_int, import_from_string
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,8 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
         rank: int | None = None,
         world_size: int | None = None,
         train: bool = True,
+        seed: str | None = None,
+        fraction: float | None = None,
     ):
         # Load streaming dataset. `disable_tqdm=True` silences progress bars.
         ds = load_dataset(
@@ -73,10 +75,29 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
         split_name = "train" if train else "validation"
         if split_name not in ds:
             raise ValueError(
-                f"Dataset split '{split_name}' not found for {config.task.data.dataset_name}:{config.task.data.data_dir}"  # noqa: E501
+                f"Dataset split '{split_name}' not found for "
+                f"{config.task.data.dataset_name}:{config.task.data.data_dir}"
             )
 
         split = ds[split_name]
+
+        # Optional deterministic subsampling based on (seed, fraction)
+        # Applied *before* sharding on the streaming iterable.
+        if seed is not None and fraction is not None and fraction < 1.0:
+            if not (0.0 < fraction <= 1.0):
+                raise ValueError("fraction must be in (0.0, 1.0].")
+
+            max_int = 2**256 - 1
+            threshold = int(max_int * fraction)
+
+            def _keep(_, idx: int) -> bool:
+                # Deterministic score based on (idx, seed).
+                # You can switch to using a sample field instead of idx if desired.
+                score = h256_int("dataset_selection", str(idx), seed)
+                return score <= threshold
+
+            # `with_indices=True` gives us a stable index per element in the stream.
+            split = split.filter(_keep, with_indices=True)
 
         # Shard across processes if rank/world_size are provided.
         # split_dataset_by_node works with streaming datasets and avoids overlapping samples.
@@ -102,6 +123,7 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
 def get_dataloader(
     config,
     tokenizer: PreTrainedTokenizerBase,
+    seed: int = None,
     rank: int | None = None,
     world_size: int | None = None,
     train: bool = True,
@@ -149,6 +171,9 @@ def get_dataloader(
         rank=rank,
         world_size=world_size,
         train=train,
+        seed=seed,   # e.g. combined validator seed
+        fraction=config.task.data.vali_fraction,         # use ~20% of the dataset
+
     )
 
     # Collator for causal LM (no MLM)

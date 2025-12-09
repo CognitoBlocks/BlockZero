@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from mycelia.shared.app_logging import configure_logging, structlog
 from mycelia.shared.chain import MinerChainCommit, WorkerChainCommit, get_chain_commits, serve_axon
 from mycelia.shared.config import MinerConfig, ValidatorConfig, WorkerConfig
-from mycelia.shared.helper import parse_dynamic_filename
+from mycelia.shared.helper import h256_int, parse_dynamic_filename
 from mycelia.validator.evaluator import MinerEvalJob
 
 configure_logging()
@@ -72,16 +72,6 @@ def setup_chain_worker(config):
     )
     return wallet, subtensor
 
-
-def h256_int(*parts: Any) -> int:
-    """Deterministic 256-bit hash -> int."""
-    m = hashlib.sha256()
-    for p in parts:
-        m.update(str(p).encode("utf-8"))
-        m.update(b"\x00")  # separator
-    return int.from_bytes(m.digest(), "big")
-
-
 def assign_miners_to_validators(
     validators: dict[str, Any],  # {validator_id: seed}
     miners: list[str],
@@ -135,28 +125,37 @@ def assign_miners_to_validators(
 
     return assignment
 
-def combined_validator_seed(validators: dict[str, Any]) -> str:
+def get_combined_validator_seed(config: WorkerConfig, subtensor: bittensor.Subtensor) -> str:
     """
     Deterministically combine validator seeds into a single hex string.
 
     We sort validator IDs so the result is independent of dict iteration order.
     """
-    if not validators:
+    commits: tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(config, subtensor)
+
+    validator_seeds = get_validator_seed_from_commit(config, commits)
+    if not validator_seeds:
         raise ValueError("No validators provided")
 
-    combined_seed_str = "".join(str(validators[v]) for v in sorted(validators.keys()))
+    combined_seed_str = "".join(str(validator_seeds[v]) for v in sorted(validator_seeds.keys()))
     return hashlib.sha256(combined_seed_str.encode()).hexdigest()
 
 def get_validator_miner_assignment(config: WorkerConfig, subtensor: bittensor.Subtensor):
     commits: tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(config, subtensor)
+    validator_seeds = get_validator_seed_from_commit(config, commits)
+    miners = get_miners_from_commit(config, commits)
+    return assign_miners_to_validators(validator_seeds, miners)  # type: ignore
 
+def get_validator_seed_from_commit(config, commits):
     validator_seeds: dict[str, int] = {
         neuron.hotkey: commit.miner_seed
         for commit, neuron in commits
         if getattr(commit, "expert_group", None) == config.moe.my_expert_group_id
         and getattr(commit, "miner_seed", None) is not None
     }
+    return validator_seeds
 
+def get_miners_from_commit(config, commits):
     miners: list[str] = [
         neuron.hotkey
         for commit, neuron in commits
@@ -164,8 +163,7 @@ def get_validator_miner_assignment(config: WorkerConfig, subtensor: bittensor.Su
         and getattr(commit, "expert_group", None) == config.moe.my_expert_group_id
     ]
 
-    return assign_miners_to_validators(validator_seeds, miners)  # type: ignore
-
+    return miners
 
 def get_phase(config: WorkerConfig) -> PhaseResponse:
     """
