@@ -8,7 +8,7 @@ from datasets import load_dataset
 from datasets.distributed import split_dataset_by_node
 from torch.utils.data import IterableDataset as TorchIterableDataset
 from torchdata.stateful_dataloader import StatefulDataLoader
-from transformers import DataCollatorForLanguageModeling, PreTrainedTokenizerBase
+from transformers import DataCollator, DataCollatorForLanguageModeling, PreTrainedTokenizerBase
 
 from mycelia.shared.helper import import_from_string
 
@@ -73,7 +73,7 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
         split_name = "train" if train else "validation"
         if split_name not in ds:
             raise ValueError(
-                f"Dataset split '{split_name}' not found for {config.task.data.dataset_name}:{config.task.data.data_dir}"
+                f"Dataset split '{split_name}' not found for {config.task.data.dataset_name}:{config.task.data.data_dir}"  # noqa: E501
             )
 
         split = ds[split_name]

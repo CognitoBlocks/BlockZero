@@ -81,7 +81,7 @@ class ExpertManager:
         """
         expert_ids = set()
 
-        for layer_id, mappings in self.expert_group_assignment[group_id].items():
+        for _, mappings in self.expert_group_assignment[group_id].items():
             for my_expert_idx, _ in mappings:
                 expert_ids.add(my_expert_idx)
 
@@ -101,10 +101,10 @@ class ExpertManager:
         expert_layers: list[int] = []
         # If num_layers is unknown, fall back to a generous range (0..255).
         layer_range = range(num_layers if isinstance(num_layers, int) else 256)
-        for l in layer_range:
-            pattern = f"{l}.mlp.experts"
+        for layer_id in layer_range:
+            pattern = f"{layer_id}.mlp.experts"
             if any(pattern in k for k in sd_keys):
-                expert_layers.append(l)
+                expert_layers.append(layer_id)
 
         if not expert_layers:
             logger.info("No expert-bearing layers found by heuristic; check naming or discovery logic.")
@@ -164,7 +164,7 @@ class ExpertManager:
         for group_id, layers in self.expert_group_assignment.items():
             for layer_id, mappings in layers.items():
                 seen_in_layer: set[int] = set()
-                for my_expert_idx, org_expert_idx in mappings:
+                for my_expert_idx, _ in mappings:
                     if my_expert_idx in seen_in_layer:
                         duplicates.append(
                             f"mycelia_expert_idx={my_expert_idx} duplicated "

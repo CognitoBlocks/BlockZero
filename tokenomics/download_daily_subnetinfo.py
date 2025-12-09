@@ -49,9 +49,6 @@ def seri_subnet_info(subnet_info):
 def main():
     ensure_output_dir(OUTPUT_DIR)
 
-    # End date = today (UTC)
-    today_utc = datetime.now(timezone.utc).date()
-
     print(f"Connecting to Bittensor network: {BT_NETWORK}")
 
     # If you have archive endpoints, you can pass archive_endpoints=[...]

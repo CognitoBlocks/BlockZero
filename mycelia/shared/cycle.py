@@ -135,6 +135,17 @@ def assign_miners_to_validators(
 
     return assignment
 
+def combined_validator_seed(validators: dict[str, Any]) -> str:
+    """
+    Deterministically combine validator seeds into a single hex string.
+
+    We sort validator IDs so the result is independent of dict iteration order.
+    """
+    if not validators:
+        raise ValueError("No validators provided")
+
+    combined_seed_str = "".join(str(validators[v]) for v in sorted(validators.keys()))
+    return hashlib.sha256(combined_seed_str.encode()).hexdigest()
 
 def get_validator_miner_assignment(config: WorkerConfig, subtensor: bittensor.Subtensor):
     commits: tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(config, subtensor)

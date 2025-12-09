@@ -288,7 +288,7 @@ class WorkerConfig(BaseConfig):
             self.chain.uid = subtensor.metagraph(netuid=self.chain.netuid).hotkeys.index(self.chain.hotkey_ss58)
         except bittensor.KeyFileError as e:
             logger.warning(
-                f"Cannot find the wallet key by name coldkey name: {self.chain.coldkey_name}, hotkey name: {self.chain.hotkey_name}, please make sure it has been set correctly if you are reloading from a  or use --hotkey_name & --coldkey_name when you are creating a config file from a template.",
+                f"Cannot find the wallet key by name coldkey name: {self.chain.coldkey_name}, hotkey name: {self.chain.hotkey_name}, please make sure it has been set correctly if you are reloading from a  or use --hotkey_name & --coldkey_name when you are creating a config file from a template.",  # noqa: E501
                 error=str(e),
             )
             return

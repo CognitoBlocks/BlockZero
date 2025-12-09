@@ -47,14 +47,16 @@ class MinerChainCommit(BaseModel):
 
 def commit_status(
     config: WorkerConfig,
-    wallet: bt.Wallet,
-    subtensor: bt.Subtensor,
+    wallet: bittensor.Wallet,
+    subtensor: bittensor.Subtensor,
     status: ValidatorChainCommit | MinerChainCommit,
 ):
     subtensor.set_commitment(wallet=wallet, netuid=config.chain.netuid, data=status.model_dump_json())
 
 
-def get_chain_commits(config: WorkerConfig, subtensor: bt.Subtensor) -> tuple(WorkerChainCommit, bittensor.Neuron):
+def get_chain_commits(
+    config: WorkerConfig, subtensor: bittensor.Subtensor
+) -> tuple[WorkerChainCommit, bittensor.Neuron]:
     all_commitments = subtensor.get_all_commitments(netuid=config.chain.netuid)
     metagraph = subtensor.metagraph(netuid=config.chain.netuid)
     parsed = []
@@ -89,7 +91,7 @@ def setup_chain_worker(config):
     return wallet, subtensor
 
 
-def serve_axon(config: WorkerConfig, wallet: bt.Wallet, subtensor: bt.Subtensor):
+def serve_axon(config: WorkerConfig, wallet: bittensor.Wallet, subtensor: bittensor.Subtensor):
     axon = bittensor.Axon(wallet=wallet, external_port=config.chain.port, ip=config.chain.ip)
     axon.serve(netuid=348, subtensor=subtensor)
 

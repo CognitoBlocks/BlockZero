@@ -107,7 +107,7 @@ def get_resume_info(
     elif isinstance(config.ckpt.resume_from_ckpt, bool):
         # Using fsspec to list directory contents
         try:
-            if path == None:
+            if path is None:
                 path = config.ckpt.checkpoint_path
 
             ckpt_files = get_sorted_checkpoints(path)
@@ -152,7 +152,7 @@ def save_state_dict_by_expert_group(
     expert_lookup = {}  # maps (layer, expert) -> group_id
     for gid, layer_map in expert_groups.items():
         for layer_id, mappings in layer_map.items():
-            for my_eid, org_eid in mappings:
+            for my_eid, _ in mappings:
                 expert_lookup[(layer_id, my_eid)] = gid
 
     # Iterate model weights
@@ -425,8 +425,6 @@ def get_sorted_checkpoints(checkpoint_path: str) -> dict[Path, ModelMeta]:
         key=lambda item: (-item.global_ver, -item.inner_opt),
     )
 
-    return sorted_ckpt_files
-
 
 def delete_old_checkpoints(checkpoint_path: str, topk: int) -> list[str]:
     """
@@ -443,7 +441,7 @@ def delete_old_checkpoints(checkpoint_path: str, topk: int) -> list[str]:
     sorted_ckpt_files = get_sorted_checkpoints(checkpoint_path)
 
     ckpt_deleted = []
-    for ckpt_file, order in sorted_ckpt_files[:-topk]:
+    for ckpt_file, _ in sorted_ckpt_files[:-topk]:
         fs.rm(ckpt_file, recursive=True)
         ckpt_deleted.append(ckpt_file)
     return ckpt_deleted
@@ -477,12 +475,12 @@ def delete_old_checkpoints_by_hotkey(folder_path: Path):
 
     # Step 2: For each hotkey, keep only the highest block file
     deleted_files = []
-    for hotkey, entries in submissions_by_hotkey.items():
+    for _, entries in submissions_by_hotkey.items():
         # Sort by block number descending (latest first)
         entries.sort(key=lambda x: x[0], reverse=True)
 
         # Keep the first (latest) one, delete the rest
-        for block, file_path in entries[1:]:
+        for _, file_path in entries[1:]:
             try:
                 os.remove(file_path)
                 deleted_files.append(file_path.name)

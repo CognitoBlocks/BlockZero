@@ -77,13 +77,6 @@ def submit_model(
     if os.path.getsize(model_path) == 0:
         raise ValueError(f"File is empty: {model_path}")
 
-    try:
-        checksum = _sha256_file(model_path)
-    except PermissionError as e:
-        raise PermissionError(f"Cannot read file (permission denied): {model_path}") from e
-    except OSError as e:
-        raise OSError(f"Failed to read file: {model_path}") from e
-
     data = SignedModelSubmitMessage(
         target_hotkey_ss58=target_hotkey_ss58,
         origin_hotkey_ss58=my_hotkey.ss58_address,
