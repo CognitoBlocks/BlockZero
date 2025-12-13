@@ -3,9 +3,9 @@ import argparse
 import hashlib
 import os
 import sys
+import time
 import zipfile
 from pathlib import Path
-from time import time
 from typing import Any
 
 import requests

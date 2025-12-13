@@ -112,8 +112,9 @@ class SparseMoeBlock(Qwen3NextSparseMoeBlock):
 
         # Loop over all available experts in the model and perform the computation on each expert
         expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+        self.available_experts = self.available_experts.to(expert_hit.device)
         for expert_idx in expert_hit:
-            if str(expert_idx.item()) not in self.experts:
+            if expert_idx not in self.available_experts:
                 continue
             expert_layer = self.experts[str(expert_idx.item())]
             idx, top_x = torch.where(expert_mask[expert_idx].squeeze(0))

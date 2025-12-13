@@ -59,7 +59,7 @@ def wait_till(config: MinerConfig, phase_name: PhaseNames, poll_fallback_seconds
             check_time_str = check_time.strftime("%H:%M:%S")
 
             logger.info(
-                f"Waiting for phase <{phase_name}> to begin in {blocks_till} blocks, check again at {check_time_str}"
+                f"--Waiting for phase <{phase_name}> to begin in {blocks_till} blocks, check again at {check_time_str}"
             )
             time.sleep(sleep_sec)
 

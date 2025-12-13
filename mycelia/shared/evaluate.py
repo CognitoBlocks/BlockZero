@@ -42,11 +42,10 @@ def evaluate_model(
         e.g., {"val_loss": 2.345}
     """
     logger.info("evaluate model", step=step)
-    model.to(device)
     model.eval()
     loss_sum: float = 0.0
     aux_loss_sum: float = 0.0
-    with torch.inference_mode():
+    with torch.no_grad():
         for batch_step, batch in enumerate(iterable=eval_dataloader):
             device_batch = {}
             for key in batch.keys():
@@ -54,17 +53,19 @@ def evaluate_model(
 
             with torch.amp.autocast("cuda", dtype=torch.float16):
                 outputs = model(**device_batch)
+                
+                logger.info('eval output.loss', outputs.loss.detach().item())
+                loss_sum += float(outputs.loss.detach().item())
+                aux_loss_sum += (
+                    float(outputs.aux_loss.detach().item())
+                    if hasattr(outputs, "aux_loss") and outputs.aux_loss is not None
+                    else 0
+                )
 
-            loss_sum += float(outputs.loss.detach().item())
-            aux_loss_sum += (
-                float(outputs.aux_loss.detach().item())
-                if hasattr(outputs, "aux_loss") and outputs.aux_loss is not None
-                else 0
-            )
-
-            del outputs, device_batch
+            del device_batch
 
             if max_eval_batches is not None and batch_step >= max_eval_batches:
                 break
 
+        logger.info("eval loss", loss_sum, aux_loss_sum, batch_step)
     return {"val_loss": (loss_sum - aux_loss_sum) / batch_step, "val_aux_loss": aux_loss_sum / batch_step}

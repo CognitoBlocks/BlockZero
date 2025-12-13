@@ -339,15 +339,14 @@ def get_model_files(checkpoint_path):
     return files
 
 
-def complile_full_state_dict_from_path(checkpoint_path):
+def compile_full_state_dict_from_path(checkpoint_path):
     full_state_dict = {}
     model_files = get_model_files(checkpoint_path)
     for f in model_files:
         with f as fh:
             state_dict = torch.load(fh, map_location=torch.device("cpu"))
-            logger.info("load checkpoint state dict", state_dict.keys())
             full_state_dict = full_state_dict | state_dict["model_state_dict"]
-            logger.info(f"loaded checkpoint {f} loss {state_dict['loss'] if 'loss' in state_dict else -1 :.5f}")
+            logger.info(f"loaded checkpoint",  path = f, loss = round(state_dict['loss'] if 'loss' in state_dict else -1, 5))
 
     return full_state_dict
 
@@ -380,7 +379,7 @@ def load_checkpoint(
     """
 
     if model is not None:
-        full_state_dict = complile_full_state_dict_from_path(checkpoint_path)
+        full_state_dict = compile_full_state_dict_from_path(checkpoint_path)
 
         model.load_state_dict(full_state_dict, strict=True)
         model.to(device)

@@ -8,7 +8,7 @@ from mycelia.shared.app_logging import configure_logging, structlog
 from mycelia.shared.chain import MinerChainCommit, commit_status
 from mycelia.shared.checkpoint import (
     ModelMeta,
-    complile_full_state_dict_from_path,
+    compile_full_state_dict_from_path,
     delete_old_checkpoints,
     get_resume_info,
 )
@@ -150,8 +150,8 @@ def commit_worker(
             if latest_checkpoint_path is None:
                 raise FileNotReadyError("Not checkpoint found, skip commit.")
 
-            model_path = (f"{latest_checkpoint_path}/model.pt",)
-            model_hash = get_model_hash(complile_full_state_dict_from_path(model_path))
+            model_path = f"{latest_checkpoint_path}/model.pt"
+            model_hash = get_model_hash(compile_full_state_dict_from_path(model_path)).hex()
             commit_status(
                 config,
                 wallet,
@@ -162,7 +162,7 @@ def commit_worker(
             )
 
         except FileNotReadyError as e:
-            logger.warning(f"[submit_worker] File not ready error: {e}")
+            logger.warning(f"[commit_worker] File not ready error: {e}")
 
         except Exception as e:
             logger.error(f"[commit_worker] Error while handling job: {e}")
@@ -184,7 +184,6 @@ def submit_worker(
     """
     while True:
         job = submit_queue.get()
-        logger = logger.bind(prefix="[submit_worker]")
 
         try:
             with shared_state.lock:

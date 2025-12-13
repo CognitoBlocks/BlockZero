@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from collections import Counter
@@ -74,10 +75,14 @@ def commit_status(
     data = status.model_dump_json()
 
     if encrypted:
-        data = bittensor.extras.timelock.encrypt(
+
+        encrypted_bytes = bittensor.extras.timelock.encrypt(
             message=data.encode("utf-8"),
             n_blocks=n_blocks,
         )
+
+        data = hashlib.sha256(encrypted_bytes).digest()
+
 
     subtensor.set_commitment(
         wallet=wallet,
@@ -152,7 +157,7 @@ def scan_chain_for_new_model(
 
     max_model_version = max([getattr(c, "model_version", 0) for c, n in commits])
     if current_model_meta is not None:
-        logger.info("check model ver", max_model_version, current_model_meta.global_ver)
+        logger.info("check model version", max_model_version = max_model_version, current_model_version = current_model_meta.global_ver)
         max_model_version = max(max_model_version, current_model_meta.global_ver)
 
     # 0) Download only from validator

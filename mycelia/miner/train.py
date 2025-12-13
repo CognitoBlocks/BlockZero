@@ -147,7 +147,7 @@ def setup_training(
     global_model = copy.deepcopy(model).cpu()
 
     # === optimizers ===
-    logger.info(f" rank {rank} optimizer")
+    logger.info(f"optimizer")
     inner_optimizer = torch.optim.AdamW(model.named_parameters(), lr=config.opt.lr, weight_decay=0.1, betas=(0.9, 0.95))
     outer_optimizer = torch.optim.SGD(
         global_model.named_parameters(),
@@ -157,7 +157,7 @@ def setup_training(
     )
 
     # === scheduler === (for inner optimizer)
-    logger.info(f" rank {rank} scheduler")
+    logger.info(f"scheduler")
     scheduler = get_cosine_schedule_with_warmup(
         inner_optimizer,
         num_warmup_steps=config.sched.warmup_steps,
@@ -190,7 +190,7 @@ def setup_training(
             data_loader=train_dataloader,
         )
 
-    logger.info(f"rank {rank} setup_training: success!")
+    logger.info(f"setup_training: success!")
     return (
         model,
         global_model,
@@ -231,7 +231,6 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
     device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
     tokenizer = get_base_tokenizer(config)
 
-    # TODO: need to split the dataset per miner first, and then split more
     eval_dataloader = get_dataloader(
         config,
         rank=config.local_par.world_size,
@@ -254,8 +253,6 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
         current_model_meta,
     ) = setup_training(config, rank, device, tokenizer, subtensor, wallet, current_model_meta=None)
 
-    logger.info("setup training model", model)
-    logger.info("setup training dataloader", train_dataloader)
     # === training ===
     loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
     aux_loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
@@ -291,10 +288,8 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                     batch_device[key] = batch[key].to(device)
 
                 with torch.amp.autocast("cuda", dtype=torch.float16):
-                    logger.info("batch device keys", batch_device.keys())
                     outputs = model(**batch_device)
 
-                    logger.info("model output", outputs)
                     loss = outputs.loss / config.local_par.gradient_accumulation_steps
                     # aux_loss = outputs.aux_loss / config.local_par.gradient_accumulation_steps if outputs.aux_loss is not None else torch.tensor(0)
                     aux_loss = torch.tensor(0)
@@ -353,13 +348,10 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
 
             # === local validation and log metric ===
             if is_inner_optimizer_step and inner_opt_step % config.log.metric_interval == 0:
-                logger.info("reached barrier, waiting for partial evaluation")
-                dist.barrier(device_ids=[rank])
-
                 logger.info("start partial evaluation")
 
                 val_metric = evaluate_model(
-                    rank=rank, step=inner_opt_step, model=model, eval_dataloader=eval_dataloader, device=device
+                    rank=rank, step=inner_opt_step, model=model, eval_dataloader=train_dataloader, device=device
                 )
 
                 logger.info(f"evaluation before log {val_metric}")
