@@ -31,7 +31,7 @@ from mycelia.shared.evaluate import evaluate_model
 from mycelia.shared.expert_manager import ExpertManager
 from mycelia.shared.helper import get_nested_attr
 from mycelia.shared.metrics import MetricLogger
-from mycelia.shared.model import load_model
+from mycelia.shared.model import freeze_parameters, load_model
 from mycelia.shared.modeling.mycelia import get_base_tokenizer
 
 configure_logging()
@@ -118,23 +118,22 @@ def setup_training(
         - If `resume_from_ckpt` is set and a checkpoint is found, model/opt/scheduler/scaler states are restored
           before syncing `global_model` from `model`.
     """
-    # === checkpoint info ===
-    resume = False
-    latest_checkpoint_path = None
-    if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
-        resume, start_step, latest_checkpoint_path = get_resume_info(rank, config)
+
+    logger.info("(0) Setup training")
 
     # === model & Experts manager ===
+    logger.info(f"init - model and expert manager")
     expert_manager = ExpertManager(config)
     model, model_meta = load_model(rank, config, expert_manager, subtensor, wallet)
     model = model.to(device)
+    model = freeze_parameters(model = model, expert_manager = expert_manager, expert_group_id=config.task.expert_group_id)
 
     # === optimizers ===
-    logger.info(f"optimizer")
+    logger.info(f"init - optimizer")
     inner_optimizer = torch.optim.AdamW(model.named_parameters(), lr=config.opt.lr, weight_decay=0.1, betas=(0.9, 0.95))
 
     # === scheduler === (for inner optimizer)
-    logger.info(f"scheduler")
+    logger.info(f"init - scheduler")
     scheduler = get_cosine_schedule_with_warmup(
         inner_optimizer,
         num_warmup_steps=config.sched.warmup_steps,
@@ -142,14 +141,22 @@ def setup_training(
     )
 
     # === scaler ===
+    logger.info(f"init - inner scaler")
     inner_scaler = torch.amp.GradScaler(
         "cuda", enabled=(get_nested_attr(config, "model.precision", "") == "fp16-mixed")
     )
 
     # === dataloader ===
+    logger.info(f"init - train dataloader")
     train_dataloader = get_dataloader(config, rank=rank, world_size=config.task.data.world_size, tokenizer=tokenizer)
 
     # === load checkpoint (if any) ===
+    logger.info(f"init - load checkpoint")
+    resume = False
+    latest_checkpoint_path = None
+    if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
+        resume, start_step, latest_checkpoint_path = get_resume_info(rank, config)
+
     if get_nested_attr(config, "resume_from_ckpt", False) and resume and latest_checkpoint_path:
         _ = load_checkpoint(
             config=config,
@@ -238,20 +245,21 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
             inner_opt_step = step // config.local_par.gradient_accumulation_steps
             is_inner_optimizer_step = step % config.local_par.gradient_accumulation_steps == 0
             is_start_step = step == current_model_meta.inner_opt * config.local_par.gradient_accumulation_steps
-
-            logger.info(
-                "(0) Start epoch",
-                step=step,
-                inner_opt_step=inner_opt_step,
-                is_inner_optimizer_step=is_inner_optimizer_step,
-                gradient_accumulation_steps=config.local_par.gradient_accumulation_steps,
-            )
+            current_model_meta.inner_opt = inner_opt_step
 
             # === Training and inner optimization ===
+            if is_inner_optimizer_step:
+                logger.info(
+                    "(1) Start epoch training",
+                    step=step,
+                    inner_opt_step=inner_opt_step,
+                    is_inner_optimizer_step=is_inner_optimizer_step,
+                    gradient_accumulation_steps=config.local_par.gradient_accumulation_steps,
+                    current_model_meta=current_model_meta,
+                )
             if (
                 not is_start_step
             ):  # skip training when it is the start step, so that we can benchamrk the original model first
-                logger.info("(1) Training")
                 model.train()
                 if training_start_time is None:
                     training_start_time = time.time()
@@ -278,7 +286,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
 
                 # === inner optimizer ===
                 if is_inner_optimizer_step:
-                    logger.info("--inner opt step", loss_batch=loss_batch, aux_loss=aux_loss_batch)
+                    logger.info("inner optimizer step", loss_batch=loss_batch, aux_loss=aux_loss_batch)
 
                     for p in model.parameters():
                         if p.grad is None:
@@ -373,10 +381,10 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                     data_loader=train_dataloader,
                     save_global_state=rank == 0,
                     rank=rank,
-                    save_model_by_expert_group = True,
+                    save_model_by_expert_group=True,
+                    expert_manager=expert_manager,
                 )
 
-                
                 if config.ckpt.checkpoint_topk is not None:
                     ckpt_deleted = delete_old_checkpoints(config.ckpt.checkpoint_path, config.ckpt.checkpoint_topk)
                     if ckpt_deleted:
@@ -394,13 +402,22 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                     primary_ckpt_path=config.ckpt.validator_checkpoint_path,
                     secondary_ckpt_path=config.ckpt.checkpoint_path,
                 )[1]
-                != current_model_meta
+                > current_model_meta
             ):
                 logger.info("(5) Reload Model")
                 dist.barrier(device_ids=[rank])  # make sure everything is saved and everyone is ready to load
                 logger.info("freeing cuda memory")
                 free_cuda_models(models=[model], optimizers=[inner_optimizer], devices=[device])
-                logger.info("restarting model")
+                logger.info(
+                    "restarting model",
+                    current_model_meta=current_model_meta,
+                    largest_avail_model=start_model_from(
+                        rank,
+                        config,
+                        primary_ckpt_path=config.ckpt.validator_checkpoint_path,
+                        secondary_ckpt_path=config.ckpt.checkpoint_path,
+                    )[1],
+                )
                 (
                     model,
                     inner_optimizer,

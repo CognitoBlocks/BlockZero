@@ -84,7 +84,6 @@ def search_model_submission_destination(
             assigned_validator_hotkey = validator
             break
 
-
     metagraph = subtensor.metagraph(netuid=config.chain.netuid)
     uid = metagraph.hotkeys.index(assigned_validator_hotkey)
     return metagraph.axons[uid]
@@ -222,6 +221,7 @@ def get_blocks_until_next_phase(config: WorkerConfig) -> PhaseResponse:
     resp.raise_for_status()
     return resp.json()
 
+
 def get_blocks_from_previous_phase(config: WorkerConfig) -> PhaseResponse:
     """
     Determine current phase based on block schedule.
@@ -250,6 +250,7 @@ def load_submission_files(folder: str = "miner_submission"):
 
     return files_dict
 
+
 def gather_validation_job(config: ValidatorConfig, subtensor: bittensor.Subtensor, step: int) -> list[MinerEvalJob]:
     validator_miner_assignment = get_validator_miner_assignment(config, subtensor)
     miner_assignment = validator_miner_assignment.get(config.chain.hotkey_ss58, [])
@@ -259,10 +260,14 @@ def gather_validation_job(config: ValidatorConfig, subtensor: bittensor.Subtenso
     hotkeys = subtensor.metagraph(netuid=config.chain.netuid).hotkeys
     miner_jobs = []
     for file_name, submission_meta in miner_submission_files.items():
-        if submission_meta["hotkey"] in miner_assignment and submission_meta["block"] >= previous_phase_range[0] and submission_meta["block"] <= previous_phase_range[1] :
+        if (
+            submission_meta["hotkey"] in miner_assignment
+            and submission_meta["block"] >= previous_phase_range[0]
+            and submission_meta["block"] <= previous_phase_range[1]
+        ):
             miner_jobs.append(
                 MinerEvalJob(
-                    uid = hotkeys.index(submission_meta["hotkey"]),
+                    uid=hotkeys.index(submission_meta["hotkey"]),
                     hotkey=submission_meta["hotkey"],
                     model_path=config.ckpt.miner_submission_path / file_name,
                     step=step,

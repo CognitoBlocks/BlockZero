@@ -18,6 +18,7 @@ async def read_phase():
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+
 @app.get("/previous_phase_blocks", response_model=dict[str, tuple[int, int]])
 async def prev_phase():
     """
@@ -27,6 +28,7 @@ async def prev_phase():
         return phase_manager.previous_phase_block_ranges()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
 
 @app.get("/blocks_until_next_phase", response_model=dict[str, int])
 async def next_phase():

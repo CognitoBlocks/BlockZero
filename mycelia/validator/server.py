@@ -144,7 +144,7 @@ async def get_checkpoint(
         None, description="The block that the message was sent."
     ),  # insecure, do not use this field for validation, TODO: change it to block hash?
     signature: str = Form(None, description="Signed message"),
-    expert_group_ids: list[int] | None = Form(None, description="List of expert groups to fetch"),
+    expert_group_id: int | str | None = Form(None, description="List of expert groups to fetch"),
 ):
     """GET to download the configured checkpoint immediately."""
     logger.info("checkpoint, A")
@@ -166,65 +166,30 @@ async def get_checkpoint(
     if not latest_checkpoint_path:
         raise HTTPException(status_code=500, detail="CHECKPOINT_PATH env var is not set")
 
-    # Case 1: no expert group requested → old behavior
-    if expert_group_ids is None:
-        latest_checkpoint_path = os.path.join(latest_checkpoint_path, "model.pt")
-        logger.info(f"checkpoint, last {latest_checkpoint_path}")
-        result = file_response_for(Path(latest_checkpoint_path), f"step{model_meta.global_ver}")
-        return result
+    # Choose checkpoint filename
+    logger.info("checkpoint, D", expert_group_id=expert_group_id)
+    if expert_group_id is not None:
+        if expert_group_id == "shared":
+            ckpt_path = latest_checkpoint_path / "model_shared.pt"
+        else:
+            ckpt_path = latest_checkpoint_path / f"model_expgroup_{expert_group_id}.pt"
 
     else:
-        # Case 2: specific expert group requested → zip pre-split files directly
-        ckpt_dir = latest_checkpoint_path  # directory that contains group_*.pt / shared*.pt
-        expert_group_ids.sort()
+        ckpt_path = latest_checkpoint_path / "model.pt"
 
-        # Deterministic zip name for this combination of groups + step
-        zip_name = f"expert_group_step{model_meta.global_ver}_{','.join(str(x) for x in expert_group_ids)}.zip"
-        zip_path = os.path.join(ckpt_dir, zip_name)
+    logger.info("checkpoint, E", ckpt_path=ckpt_path)
 
-        # If the zip already exists, skip re-creating it
-        if os.path.exists(zip_path):
-            return FileResponse(
-                zip_path,
-                filename=zip_name,
-                media_type="application/zip",
-            )
-
-        # All files related to this expert group, e.g.:
-        #   group_{gid}.pt
-        #   group_{gid}_rank0.pt
-        #   group_{gid}_shard1.pt
-        model_files = []
-        for expert_group_id in expert_group_ids:
-            group_pattern = os.path.join(ckpt_dir, f"group_{expert_group_id}*.pt")
-            model_files += glob.glob(group_pattern)
-
-        # All shared files, e.g.:
-        #   shared.pt
-        #   shared_rank0.pt
-        shared_pattern = os.path.join(ckpt_dir, "shared*.pt")
-        model_files += glob.glob(shared_pattern)
-
-        # Create a temp dir for the zip
-        tmp_dir = tempfile.mkdtemp(
-            prefix=zip_name.replace(".zip", "_"),
-            dir=ckpt_dir,
+    if not ckpt_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Checkpoint not found: {ckpt_path.name}",
         )
 
-        zip_name = f"expert_group_{','.join(str(x) for x in expert_group_ids)}.zip"
-        zip_path = os.path.join(tmp_dir, zip_name)
+    logger.info("checkpoint, F", ckpt_path=ckpt_path)
 
-        # Write all related files into the zip (group + shared)
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for path in model_files:
-                arcname = os.path.basename(path)
-                zf.write(path, arcname=arcname)
+    result = file_response_for(Path(ckpt_path), f"step{model_meta.global_ver}")
 
-        return FileResponse(
-            zip_path,
-            filename=zip_name,
-            media_type="application/zip",
-        )
+    return result
 
 
 # miners submit checkpoint

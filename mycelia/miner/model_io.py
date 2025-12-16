@@ -13,6 +13,7 @@ from mycelia.shared.checkpoint import (
     compile_full_state_dict_from_path,
     delete_old_checkpoints,
     get_resume_info,
+    start_model_from,
 )
 from mycelia.shared.client import submit_model
 from mycelia.shared.config import MinerConfig, parse_args
@@ -85,7 +86,7 @@ def scheduler_service(
 def download_worker(
     config,
     download_queue: Queue,
-    current_model_version,
+    current_model_meta,
     current_model_hash,
     shared_state: SharedState,
 ):
@@ -97,12 +98,19 @@ def download_worker(
         job = download_queue.get()
         try:
             # Read current version/hash snapshot
-            with shared_state.lock:
-                current_model_version = shared_state.current_model_version
-                current_model_hash = shared_state.current_model_hash
+            _, current_model_meta, _ = start_model_from(
+                0,
+                config,
+                primary_ckpt_path=config.ckpt.validator_checkpoint_path,
+                secondary_ckpt_path=config.ckpt.checkpoint_path,
+            )
 
             download_meta = fetch_model_from_chain(
-                ModelMeta(global_ver=current_model_version, model_hash=current_model_hash), config, subtensor, wallet
+                ModelMeta(global_ver=current_model_meta, model_hash=current_model_hash),
+                config,
+                subtensor,
+                wallet,
+                expert_group_ids=[config.task.expert_group_id],
             )
 
             logger.info(f"<{PhaseNames.distribute}> downloaded model metadata from chain: {download_meta}.")
@@ -115,9 +123,16 @@ def download_worker(
                 raise FileNotReadyError(f"No successful download: {download_meta}")
 
             # Update shared state with new version/hash
+            _, current_model_meta, _ = start_model_from(
+                0,
+                config,
+                primary_ckpt_path=config.ckpt.validator_checkpoint_path,
+                secondary_ckpt_path=config.ckpt.checkpoint_path,
+            )
+
             with shared_state.lock:
-                shared_state.current_model_version = download_meta["model_version"]
-                shared_state.current_model_hash = download_meta["model_hash"]
+                shared_state.current_model_version = current_model_meta["model_version"]
+                shared_state.current_model_hash = current_model_meta["model_hash"]
 
             delete_old_checkpoints(
                 config.ckpt.validator_checkpoint_path,
@@ -165,12 +180,10 @@ def commit_worker(
                 wallet,
                 subtensor,
                 MinerChainCommit(
-                    expert_group=config.task.expert_group_id,
-                    model_hash=model_hash,
-                    block=subtensor.block
-                )
+                    expert_group=config.task.expert_group_id, model_hash=model_hash, block=subtensor.block
+                ),
             )
-        
+
         except FileNotReadyError as e:
             logger.warning(f"<{PhaseNames.commit}> File not ready error: {e}")
 
@@ -197,11 +210,9 @@ def submit_worker(
         job = submit_queue.get()
 
         try:
-  
             with shared_state.lock:
                 latest_checkpoint_path = shared_state.latest_checkpoint_path
 
-        
             if latest_checkpoint_path is None:
                 raise FileNotReadyError("Not checkpoint found, skip submission.")
 
@@ -218,11 +229,11 @@ def submit_worker(
                 my_hotkey=wallet.hotkey,  # type: ignore
                 target_hotkey_ss58=destination_axon.hotkey,
                 block=block,
-                model_path=f"{latest_checkpoint_path}/model.pt",
+                model_path=f"{latest_checkpoint_path}/model_expgroup_{config.task.expert_group_id}.pt",
             )
 
             logger.info(f"<{PhaseNames.submission}> submitted model to {destination_axon.hotkey} at block {block}.")
-        
+
         except FileNotReadyError as e:
             logger.warning(f"<{PhaseNames.submission}> File not ready error: {e}")
 

@@ -10,7 +10,7 @@ from collections import Counter
 from pathlib import Path
 
 import bittensor
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from mycelia.shared.app_logging import structlog
 from mycelia.shared.checkpoint import ModelMeta
@@ -43,16 +43,20 @@ class WorkerChainCommit(BaseModel):
 
 
 class ValidatorChainCommit(BaseModel):
-    model_hash: str | None = None
-    model_version: int | None = None
-    expert_group: int | None = None
-    miner_seed: int | None = None
-    block: int | None = None
+    model_config = ConfigDict(populate_by_name=True)  # allow both field names + aliases
+
+    model_hash: str | None = Field(default=None, alias="h")
+    model_version: int | None = Field(default=None, alias="v")
+    expert_group: int | None = Field(default=None, alias="e")
+    miner_seed: int | None = Field(default=None, alias="s")
+    block: int | None = Field(default=None, alias="b")
+
 
 class MinerChainCommit(BaseModel):
     block: int
     expert_group: int | None = None
     model_hash: str | None = None
+
 
 def commit_status(
     config: WorkerConfig,
@@ -77,16 +81,11 @@ def commit_status(
           you want the data to be revealed (fallback to 200 if missing).
     """
     # Serialize status first; same input for both plain + encrypted paths
-    data_dict = status.model_dump()
+    data_dict = status.model_dump(by_alias=True)
 
     data = json.dumps(data_dict)
 
-    subtensor.set_commitment(
-        wallet=wallet,
-        netuid=config.chain.netuid,
-        data=data,
-        raise_error=True
-    )
+    subtensor.set_commitment(wallet=wallet, netuid=config.chain.netuid, data=data, raise_error=True)
 
     logger.info("Committed status to chain", status=data_dict)
     return data_dict
@@ -95,7 +94,6 @@ def commit_status(
 def get_chain_commits(
     config: WorkerConfig, subtensor: bittensor.Subtensor, wait_to_decrypt: bool = False
 ) -> tuple[WorkerChainCommit, bittensor.Neuron]:
-
     all_commitments = subtensor.get_all_commitments(netuid=config.chain.netuid)
     metagraph = subtensor.metagraph(netuid=config.chain.netuid)
 
@@ -109,7 +107,7 @@ def get_chain_commits(
 
             chain_commit = (
                 ValidatorChainCommit.model_validate(status_dict)
-                if "miner_seed" in status_dict
+                if "miner_seed" in status_dict or 's' in status_dict
                 else MinerChainCommit.model_validate(status_dict)
             )
 
@@ -159,13 +157,15 @@ def scan_chain_for_new_model(
     commits: tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(config, subtensor)
 
     max_model_version = max([getattr(c, "model_version", 0) for c, n in commits])
+    max_model_meta = ModelMeta(global_ver=max_model_version)
+
     if current_model_meta is not None:
         logger.info(
-            "check model version",
-            max_model_version=max_model_version,
-            current_model_version=current_model_meta.global_ver,
+            "Scanning chain for new model",
+            max_model_version_on_chain=max_model_meta,
+            current_model_version=current_model_meta,
         )
-        max_model_version = max(max_model_version, current_model_meta.global_ver)
+        max_model_meta = max(max_model_meta, current_model_meta)
 
     # 0) Download only from validator
     # commits = [(c, n) for c, n in commits if n.validator_permit]
@@ -173,7 +173,12 @@ def scan_chain_for_new_model(
     commits = [(c, n) for c, n in commits if getattr(c, "model_hash", False)]
 
     # 1) collect candidates that are newer than the current version
-    most_updated_commits = [(c, n) for c, n in commits if getattr(c, "model_version", 0) >= max_model_version]
+    most_updated_commits = []  # type: ignore
+    for (c, n) in commits:
+        model_ver = getattr(c, "model_version", 0)
+        if ModelMeta(global_ver = model_ver) >= max_model_meta:
+            most_updated_commits.append((c, n))
+
 
     if len(most_updated_commits) == 0:
         return False, []
@@ -202,8 +207,6 @@ def scan_chain_for_new_model(
                 }
             )
 
-            logger.info("Append commit", commit=commit)
-
         except Exception:
             logger.info("Cannot append commit", commit=commit)
 
@@ -214,7 +217,11 @@ def scan_chain_for_new_model(
 
 
 def fetch_model_from_chain(
-    current_model_meta: ModelMeta | None, config: WorkerConfig, subtensor: bittensor.Subtensor, wallet: bittensor.Wallet
+    current_model_meta: ModelMeta | None,
+    config: WorkerConfig,
+    subtensor: bittensor.Subtensor,
+    wallet: bittensor.Wallet,
+    expert_group_ids: list = [],
 ) -> dict | None:
     should_download, download_metas = scan_chain_for_new_model(current_model_meta, config, subtensor)
 
@@ -243,35 +250,46 @@ def fetch_model_from_chain(
                         logger.warning("Skipping meta without URL or ip:port: %s", download_meta)
                         continue
 
-                # Output path (reload each attempt so block height is fresh)
-                out_path = Path(config.ckpt.validator_checkpoint_path) / (
-                    f"uid_{download_meta.get('uid')}_hotkey_{download_meta.get('hotkey')}_globalver_{download_meta.get('model_version')}_expgroup_{config.task.expert_group_id}_block_{subtensor.block}.pt"
+                out_folder = Path(config.ckpt.validator_checkpoint_path) / (
+                    f"uid_{download_meta.get('uid')}_hotkey_{download_meta.get('target_hotkey_ss58')}_globalver_{download_meta.get('model_version')}"
                 )
 
-                try:
-                    download_model(
-                        url=url,
-                        my_hotkey=wallet.hotkey,  # type: ignore
-                        target_hotkey_ss58=download_meta["target_hotkey_ss58"],
-                        block=subtensor.block,
-                        expert_group_ids=[config.task.expert_group_id],
-                        token=getattr(config.cycle, "token", ""),
-                        out=out_path,
+                out_folder.mkdir(parents=True, exist_ok=True)
+
+                if len(expert_group_ids) == 0:
+                    expert_group_ids = [config.task.expert_group_id, "shared"]
+
+                for expert_group_id in expert_group_ids:
+                    out_file = (
+                        f"model_expgroup_{expert_group_id}.pt"
+                        if isinstance(expert_group_id, int)
+                        else "model_shared.pt"
                     )
-                    # If download_model doesn't raise, consider it a success
-                    download_success = True
-                    current_model_version = download_meta["model_version"]
-                    current_model_hash = download_meta["model_hash"]
-                    logger.info(
-                        "✅ Downloaded checkpoint",
-                        out_path=out_path,
-                        current_model_version=current_model_version,
-                        current_model_hash=current_model_hash,
-                    )
-                    return download_meta
-                except Exception as e:
-                    logger.warning("Download failed", url, e)
-                    traceback.print_exc()
+                    out_path = out_folder / out_file
+                    try:
+                        download_model(
+                            url=url,
+                            my_hotkey=wallet.hotkey,  # type: ignore
+                            target_hotkey_ss58=download_meta["target_hotkey_ss58"],
+                            block=subtensor.block,
+                            expert_group_id=expert_group_id,
+                            token=getattr(config.cycle, "token", ""),
+                            out_dir=out_path,
+                        )
+                        # If download_model doesn't raise, consider it a success
+                        download_success = True
+                        current_model_version = download_meta["model_version"]
+                        current_model_hash = download_meta["model_hash"]
+                        logger.info(
+                            "✅ Downloaded checkpoint",
+                            out_path=out_path,
+                            current_model_version=current_model_version,
+                            current_model_hash=current_model_hash,
+                        )
+                        return download_meta
+                    except Exception as e:
+                        logger.warning("Download failed", url, e)
+                        traceback.print_exc()
 
             if not download_success:
                 retries += 1

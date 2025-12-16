@@ -1,6 +1,7 @@
 import os
 from copy import deepcopy
 from dataclasses import dataclass
+from functools import total_ordering
 from pathlib import Path
 
 import fsspec
@@ -20,10 +21,11 @@ from mycelia.shared.helper import parse_dynamic_filename
 logger = structlog.getLogger(__name__)
 
 
+@total_ordering
 @dataclass
 class ModelMeta:
-    global_ver: int = 0  # -1 if not specified
-    inner_opt: int = -1  # -1 if do not exist
+    global_ver: int = 0
+    inner_opt: int = 0
     path: Path | None = None
     role: str | None = None  # [miner, validator]
     model_hash: str | None = None
@@ -68,7 +70,7 @@ def start_model_from(
             "secondary checkpoint not found, using primary",
             primary_ckpt_path=primary_ckpt_path,
             secondary_ckpt_path=secondary_ckpt_path,
-            model_meta = primary_model_meta
+            model_meta=primary_model_meta,
         )
         return primary_ckpt_found, primary_model_meta, latest_primary_ckpt
 
@@ -77,21 +79,21 @@ def start_model_from(
             "primary checkpoint not found, using secondary",
             primary_ckpt_path=primary_ckpt_path,
             secondary_ckpt_path=secondary_ckpt_path,
-            model_meta = secondary_model_meta
+            model_meta=secondary_model_meta,
         )
         return secondary_ckpt_found, secondary_model_meta, latest_secondary_ckpt
 
     # --- Return based on more updated version ---
     if secondary_model_meta >= primary_model_meta and latest_secondary_ckpt is not None:
-        logger.info(
-            f"secondary checkpoint version {secondary_model_meta} > primary checkpoint version {primary_model_meta}"
-        )
+        # logger.info(
+        #     f"secondary checkpoint version {secondary_model_meta} >= \nprimary checkpoint version {primary_model_meta}"
+        # )
         return secondary_ckpt_found, secondary_model_meta, latest_secondary_ckpt
     else:
-        logger.info(
-            f"primary checkpoint version {primary_model_meta} > secondary checkpoint version {secondary_model_meta}"
-        )
-        return primary_ckpt_found, secondary_model_meta, latest_primary_ckpt
+        # logger.info(
+        #     f"primary checkpoint version {primary_model_meta} >= \nsecondary checkpoint version {secondary_model_meta}"
+        # )
+        return primary_ckpt_found, primary_model_meta, latest_primary_ckpt
 
 
 def get_resume_info(
@@ -136,7 +138,12 @@ def get_resume_info(
 
         latest_ckpt = ckpt_files[0].path
         model_meta = ckpt_files[0]
-        logger.info("Looking for checkpoint from folder", result="found", path={config.ckpt.checkpoint_path})
+        logger.info(
+            "Looking for checkpoint from folder",
+            result="found",
+            path={config.ckpt.checkpoint_path},
+            model_meta=model_meta,
+        )
         return True, model_meta, latest_ckpt
 
 
@@ -225,6 +232,7 @@ def save_checkpoint(
     if save_model_by_expert_group and expert_manager is not None:
         state_dict = {k: v.detach().to("cpu", non_blocking=True) for k, v in model.state_dict().items()}
         save_state_dict_by_expert_group(state_dict, expert_manager.expert_group_assignment, checkpoint_path)
+
     else:
         checkpoint = {
             "model_state_dict": {k: v.detach().to("cpu", non_blocking=True) for k, v in model.state_dict().items()},
@@ -396,8 +404,7 @@ def load_checkpoint(
 
     if model is not None:
         full_state_dict = compile_full_state_dict_from_path(checkpoint_path)
-
-        model.load_state_dict(full_state_dict, strict=True)
+        model.load_state_dict(full_state_dict, strict=False)
         model.to(device)
 
     if inner_optimizer is not None:
@@ -411,8 +418,11 @@ def load_checkpoint(
             rank_state_dict = torch.load(f, map_location=torch.device("cpu"))
         data_loader.load_state_dict(rank_state_dict["data_loader"])
 
-    with fsspec.open(os.path.join(checkpoint_path, "global_state.pt"), "rb") as f:
-        global_state_dict = torch.load(f, map_location=torch.device("cpu"))
+    if scheduler is not None or inner_scaler is not None or outer_scaler is not None:
+        with fsspec.open(os.path.join(checkpoint_path, "global_state.pt"), "rb") as f:
+            global_state_dict = torch.load(f, map_location=torch.device("cpu"))
+    else:
+        return -1
 
     if scheduler is not None:
         scheduler.load_state_dict(global_state_dict["scheduler"])

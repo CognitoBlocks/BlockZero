@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Callable
+
 import bittensor
 from torch import nn
 
@@ -7,11 +9,45 @@ from mycelia.shared.app_logging import structlog
 from mycelia.shared.chain import fetch_model_from_chain
 from mycelia.shared.checkpoint import ModelMeta, load_checkpoint, start_model_from
 from mycelia.shared.config import MinerConfig, ValidatorConfig
-from mycelia.shared.expert_manager import ExpertManager
+from mycelia.shared.expert_manager import (
+    ExpertAssignments,
+    ExpertManager,
+    get_layer_expert_id,
+)
 from mycelia.shared.helper import get_nested_attr
 from mycelia.shared.modeling.mycelia import get_base_model
 
 logger = structlog.get_logger(__name__)
+
+
+def freeze_parameters(
+    model: nn.Module,
+    expert_manager: ExpertManager,
+    expert_group_id: int,
+) -> list[str]:
+    """
+    Disable gradients for parameters that satisfy `predicate`.
+
+    Args:
+        model: torch.nn.Module
+        predicate: function (name, parameter) -> bool
+                   return True to freeze the parameter
+
+    Returns:
+        List of parameter names that were frozen
+    """
+
+    for name, param in model.named_parameters():
+        layer_id, expert_id = get_layer_expert_id(name)
+
+        if (
+            layer_id is not None
+            and expert_id is not None
+            and expert_id not in expert_manager.expert_group_assignment[expert_group_id][layer_id]
+        ):
+            param.requires_grad_(False)
+
+    return model
 
 
 def get_model_from_checkpoint(
@@ -73,5 +109,14 @@ def load_model(
     3) Else, initialize a default model.
     """
     # download new model from chain into file
+
+    if current_model_meta is None:
+        _, current_model_meta, _ = start_model_from(
+            rank,
+            config,
+            primary_ckpt_path=config.ckpt.validator_checkpoint_path,
+            secondary_ckpt_path=config.ckpt.checkpoint_path,
+        )
+
     fetch_model_from_chain(current_model_meta=current_model_meta, config=config, subtensor=subtensor, wallet=wallet)
     return get_model_from_checkpoint(rank=rank, config=config, expert_manager=expert_manager)

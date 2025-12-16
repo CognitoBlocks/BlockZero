@@ -115,7 +115,9 @@ def setup_training(
     train_dataloader = get_dataloader(config, rank=rank, world_size=config.task.data.world_size, tokenizer=tokenizer)
 
     # === load checkpoint (if any) ===
-    logger.info(f"setup training - load past checkpoint")
+    logger.info(
+        f"setup training - load past checkpoint"
+    )  # outer_optimizer is static, so dont really need to load checkpoint
     if get_nested_attr(config, "resume_from_ckpt", False) and resume and latest_checkpoint_path:
         _ = load_checkpoint(
             config=config,
@@ -303,6 +305,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             model_version=global_opt_step,
             expert_group=config.task.expert_group_id,
             miner_seed=0,  # this should reveal later
+            block=subtensor.block,
         ),
     )
 
@@ -335,7 +338,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                     model_version=global_opt_step,
                     expert_group=config.task.expert_group_id,
                     miner_seed=secrets.randbits(16),
-                    block = subtensor.block
+                    block=subtensor.block,
                 ),
             )
 
@@ -435,7 +438,6 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                 ),
             )
 
-            
             if config.ckpt.checkpoint_topk is not None:
                 ckpt_deleted = delete_old_checkpoints(config.ckpt.checkpoint_path, config.ckpt.checkpoint_topk)
                 if ckpt_deleted:
