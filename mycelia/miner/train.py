@@ -143,7 +143,7 @@ def setup_training(
     # === scaler ===
     logger.info(f"init - inner scaler")
     inner_scaler = torch.amp.GradScaler(
-        "cuda", enabled=(get_nested_attr(config, "model.precision", "") == "fp16-mixed")
+        "cuda", enabled = False # enabled=(get_nested_attr(config, "model.precision", "") == "fp16-mixed")
     )
 
     # === dataloader ===
@@ -321,6 +321,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                         grad_norm=float(grad_norm),
                         scale_before=scale_before,
                     )
+                
                 else:
                     logger.info(
                         "Optimizer step applied",
