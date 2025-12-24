@@ -51,7 +51,9 @@ def evaluate_model(
             for key in batch.keys():
                 device_batch[key] = batch[key].to(model.device)
 
-            with torch.amp.autocast("cuda", dtype=torch.float16):
+            # Autocast only on CUDA
+            autocast_enabled = torch.cuda.is_available()
+            with torch.amp.autocast("cuda" if autocast_enabled else "cpu", dtype=torch.float16, enabled=autocast_enabled):
                 outputs = model(**device_batch)
 
                 if not torch.isnan(outputs.loss):

@@ -96,12 +96,15 @@ class RunCfg(BaseConfig):
 
 class ModelCfg(BaseConfig):
     # although we are calling a large model here, but we would only be training a partial of it for each miner
+    # For local Mac testing, use: "Qwen/Qwen2.5-0.5B" (but note: won't have MoE architecture)
     model_path: str = "Qwen/Qwen3-Next-80B-A3B-Thinking"
     foundation: bool = True
     torch_compile: bool = False
     attn_implementation: str = "sdpa"
     precision: str = "fp16-mixed"
-    device: str = "cuda"
+    device: str = "auto"  # "auto" will detect cuda > mps > cpu
+    cpu_offload: bool = False  # Enable to offload layers to CPU when GPU memory is insufficient
+    use_quantization: bool = False  # Load base model in 4-bit, train experts in fp16 (saves ~60% VRAM)
 
 
 class DataCfg(BaseConfig):
@@ -143,7 +146,7 @@ class OptimizerCfg(BaseConfig):
 class ParallelismCfg(BaseConfig):  # parallelism for local training
     gradient_accumulation_steps: PositiveInt = 5
     global_opt_interval: PositiveInt = 100
-    world_size: PositiveInt = 2
+    world_size: PositiveInt = 1  # Default to 1 for Mac/single GPU compatibility
     port: PositiveInt = 29500
     ip_address: str = "127.0.0.1"
 
@@ -294,18 +297,27 @@ class WorkerConfig(BaseConfig):
             self.ckpt.miner_submission_path = self.ckpt.base_checkpoint_path / self.ckpt.miner_submission_path
 
     def _fill_wallet_data(self):
-        wallet = bittensor.Wallet(name=self.chain.coldkey_name, hotkey=self.chain.hotkey_name)
-        subtensor = bittensor.Subtensor(network=self.chain.network)
+        # NOTE: We must NOT create bittensor.Subtensor() here because it starts WebSocket
+        # connections and background threads that break torch.multiprocessing.spawn().
+        # Only extract wallet addresses (from local keyfiles) which are safe.
+        # The UID should be fetched later inside the spawned worker process.
         try:
+            wallet = bittensor.Wallet(name=self.chain.coldkey_name, hotkey=self.chain.hotkey_name)
             self.chain.hotkey_ss58 = wallet.hotkey.ss58_address
             self.chain.coldkey_ss58 = wallet.coldkeypub.ss58_address
-            self.chain.uid = subtensor.metagraph(netuid=self.chain.netuid).hotkeys.index(self.chain.hotkey_ss58)
+            del wallet  # Explicitly release
         except bittensor.KeyFileError as e:
             logger.warning(
                 f"Cannot find the wallet key by name coldkey name: {self.chain.coldkey_name}, hotkey name: {self.chain.hotkey_name}, please make sure it has been set correctly if you are reloading from a  or use --hotkey_name & --coldkey_name when you are creating a config file from a template.",  # noqa: E501
                 error=str(e),
             )
             return
+        except Exception as e:
+            logger.warning(f"Wallet initialization failed: {e}")
+            return
+        # NOTE: Do NOT create bittensor.Subtensor() here to fetch UID!
+        # It creates network connections that prevent pickling for multiprocessing.
+        # The UID will be fetched inside the worker process via setup_chain_worker().
 
     @staticmethod
     def _bump_run_name(name: str) -> str:

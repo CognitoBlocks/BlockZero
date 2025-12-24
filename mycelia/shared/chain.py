@@ -134,8 +134,12 @@ def setup_chain_worker(config):
 
 
 def serve_axon(config: WorkerConfig, wallet: bittensor.Wallet, subtensor: bittensor.Subtensor):
-    axon = bittensor.Axon(wallet=wallet, external_port=config.chain.port, ip=config.chain.ip)
-    axon.serve(netuid=348, subtensor=subtensor)
+    try:
+        axon = bittensor.Axon(wallet=wallet, external_port=config.chain.port, ip=config.chain.ip)
+        axon.serve(netuid=config.chain.netuid, subtensor=subtensor)
+    except Exception as e:
+        # Non-fatal: allows local testing without chain registration
+        logger.warning(f"Failed to serve axon (continuing anyway): {e}")
 
 
 # --- Chain weight submission ---

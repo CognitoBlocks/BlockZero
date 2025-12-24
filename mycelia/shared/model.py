@@ -47,6 +47,8 @@ def freeze_parameters(
     Returns:
         List of parameter names that were frozen
     """
+    trainable_count = 0
+    frozen_count = 0
 
     for name, param in model.named_parameters():
         layer_id, expert_id = get_layer_expert_id(name)
@@ -56,13 +58,21 @@ def freeze_parameters(
                 allowed_expert_id
                 for allowed_expert_id, _ in expert_manager.expert_group_assignment[expert_group_id].get(layer_id, [])
             }
-            param.requires_grad_(expert_id in allowed_experts)
+            should_train = expert_id in allowed_experts
+            param.requires_grad_(should_train)
+            if should_train:
+                trainable_count += 1
+            else:
+                frozen_count += 1
         else:
             param.requires_grad_(False)
+            frozen_count += 1
 
-        # if param.requires_grad:
-        #     param.register_hook(grad_hook(name))
-
+    logger.info(f"freeze_parameters: {trainable_count} trainable, {frozen_count} frozen for group {expert_group_id}")
+    
+    if trainable_count == 0:
+        logger.warning("WARNING: No trainable parameters! Check expert_group_assignment matches model layers.")
+    
     return model
 
 
@@ -83,7 +93,24 @@ def get_model_from_checkpoint(
         expert_manager=expert_manager,
         group_ids=[config.task.expert_group_id] if config.role == "miner" else None,
         partial=(config.role == "miner"),
-    ).to(config.model.device)
+    )
+    
+    # Handle device - auto-detect best available
+    # Skip .to() for quantized models (device_map handles placement)
+    use_quantization = get_nested_attr(config, "model.use_quantization", False)
+    
+    device = config.model.device
+    if device == "auto" or (device == "cuda" and not torch.cuda.is_available()):
+        if torch.cuda.is_available():
+            device = "cuda"
+        elif torch.backends.mps.is_available():
+            device = "mps"
+        else:
+            device = "cpu"
+        logger.info(f"Auto-detected device: {device}")
+    
+    if not use_quantization:
+        model = model.to(device)
 
     # load from checkpoint
     if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
@@ -100,13 +127,18 @@ def get_model_from_checkpoint(
                 checkpoint_path=latest_checkpoint_path,
                 model=model,
                 rank=rank,
-                device=config.model.device,
+                device=device,
             )
         else:
             logger.info("Tried to resume from checkpoint, but no checkpoint found.")
 
-    model = model.to(config.model.device)
-    model.gradient_checkpointing_enable()
+    if not use_quantization:
+        model = model.to(device)
+    
+    # Only enable gradient checkpointing on CUDA (memory optimization)
+    # On MPS/CPU, it can cause "no grad" issues
+    if torch.cuda.is_available() and not use_quantization:
+        model.gradient_checkpointing_enable()
     return model, model_version
 
 
