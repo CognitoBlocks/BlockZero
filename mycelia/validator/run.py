@@ -103,7 +103,6 @@ def cleanup(global_model, base_model) -> None:
     # Optional: very verbose allocator state (can be long)
     print(torch.cuda.memory_summary(abbreviated=True))
 
-
 def setup_training(
     config,
     rank: int,
@@ -234,6 +233,12 @@ def run_global_optimization(
 ):
     # --- sync + outer step ---
     # keep global model on device for syncing/stepping, then move back to CPU
+    for state in outer_optimizer.state.values():
+        for k, v in state.items():
+            if torch.is_tensor(v):
+                state[k] = v.to(device, non_blocking=True)
+
+    
     global_model.to(device)
 
     old_shared_name, old_shared_sum = get_weight_sum(model, shared=True)
@@ -263,6 +268,13 @@ def run_global_optimization(
         old_sum=round(float(old_expert_sum), 6),
         new_sum=round(float(new_expert_sum), 6),
     )
+
+    for state in outer_optimizer.state.values():
+        for k, v in state.items():
+            if torch.is_tensor(v):
+                state[k] = v.cpu()
+
+    torch.cuda.empty_cache()
 
 
 def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
@@ -384,9 +396,12 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             logger.info("(2) Gathering miner job")
             miner_jobs = gather_validation_job(config, subtensor, step=global_opt_step)
             logger.info("miner job(s)", global_opt_step=global_opt_step, miner_jobs=miner_jobs)
+            if len(miner_jobs) == 0:
+                logger.warning("couldnt collect any miner job to evaluate", global_opt_step=global_opt_step, miner_jobs=miner_jobs)
 
             # === Get miner model and evaluate the miners ===
             logger.info("(3) Evaluating miners")
+            cleanup(global_model, base_model)
             asyncio.run(
                 run_evaluation(
                     config=config,

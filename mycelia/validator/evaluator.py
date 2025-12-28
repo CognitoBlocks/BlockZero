@@ -75,10 +75,10 @@ async def evaluator_worker(
                 get_dataloader, config=config, tokenizer=tokenizer, seed=combinded_seed, rank=0, world_size=10
             )
 
-            with torch.inference_mode():
-                metrics = await asyncio.to_thread(
-                    evaluate_model, job.step, model, eval_dataloader, device, max_eval_batches, rank
-                )
+
+            metrics = await asyncio.to_thread(
+                evaluate_model, job.step, model, eval_dataloader, device, max_eval_batches, rank
+            )
 
             # choose a primary score (here 'accuracy'); adjust if your evaluate_model returns other keys
             score = float(metrics.get("val_loss", 100))

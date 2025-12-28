@@ -274,29 +274,37 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 not is_start_step
             ):  # skip training when it is the start step, so that we can benchamrk the original model first
                 model.train()
+                logger.info("training A")
                 if training_start_time is None:
                     training_start_time = time.time()
 
+                logger.info("training B")
                 batch_device = {}
                 for key in batch.keys():
                     batch_device[key] = batch[key].to(device)
 
+                logger.info("training C")
                 with torch.amp.autocast("cuda", dtype=torch.float16):
                     outputs = model(**batch_device)
                     loss = outputs.loss / config.local_par.gradient_accumulation_steps
                     # aux_loss = outputs.aux_loss / config.local_par.gradient_accumulation_steps if outputs.aux_loss is not None else torch.tensor(0)
                     aux_loss = torch.tensor(0)
 
+                logger.info("training D")
                 loss_batch += loss.item()
                 aux_loss_batch += aux_loss.item()
+                logger.info("training E")
                 logger.info("training", loss=loss, grad_sum=sum_model_gradients(model))
 
+                logger.info("training F")
                 inner_scaler.scale(loss).backward()
 
                 # === Aggressively free intermediate tensors ===
                 del loss, aux_loss, batch_device, outputs
                 gc.collect()
+                logger.info("training G")
 
+            logger.info("training H")
             # === inner optimizer ===
             if not is_start_step and is_inner_optimizer_step:
                 old_model_hash = get_model_hash(model.state_dict())

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import torch
 from torch import nn
 from tqdm import tqdm
@@ -10,8 +11,6 @@ logger = structlog.getLogger(__name__)
 
 tqdm(disable=True, total=0)
 
-
-@torch.no_grad
 def evaluate_model(
     step: int,
     model: nn.Module,
@@ -42,6 +41,7 @@ def evaluate_model(
         e.g., {"val_loss": 2.345}
     """
     logger.info("evaluate model", step=step)
+    model.to(device)
     model.eval()
     loss_sum: float = 0.0
     aux_loss_sum: float = 0.0
@@ -50,6 +50,9 @@ def evaluate_model(
             device_batch = {}
             for key in batch.keys():
                 device_batch[key] = batch[key].to(model.device)
+
+            if device_batch.get("attention_mask") is None and "input_ids" in device_batch:
+                device_batch["attention_mask"] = torch.ones_like(device_batch["input_ids"])
 
             with torch.amp.autocast("cuda", dtype=torch.float16):
                 outputs = model(**device_batch)
@@ -63,9 +66,8 @@ def evaluate_model(
                     else 0
                 )
 
-                del outputs
-
-            del device_batch
+            del device_batch, outputs
+            gc.collect()
 
             if max_eval_batches is not None and batch_step >= max_eval_batches:
                 break

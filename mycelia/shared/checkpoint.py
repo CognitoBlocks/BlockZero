@@ -517,7 +517,7 @@ def delete_old_checkpoints_by_hotkey(folder_path: Path):
         entries.sort(key=lambda x: x[0], reverse=True)
 
         # Keep the first (latest) one, delete the rest
-        for _, file_path in entries[1:]:
+        for _, file_path in entries[2:]:
             try:
                 os.remove(file_path)
                 deleted_files.append(file_path.name)
