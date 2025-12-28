@@ -54,18 +54,54 @@ configure_logging()
 logger = structlog.get_logger(__name__)
 
 
+def _cuda_mem_report(tag: str = "", device: int | None = None) -> None:
+    if not torch.cuda.is_available():
+        print(f"[{tag}] CUDA not available")
+        return
+
+    if device is None:
+        device = torch.cuda.current_device()
+
+    torch.cuda.synchronize(device)
+
+    allocated = torch.cuda.memory_allocated(device)
+    reserved  = torch.cuda.memory_reserved(device)
+
+    free, total = torch.cuda.mem_get_info(device)  # bytes
+
+    def mb(x): return x / 1024**2
+
+    print(
+        f"[{tag}] cuda:{device} "
+        f"allocated={mb(allocated):.1f}MB "
+        f"reserved={mb(reserved):.1f}MB "
+        f"free={mb(free):.1f}MB "
+        f"total={mb(total):.1f}MB "
+        f"(alloc%={allocated/total*100:.1f} reserved%={reserved/total*100:.1f})"
+    )
+
 def cleanup(global_model, base_model) -> None:
     """
     Cleans up the distributed training environment.
-
-    Returns:
-        None
     """
+    _cuda_mem_report("before cleanup")
+
+    # Move models off GPU
     torch.cuda.synchronize()
     global_model.to("cpu")
     base_model.to("cpu")
+
+    # Drop any lingering references if you have them (optional):
+    # del global_model, base_model
+
     gc.collect()
     torch.cuda.empty_cache()
+    torch.cuda.synchronize()
+
+    _cuda_mem_report("after cleanup")
+
+    # Optional: very verbose allocator state (can be long)
+    print(torch.cuda.memory_summary(abbreviated=True))
 
 
 def setup_training(
@@ -244,6 +280,8 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
     if rank == 0:
         config.write()
 
+    torch.cuda.memory._record_memory_history(enabled=True)
+    
     # === create checkpoint directory ===
     os.makedirs(config.ckpt.base_checkpoint_path, exist_ok=True)
     os.makedirs(config.ckpt.checkpoint_path, exist_ok=True)
@@ -379,6 +417,8 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                 )
             )
 
+            cleanup(global_model, base_model)
+
             # === wait till merging phase and aggragate miner gradient change ===
             wait_till(config, PhaseNames.merge)
             logger.info("(5) Syncing gradient across validators")
@@ -468,14 +508,14 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
 
     except KeyboardInterrupt:
         logger.warning("KeyboardInterrupt received, shutting down validator loop")
-        cleanup()
+        cleanup(global_model, base_model)
         metric_logger.close()
         for _, a in group_averagers.items():
             a.shutdown()
         raise
     except Exception:
         logger.error("Quit training", exc_info=True)
-        cleanup()
+        cleanup(global_model, base_model)
         metric_logger.close()
         for _, a in group_averagers.items():
             a.shutdown()

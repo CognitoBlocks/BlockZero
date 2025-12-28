@@ -59,6 +59,10 @@ async def evaluator_worker(
             break
 
         try:
+            snap = torch.cuda.memory_snapshot()
+            # snap is a big Python structure; you can print summary-ish info:
+            logger.info("segments:", len(snap))
+
             # Clear memory before loading
             gc.collect()
             torch.cuda.empty_cache()
@@ -85,6 +89,7 @@ async def evaluator_worker(
             del eval_dataloader, model, metrics
             gc.collect()
             torch.cuda.empty_cache()
+            torch.cuda.memory._dump_snapshot("cuda_snapshot.pickle")
 
         except torch.cuda.OutOfMemoryError as e:
             logger.error(f"{name}: OOM for uid={job.uid}")
