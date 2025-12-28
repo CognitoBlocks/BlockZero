@@ -52,25 +52,24 @@ def init_process(local_rank: int, config: MinerConfig, world_size: int, fn: call
     Returns:
         None
     """
-    os.environ["MASTER_ADDR"] = config.local_par.ip_address
-    os.environ["MASTER_PORT"] = str(config.local_par.port)
-
     if local_rank == 0:
-        print(config)  # pretty JSON
+        print(config)
 
-    # torch.cuda.set_device(local_rank)
+    if world_size > 1:
+        os.environ["MASTER_ADDR"] = config.local_par.ip_address
+        os.environ["MASTER_PORT"] = str(config.local_par.port)
 
-    dist.init_process_group(
-        backend,
-        rank=local_rank,
-        world_size=world_size,
-        timeout=datetime.timedelta(seconds=3600),
-        device_id=(
-            torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
-            if local_rank < world_size
-            else None
-        ),
-    )
+        dist.init_process_group(
+            backend,
+            rank=local_rank,
+            world_size=world_size,
+            timeout=datetime.timedelta(seconds=3600),
+            device_id=(
+                torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+                if local_rank < world_size
+                else None
+            ),
+        )
 
     fn(local_rank, world_size, config)
 
@@ -305,7 +304,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 for n, p in model.named_parameters():
                     if p.grad is None or torch.isnan(p.grad.sum()):
                         continue
-                    dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
+                    # dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
                     p.grad.div_(world_size)
 
                 inner_scaler.unscale_(optimizer=inner_optimizer)
@@ -494,7 +493,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
 
     except Exception:
         logger.error("Quit training", exc_info=True)
-        dist.destroy_process_group()
+        # dist.destroy_process_group()
         torch.cuda.synchronize()
         metric_logger.close()
 
@@ -516,11 +515,15 @@ def run_distributed_training() -> None:
     else:
         config = MinerConfig()
 
-    mp.spawn(
-        init_process,
-        args=(config, config.local_par.world_size, train_worker),
-        nprocs=config.local_par.world_size,
-    )
+    if config.local_par.world_size > 1:
+
+        mp.spawn(
+            init_process,
+            args=(config, config.local_par.world_size, train_worker),
+            nprocs=config.local_par.world_size,
+        )
+    else:
+        init_process(0, config, config.local_par.world_size, train_worker)
 
 
 if __name__ == "__main__":
