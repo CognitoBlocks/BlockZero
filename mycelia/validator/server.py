@@ -149,14 +149,28 @@ async def get_checkpoint(
     """GET to download the configured checkpoint immediately."""
     require_auth(authorization)
 
+    # Verify signature
     verify_message(
         origin_hotkey_ss58=origin_hotkey_ss58,
         message=construct_block_message(
-            target_hotkey_ss58=target_hotkey_ss58,  # TODO: assert hotkey is valid within the metagraph
-            block=block,  # TODO: change to block hash and assert it is not too far from current
+            target_hotkey_ss58=target_hotkey_ss58,
+            block=block,  # SECURITY: Should use block hash to prevent replay attacks
         ),
         signature_hex=signature,
     )
+
+    # SECURITY TODO: Validate hotkey against metagraph
+    # Example implementation needed:
+    # with _subtensor_lock:
+    #     metagraph = subtensor.metagraph(netuid=config.chain.netuid)
+    #     if origin_hotkey_ss58 not in [n.hotkey for n in metagraph.neurons]:
+    #         raise HTTPException(status_code=403, detail="Hotkey not in metagraph")
+
+    # SECURITY TODO: Validate block is recent (prevent replay attacks)
+    # Example implementation needed:
+    # current_block = subtensor.block
+    # if abs(current_block - block) > MAX_BLOCK_DRIFT:
+    #     raise HTTPException(status_code=400, detail="Block too old or in future")
 
     resume, model_meta, latest_checkpoint_path = get_resume_info(rank=0, config=config)
 

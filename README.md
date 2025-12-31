@@ -36,10 +36,11 @@ Follow the full guide here:
 
 The guide covers:
 
-* [missing] Registering your miner
-* Running the miner process
-* [missing] Monitoring expert load
-* [add more]
+* **Registering your miner**: Register your hotkey with the subnet using `btcli` or the registration API
+* **Running the miner process**: Start the training worker with your configuration
+* **Monitoring expert load**: Track which experts are being trained and their performance metrics
+* **Configuration options**: Set up expert groups, batch sizes, learning rates, and device settings
+* **Checkpoint management**: Handle model checkpoints and synchronization with validators
 ---
 
 ## 🛡️ **Guide: Running a Validator**
@@ -51,10 +52,11 @@ Full instructions here:
 
 The guide includes:
 
-* [missing] Validator architecture
-* How to run a validator node
-* [missing] Scoring logic
-* [add more]
+* **Validator architecture**: Distributed evaluation system with async workers for concurrent miner assessment
+* **How to run a validator node**: Setup instructions including checkpoint serving and inter-validator networking
+* **Scoring logic**: Composite scoring based on validation loss, expert diversity, and active expert ratio
+* **Model aggregation**: Federated averaging of top-performing miner models with expert-aware weight merging
+* **Security considerations**: Signature verification, hotkey validation, and replay attack prevention
 
 ---
 

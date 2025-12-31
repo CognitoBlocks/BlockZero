@@ -113,8 +113,8 @@ class DataCfg(BaseConfig):
     batch_size: PositiveInt = 512
     sequence_length: PositiveInt = 1024
     per_device_train_batch_size: PositiveInt = 2
-    world_size: int = 10  # TODO
-    rank: int = 1  # TODO
+    world_size: int = 10  # Total number of data shards (including all workers)
+    rank: int = 1  # Data shard rank for this worker
     dataset_class: str | None = None
     vali_fraction: float = 0.1
 

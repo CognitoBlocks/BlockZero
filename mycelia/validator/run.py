@@ -157,7 +157,8 @@ async def aggregate_miner_gradient_change(
     global_model.to(device)
     miner_models: dict[str, nn.Module] = {}
     for miner_job in miner_jobs:
-        if score_aggregator.is_in_top(uid=miner_job.uid, cutoff=3, how="avg"):  # TODO: change it to ema
+        # Use average scoring for now. Consider implementing EMA for better handling of score fluctuations
+        if score_aggregator.is_in_top(uid=miner_job.uid, cutoff=3, how="avg"):
             miner_models[miner_job.uid] = await asyncio.to_thread(
                 load_model_from_path, miner_job.model_path, base_model, device
             )
@@ -348,7 +349,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             logger.info("miner job(s)", global_opt_step=global_opt_step, miner_jobs=miner_jobs)
 
             # === Get miner model and evaluate the miners ===
-            logger.info("(3) Evaluating miners")
+            logger.info("(3) Evaluating miners with unpredictable validation")
             asyncio.run(
                 run_evaluation(
                     config=config,
@@ -359,6 +360,8 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                     base_model=base_model.to("cpu"),
                     tokenizer=tokenizer,
                     combinded_seed=get_combined_validator_seed(config, subtensor),
+                    subtensor=subtensor,  # Pass subtensor for unpredictable validation
+                    use_unpredictable=True,  # Enable unpredictable validation
                 )
             )
 

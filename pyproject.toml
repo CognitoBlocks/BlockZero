@@ -7,7 +7,7 @@ name = "subnet-moe"
 version = "0.1.0"
 description = "Distributed LLM training with mixture of experts."
 readme = "README.md"
-# license = { text = "Apache-2.0" }
+license = { text = "MIT" }
 requires-python = ">=3.10"
 
 authors = [
@@ -18,7 +18,7 @@ keywords = ["llm", "federated", "training", "validator", "blockchain", "MoE"]
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-#  "License :: OSI Approved :: Apache Software License",
+  "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
   "Framework :: FastAPI",
