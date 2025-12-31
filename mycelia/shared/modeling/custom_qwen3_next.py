@@ -211,8 +211,9 @@ def get_moe_model_config(
     base_config.num_experts = (
         expert_manager.num_experts
     )  # this stays the same regardless of full/partial cause we keep the same router size either case
-    base_config.output_router_logits = get_nested_attr(config, "moe.aux_load_balance", False)
-    base_config.router_aux_loss_coef = get_nested_attr(config, "moe.router_aux_loss_coef", False)
+    # Enable router logits output and auxiliary loss for load balancing
+    base_config.output_router_logits = get_nested_attr(config, "moe.aux_load_balance", True)
+    base_config.router_aux_loss_coef = get_nested_attr(config, "moe.router_aux_loss_coef", 1.0)
     base_config.expert_group_assignment = expert_manager.expert_group_assignment
 
     return base_config

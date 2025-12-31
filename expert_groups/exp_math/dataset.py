@@ -121,7 +121,7 @@ class MergedMathDataset(MergedStreamingDataset):
     """
     Merged math dataset with anti-cheat measures.
     """
-    
+
     def __init__(
         self,
         tokenizer: PreTrainedTokenizerBase,
@@ -137,13 +137,37 @@ class MergedMathDataset(MergedStreamingDataset):
                 source.format_fn = format_gsm8k
             else:
                 source.format_fn = format_math_problem
-        
+
         super().__init__(
             sources=sources,
             tokenizer=tokenizer,
             sequence_length=sequence_length,
             seed=seed,
             holdout_fraction=0.01,  # 1% holdout for benchmark
+            rank=rank,
+            world_size=world_size,
+        )
+
+    @classmethod
+    def get_tokenised_dataset(
+        cls,
+        config,
+        tokenizer: PreTrainedTokenizerBase,
+        rank: int | None = None,
+        world_size: int | None = None,
+        train: bool = True,
+        seed: str | None = None,
+        fraction: float | None = None,
+    ):
+        """
+        Create and return tokenised dataset instance.
+
+        This method is called by the dataloader to instantiate the dataset.
+        """
+        return cls(
+            tokenizer=tokenizer,
+            sequence_length=config.task.data.sequence_length,
+            seed=int(seed) if seed else 42,
             rank=rank,
             world_size=world_size,
         )

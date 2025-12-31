@@ -37,15 +37,22 @@ def freeze_parameters(
     expert_group_id: int,
 ) -> list[str]:
     """
-    Disable gradients for parameters that satisfy `predicate`.
+    Freeze parameters based on expert group assignment.
+
+    Strategy:
+    - Expert parameters: Only train if they belong to our expert group
+    - Routers/gates: Train (shared across all expert groups)
+    - Norms: Train (shared across all expert groups)
+    - Embeddings: FREEZE to prevent conflicts during expert merging
+    - Attention: FREEZE (not expert-specific)
 
     Args:
         model: torch.nn.Module
-        predicate: function (name, parameter) -> bool
-                   return True to freeze the parameter
+        expert_manager: ExpertManager instance
+        expert_group_id: ID of the expert group to train
 
     Returns:
-        List of parameter names that were frozen
+        Model with frozen parameters
     """
     trainable_count = 0
     frozen_count = 0
@@ -54,6 +61,7 @@ def freeze_parameters(
         layer_id, expert_id = get_layer_expert_id(name)
 
         if layer_id is not None and expert_id is not None:
+            # This is an expert parameter - only train if it belongs to our group
             allowed_experts = {
                 allowed_expert_id
                 for allowed_expert_id, _ in expert_manager.expert_group_assignment[expert_group_id].get(layer_id, [])
@@ -65,15 +73,46 @@ def freeze_parameters(
             else:
                 frozen_count += 1
         else:
-            param.requires_grad_(False)
-            frozen_count += 1
+            # Non-expert parameters
+            is_embedding = 'embed_tokens' in name or 'lm_head' in name
+            is_router = 'gate' in name
+            is_norm = 'norm' in name or 'input_layernorm' in name or 'post_attention_layernorm' in name
+
+            # Freeze embeddings to prevent conflicts during expert merging
+            if is_embedding:
+                param.requires_grad_(False)
+                frozen_count += 1
+            # Train routers and norms (shared across all expert groups)
+            elif is_router or is_norm:
+                param.requires_grad_(True)
+                trainable_count += 1
+            # Freeze everything else (attention weights, etc.)
+            else:
+                param.requires_grad_(False)
+                frozen_count += 1
 
     logger.info(f"freeze_parameters: {trainable_count} trainable, {frozen_count} frozen for group {expert_group_id}")
-    
+
     if trainable_count == 0:
         logger.warning("WARNING: No trainable parameters! Check expert_group_assignment matches model layers.")
-    
+
     return model
+
+
+def zero_frozen_param_grads(model: nn.Module) -> None:
+    """
+    Zero out gradients for parameters tagged as frozen during expert training.
+
+    This should be called after backward() but before optimizer.step() to prevent
+    embedding updates that would conflict during expert merging.
+
+    Args:
+        model: The model to process
+    """
+    for param in model.parameters():
+        if hasattr(param, '_is_frozen_for_expert_training') and param._is_frozen_for_expert_training:
+            if param.grad is not None:
+                param.grad.zero_()
 
 
 def get_model_from_checkpoint(
@@ -134,11 +173,16 @@ def get_model_from_checkpoint(
 
     if not use_quantization:
         model = model.to(device)
-    
-    # Only enable gradient checkpointing on CUDA (memory optimization)
-    # On MPS/CPU, it can cause "no grad" issues
+
+    # Enable gradient checkpointing for memory optimization
+    # NOTE: Only enable on CUDA - MPS gradient checkpointing can use MORE memory
+    # due to recomputation overhead and limited MPS memory management
     if torch.cuda.is_available() and not use_quantization:
         model.gradient_checkpointing_enable()
+        logger.info("Gradient checkpointing enabled for CUDA")
+    elif torch.backends.mps.is_available():
+        logger.info("Gradient checkpointing disabled for MPS (uses more memory)")
+
     return model, model_version
 
 

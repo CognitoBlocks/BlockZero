@@ -148,11 +148,13 @@ def setup_training(
 
     # === scaler ===
     logger.info(f"init - inner scaler")
-    # GradScaler only works with CUDA
+    # GradScaler only works with CUDA (not MPS/CPU)
+    # Mixed precision autocast still works on MPS/CPU without GradScaler
     inner_scaler = torch.amp.GradScaler(
         "cuda" if torch.cuda.is_available() else "cpu",
         enabled=torch.cuda.is_available(),  # Only enable on CUDA
     )
+    logger.info(f"GradScaler enabled: {torch.cuda.is_available()}, Device will use autocast for mixed precision")
 
     # === dataloader ===
     logger.info(f"init - train dataloader")
@@ -296,27 +298,39 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                     batch_device[key] = batch[key].to(device)
 
                 # Use appropriate autocast device type
-                autocast_device = "cuda" if torch.cuda.is_available() else "cpu"
-                with torch.amp.autocast(autocast_device, dtype=torch.float16, enabled=torch.cuda.is_available()):
+                # Enable mixed precision on CUDA and MPS (but GradScaler only on CUDA)
+                if torch.cuda.is_available():
+                    autocast_device = "cuda"
+                    autocast_enabled = True
+                elif torch.backends.mps.is_available():
+                    autocast_device = "cpu"  # MPS uses CPU autocast context
+                    autocast_enabled = True
+                else:
+                    autocast_device = "cpu"
+                    autocast_enabled = True  # Can still benefit from mixed precision
+
+                with torch.amp.autocast(autocast_device, dtype=torch.float16, enabled=autocast_enabled):
                     outputs = model(**batch_device)
                     loss = outputs.loss / config.local_par.gradient_accumulation_steps
-                    # aux_loss = outputs.aux_loss / config.local_par.gradient_accumulation_steps if outputs.aux_loss is not None else torch.tensor(0)
-                    aux_loss = torch.tensor(0)
+                    # Enable auxiliary loss for MoE load balancing
+                    aux_loss = outputs.aux_loss / config.local_par.gradient_accumulation_steps if outputs.aux_loss is not None else torch.tensor(0.0, device=device)
+                    # Combine main loss with auxiliary loss
+                    total_loss = loss + aux_loss
 
                 # Skip NaN losses (MPS numerical instability)
-                if torch.isnan(loss) or torch.isinf(loss):
-                    logger.warning("Skipping batch due to NaN/Inf loss", loss=loss.item() if not torch.isnan(loss) else "NaN")
-                    del loss, aux_loss, batch_device, outputs
+                if torch.isnan(total_loss) or torch.isinf(total_loss):
+                    logger.warning("Skipping batch due to NaN/Inf loss", loss=loss.item() if not torch.isnan(loss) else "NaN", aux_loss=aux_loss.item() if not torch.isnan(aux_loss) else "NaN")
+                    del loss, aux_loss, total_loss, batch_device, outputs
                     continue
-                    
+
                 loss_batch += loss.item()
                 aux_loss_batch += aux_loss.item()
-                logger.info("training", loss=loss, grad_sum=sum_model_gradients(model))
+                logger.info("training", loss=loss.item(), aux_loss=aux_loss.item(), total_loss=total_loss.item(), grad_sum=sum_model_gradients(model))
 
-                inner_scaler.scale(loss).backward()
+                inner_scaler.scale(total_loss).backward()
 
                 # === Aggressively free intermediate tensors ===
-                del loss, aux_loss, batch_device, outputs
+                del loss, aux_loss, total_loss, batch_device, outputs
                 gc.collect()
 
             # === inner optimizer ===

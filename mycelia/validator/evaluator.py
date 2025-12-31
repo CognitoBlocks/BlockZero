@@ -76,10 +76,16 @@ async def evaluator_worker(
                     evaluate_model, job.step, model, eval_dataloader, device, max_eval_batches, rank
                 )
 
-            # choose a primary score (here 'accuracy'); adjust if your evaluate_model returns other keys
-            score = float(metrics.get("val_loss", 100))
+            # Use composite score for ranking (lower is better, like loss)
+            # Falls back to val_loss if composite_score is not available
+            score = float(metrics.get("composite_score", metrics.get("val_loss", 100)))
             aggregator.add_score(job.uid, job.hotkey, score)
-            logger.info(f"{name}: uid={job.uid} score={score:.4f}")
+            logger.info(
+                f"{name}: uid={job.uid} score={score:.4f}",
+                val_loss=metrics.get("val_loss"),
+                diversity=metrics.get("expert_diversity_score"),
+                active_ratio=metrics.get("experts_active_ratio"),
+            )
 
             # Explicit cleanup
             del eval_dataloader, model, metrics
