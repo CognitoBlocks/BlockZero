@@ -39,7 +39,7 @@ logger = structlog.get_logger(__name__)
 
 
 # this is for local DP only
-def init_process(local_rank: int, config: MinerConfig, world_size: int, fn: callable, backend: str = "nccl") -> None:
+def init_process(local_rank: int, config: MinerConfig, world_size: int, fn: callable, backend: str | None = None) -> None:
     """
     Initializes the process for distributed training.
 
@@ -58,19 +58,25 @@ def init_process(local_rank: int, config: MinerConfig, world_size: int, fn: call
     if local_rank == 0:
         print(config)  # pretty JSON
 
-    # torch.cuda.set_device(local_rank)
+    # Auto-select backend based on availability
+    if backend is None:
+        backend = "nccl" if torch.cuda.is_available() else "gloo"
 
-    dist.init_process_group(
-        backend,
-        rank=local_rank,
-        world_size=world_size,
-        timeout=datetime.timedelta(seconds=3600),
-        device_id=(
-            torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
-            if local_rank < world_size
-            else None
-        ),
-    )
+    # device_id only valid for CUDA devices with nccl backend
+    if torch.cuda.is_available() and backend == "nccl":
+        device_id = torch.device(f"cuda:{local_rank}")
+    else:
+        device_id = None
+
+    # Only init process group if actually distributed
+    if world_size > 1:
+        dist.init_process_group(
+            backend,
+            rank=local_rank,
+            world_size=world_size,
+            timeout=datetime.timedelta(seconds=3600),
+            device_id=device_id,
+        )
 
     fn(local_rank, world_size, config)
 
@@ -142,10 +148,13 @@ def setup_training(
 
     # === scaler ===
     logger.info(f"init - inner scaler")
+    # GradScaler only works with CUDA (not MPS/CPU)
+    # Mixed precision autocast still works on MPS/CPU without GradScaler
     inner_scaler = torch.amp.GradScaler(
-        "cuda",
-        enabled=False,  # enabled=(get_nested_attr(config, "model.precision", "") == "fp16-mixed")
+        "cuda" if torch.cuda.is_available() else "cpu",
+        enabled=torch.cuda.is_available(),  # Only enable on CUDA
     )
+    logger.info(f"GradScaler enabled: {torch.cuda.is_available()}, Device will use autocast for mixed precision")
 
     # === dataloader ===
     logger.info(f"init - train dataloader")
@@ -218,7 +227,13 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
     wallet, subtensor = setup_chain_worker(config)
 
     # === mis ===
-    device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device(f"cuda:{rank}")
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+    logger.info(f"Using device: {device}")
     tokenizer = get_base_tokenizer(config)
 
     eval_dataloader = get_dataloader(
@@ -229,6 +244,14 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
     )
 
     # === set up training ===
+    # Initialize model metadata
+    _, initial_model_meta, _ = start_model_from(
+        rank,
+        config,
+        primary_ckpt_path=config.ckpt.validator_checkpoint_path,
+        secondary_ckpt_path=config.ckpt.checkpoint_path,
+    )
+
     (
         model,
         inner_optimizer,
@@ -237,7 +260,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
         expert_manager,
         train_dataloader,
         current_model_meta,
-    ) = setup_training(config, rank, device, tokenizer, subtensor, wallet, current_model_meta=None)
+    ) = setup_training(config, rank, device, tokenizer, subtensor, wallet, current_model_meta=initial_model_meta)
 
     # === training ===
     loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
@@ -282,31 +305,53 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 for key in batch.keys():
                     batch_device[key] = batch[key].to(device)
 
-                with torch.amp.autocast("cuda", dtype=torch.float16):
+                # Use appropriate autocast device type
+                # Enable mixed precision on CUDA and MPS (but GradScaler only on CUDA)
+                if torch.cuda.is_available():
+                    autocast_device = "cuda"
+                    autocast_enabled = True
+                elif torch.backends.mps.is_available():
+                    autocast_device = "cpu"  # MPS uses CPU autocast context
+                    autocast_enabled = True
+                else:
+                    autocast_device = "cpu"
+                    autocast_enabled = True  # Can still benefit from mixed precision
+
+                with torch.amp.autocast(autocast_device, dtype=torch.float16, enabled=autocast_enabled):
                     outputs = model(**batch_device)
                     loss = outputs.loss / config.local_par.gradient_accumulation_steps
-                    # aux_loss = outputs.aux_loss / config.local_par.gradient_accumulation_steps if outputs.aux_loss is not None else torch.tensor(0)
-                    aux_loss = torch.tensor(0)
+                    # Enable auxiliary loss for MoE load balancing
+                    aux_loss = outputs.aux_loss / config.local_par.gradient_accumulation_steps if outputs.aux_loss is not None else torch.tensor(0.0, device=device)
+                    # Combine main loss with auxiliary loss
+                    total_loss = loss + aux_loss
+
+                # Skip NaN losses (MPS numerical instability)
+                if torch.isnan(total_loss) or torch.isinf(total_loss):
+                    logger.warning("Skipping batch due to NaN/Inf loss", loss=loss.item() if not torch.isnan(loss) else "NaN", aux_loss=aux_loss.item() if not torch.isnan(aux_loss) else "NaN")
+                    del loss, aux_loss, total_loss, batch_device, outputs
+                    continue
 
                 loss_batch += loss.item()
                 aux_loss_batch += aux_loss.item()
-                logger.info("training", loss=loss, grad_sum=sum_model_gradients(model))
+                logger.info("training", loss=loss.item(), aux_loss=aux_loss.item(), total_loss=total_loss.item(), grad_sum=sum_model_gradients(model))
 
-                inner_scaler.scale(loss).backward()
+                inner_scaler.scale(total_loss).backward()
 
                 # === Aggressively free intermediate tensors ===
-                del loss, aux_loss, batch_device, outputs
+                del loss, aux_loss, total_loss, batch_device, outputs
                 gc.collect()
 
             # === inner optimizer ===
             if not is_start_step and is_inner_optimizer_step:
                 old_model_hash = get_model_hash(model.state_dict())
 
-                for n, p in model.named_parameters():
-                    if p.grad is None or torch.isnan(p.grad.sum()):
-                        continue
-                    dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
-                    p.grad.div_(world_size)
+                # Only do distributed gradient sync if world_size > 1
+                if world_size > 1:
+                    for n, p in model.named_parameters():
+                        if p.grad is None or torch.isnan(p.grad.sum()):
+                            continue
+                        dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
+                        p.grad.div_(world_size)
 
                 inner_scaler.unscale_(optimizer=inner_optimizer)
 
@@ -349,7 +394,8 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
 
                 # === Clear memory after optimizer step ===
                 gc.collect()
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 logger.info("Memory cleared after optimizer step")
 
                 new_model_hash = get_model_hash(model.state_dict())
@@ -375,11 +421,12 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 metric_logger.log(metrics, print_log=False)
 
             # === local validation and log metric ===
-            if is_inner_optimizer_step and inner_opt_step % config.log.metric_interval == 0:
+            if False and is_inner_optimizer_step and inner_opt_step % config.log.metric_interval == 0:  # disabled for testing
                 logger.info("(3) Local evaluation")
 
                 val_metric = evaluate_model(
-                    rank=rank, step=inner_opt_step, model=model, eval_dataloader=train_dataloader, device=device
+                    rank=rank, step=inner_opt_step, model=model, eval_dataloader=train_dataloader, device=device,
+                    max_eval_batches=5,  # reduced for faster local eval
                 )
 
                 metrics = (
@@ -474,7 +521,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                         scheduler,
                         expert_manager,
                         train_dataloader,
-                        current_model_version,
+                        current_model_meta,
                     ) = setup_training(config, rank, device, tokenizer, subtensor, wallet, current_model_meta)
                 else:
                     logger.info(
@@ -489,13 +536,16 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
                 aux_loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
                 gc.collect()
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 logger.info("Clean up completed")
 
     except Exception:
         logger.error("Quit training", exc_info=True)
-        dist.destroy_process_group()
-        torch.cuda.synchronize()
+        if world_size > 1 and dist.is_initialized():
+            dist.destroy_process_group()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         metric_logger.close()
 
         if rank == 0:

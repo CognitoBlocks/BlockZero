@@ -188,8 +188,9 @@ def get_moe_model_config(config: MinerConfig, topk: int, org_model_config: AutoC
     base_config.interleave = bool(config.moe.interleave)
     base_config.intermediate_size = base_config.moe_intermediate_size
     base_config.decoder_sparse_step = 2 if bool(config.moe.interleave) else 1
-    base_config.output_router_logits = get_nested_attr(config, "moe.aux_load_balance", False)
-    base_config.router_aux_loss_coef = get_nested_attr(config, "moe.router_aux_loss_coef", False)
+    # Enable router logits output and auxiliary loss for load balancing
+    base_config.output_router_logits = get_nested_attr(config, "moe.aux_load_balance", True)
+    base_config.router_aux_loss_coef = get_nested_attr(config, "moe.router_aux_loss_coef", 1.0)
     base_config.norm_topk_prob = True
     base_config.max_position_embeddings = config.task.data.sequence_length
 

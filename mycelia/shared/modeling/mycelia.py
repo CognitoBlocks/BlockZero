@@ -18,6 +18,78 @@ from mycelia.shared.modeling.custom_qwen3_next import (
 logger = structlog.get_logger(__name__)
 
 
+def _replace_experts_for_training(model, moe_config, group_ids, expert_manager):
+    """
+    Replace quantized expert layers with trainable fp16 versions.
+    
+    This allows training experts while keeping the base model in 4-bit quantized form.
+    Only the assigned experts are created (memory efficient).
+    """
+    from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextMLP
+    
+    # Get layer assignments for this group
+    if group_ids is None:
+        group_ids = list(expert_manager.expert_group_assignment.keys())
+    
+    replaced_count = 0
+    
+    # Iterate through decoder layers
+    for layer_idx, layer in enumerate(model.model.layers):
+        # Check if this layer has an MoE block
+        if hasattr(layer, 'mlp') and hasattr(layer.mlp, 'experts'):
+            moe_block = layer.mlp
+            
+            # Determine which experts this miner should train
+            allowed_expert_ids = []
+            for gid in group_ids:
+                if layer_idx in expert_manager.expert_group_assignment.get(gid, {}):
+                    allowed_expert_ids.extend([
+                        eid for eid, _ in expert_manager.expert_group_assignment[gid][layer_idx]
+                    ])
+            
+            if not allowed_expert_ids:
+                continue
+                
+            # Create new fp16 trainable experts for assigned IDs
+            new_experts = nn.ModuleDict()
+            for expert_id in allowed_expert_ids:
+                # Create fresh fp16 expert
+                new_expert = Qwen3NextMLP(
+                    moe_config, 
+                    intermediate_size=moe_config.moe_intermediate_size
+                ).to(dtype=torch.float16, device=model.device)
+                
+                # Copy weights from quantized version if available
+                old_expert_key = str(expert_id)
+                if old_expert_key in moe_block.experts:
+                    old_expert = moe_block.experts[old_expert_key]
+                    # Dequantize and copy weights
+                    with torch.no_grad():
+                        for (name, new_param), (_, old_param) in zip(
+                            new_expert.named_parameters(), 
+                            old_expert.named_parameters()
+                        ):
+                            if hasattr(old_param, 'dequantize'):
+                                new_param.copy_(old_param.dequantize().to(torch.float16))
+                            else:
+                                new_param.copy_(old_param.to(torch.float16))
+                
+                new_expert.requires_grad_(True)
+                new_experts[old_expert_key] = new_expert
+                replaced_count += 1
+            
+            # Replace the experts dict
+            moe_block.experts = new_experts
+    
+    # Freeze all base model parameters
+    for name, param in model.named_parameters():
+        if 'experts' not in name:
+            param.requires_grad_(False)
+    
+    logger.info(f"Replaced {replaced_count} experts with trainable fp16 versions")
+    return model
+
+
 # ---------------------------------------------------------------------
 # Loading helpers
 # ---------------------------------------------------------------------
@@ -40,15 +112,16 @@ def get_base_model(
     moe_config = get_moe_model_config(config, topk, group_ids, expert_manager)
 
     is_validator = config.role == "validator"
-    use_quantization = get_nested_attr(config, "model.use_quantization", False) and is_validator
+    use_quantization = get_nested_attr(config, "model.use_quantization", False)
     use_unsloth = get_nested_attr(config, "model.use_unsloth", False) and is_validator
 
-    # === QUANTIZED PATH (Validators only) ===
+    # === QUANTIZED PATH ===
     if use_quantization:
-        logger.info("Loading with 4-bit quantization for validator")
+        is_miner = config.role == "miner"
+        logger.info(f"Loading with 4-bit quantization for {'miner (trainable experts)' if is_miner else 'validator'}")
 
-        # Try Unsloth first (fastest)
-        if use_unsloth:
+        # Try Unsloth first for validators (fastest, inference-only)
+        if use_unsloth and not is_miner:
             try:
                 from unsloth import FastLanguageModel
 
@@ -65,7 +138,7 @@ def get_base_model(
             except Exception as e:
                 logger.warning(f"Unsloth failed, falling back to BitsAndBytes: {e}")
 
-        # Fallback to BitsAndBytes
+        # BitsAndBytes quantization
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_compute_dtype=torch.float16,
@@ -77,20 +150,38 @@ def get_base_model(
         if max_memory is None:
             max_memory = {0: "46GB", "cpu": "100GB"}
 
+        # Load pretrained model with quantization
         model = AutoModelForCausalLM.from_pretrained(
             config.model.model_path,
-            config=moe_config,
             quantization_config=bnb_config,
             device_map="auto",
             max_memory=max_memory,
             low_cpu_mem_usage=True,
             torch_dtype=torch.float16,
         )
-        logger.info("✓ Loaded with BitsAndBytes quantization")
+        
+        # For miners: replace expert layers with trainable fp16 versions
+        if is_miner:
+            logger.info("Replacing experts with trainable fp16 versions...")
+            model = _replace_experts_for_training(model, moe_config, group_ids, expert_manager)
+            logger.info("✓ Experts replaced - base model frozen (4-bit), experts trainable (fp16)")
+        else:
+            logger.info("✓ Loaded with BitsAndBytes quantization (inference)")
+        
         return model
 
     # === STANDARD PATH (Miners) ===
-    model = CustomQwen3NextForCausalLM(moe_config)
+    # Check if we should use CPU offloading (for memory-constrained systems)
+    use_cpu_offload = get_nested_attr(config, "model.cpu_offload", False)
+    
+    if use_cpu_offload:
+        # Initialize on CPU first to avoid GPU OOM during model creation
+        logger.info("Loading with CPU offloading enabled - model will be on CPU")
+        with torch.device("cpu"):
+            model = CustomQwen3NextForCausalLM(moe_config)
+        # Keep on CPU - will be slow but won't OOM
+    else:
+        model = CustomQwen3NextForCausalLM(moe_config)
 
     if len(state_dicts) > 0:
         merged_stated_dict, missing = merge_state_dicts_with_priority(state_dicts, model)

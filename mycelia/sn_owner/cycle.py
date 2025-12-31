@@ -3,7 +3,8 @@ import bittensor
 from mycelia.shared.config import WorkerConfig
 from mycelia.shared.cycle import PhaseNames, PhaseResponse
 
-subtensor = bittensor.Subtensor()
+# NOTE: Do NOT create bittensor.Subtensor() at module level!
+# It creates network connections that break pickling for multiprocessing.
 
 
 class PhaseManager:
