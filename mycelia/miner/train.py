@@ -244,6 +244,14 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
     )
 
     # === set up training ===
+    # Initialize model metadata
+    _, initial_model_meta, _ = start_model_from(
+        rank,
+        config,
+        primary_ckpt_path=config.ckpt.validator_checkpoint_path,
+        secondary_ckpt_path=config.ckpt.checkpoint_path,
+    )
+
     (
         model,
         inner_optimizer,
@@ -252,7 +260,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
         expert_manager,
         train_dataloader,
         current_model_meta,
-    ) = setup_training(config, rank, device, tokenizer, subtensor, wallet, current_model_meta=None)
+    ) = setup_training(config, rank, device, tokenizer, subtensor, wallet, current_model_meta=initial_model_meta)
 
     # === training ===
     loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
@@ -386,7 +394,8 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
 
                 # === Clear memory after optimizer step ===
                 gc.collect()
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 logger.info("Memory cleared after optimizer step")
 
                 new_model_hash = get_model_hash(model.state_dict())
@@ -512,7 +521,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                         scheduler,
                         expert_manager,
                         train_dataloader,
-                        current_model_version,
+                        current_model_meta,
                     ) = setup_training(config, rank, device, tokenizer, subtensor, wallet, current_model_meta)
                 else:
                     logger.info(
@@ -527,7 +536,8 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
                 aux_loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
                 gc.collect()
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 logger.info("Clean up completed")
 
     except Exception:
