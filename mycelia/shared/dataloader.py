@@ -80,6 +80,7 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
             config.task.data.dataset_name,
             data_dir=config.task.data.data_dir,
             streaming=True,
+            name = "default"
         )
 
         # Select split

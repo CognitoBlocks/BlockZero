@@ -304,9 +304,10 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 gc.collect()
                 logger.info("training G")
 
-            logger.info("training H")
+            logger.info("training H", not is_start_step, is_inner_optimizer_step)
             # === inner optimizer ===
             if not is_start_step and is_inner_optimizer_step:
+                logger.info("(1.1) inner opt step A")
                 old_model_hash = get_model_hash(model.state_dict())
 
                 for n, p in model.named_parameters():
@@ -314,17 +315,21 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                         continue
                     # dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
                     p.grad.div_(world_size)
-
+                logger.info("(1.1) inner opt step B")
                 inner_scaler.unscale_(optimizer=inner_optimizer)
-
+                logger.info("(1.1) inner opt step B1")
                 grad_norm = clip_grad_norm_(
                     [p for p in model.parameters() if p.grad is not None and not torch.isnan(p.grad.sum())], 1.0
                 )  # gradient clipping # <- turned grad to nan
 
+                logger.info("(1.1) inner opt step C")
                 scale_before = inner_scaler.get_scale() if inner_scaler.is_enabled() else None
+                logger.info("(1.1) inner opt step C1")
                 step_result = inner_scaler.step(inner_optimizer)
+                logger.info("(1.1) inner opt step C2")
                 step_skipped = inner_scaler.is_enabled() and step_result is None
-
+                
+                logger.info("(1.1) inner opt step D")
                 if step_skipped:
                     logger.warning(
                         "GradScaler skipped optimizer step due to inf/NaN gradients",
@@ -338,7 +343,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                         grad_norm=float(grad_norm),
                         scale_before=scale_before,
                     )
-
+                logger.info("(1.1) inner opt step E")
                 inner_scaler.update()
                 if inner_scaler.is_enabled():
                     logger.info(
@@ -346,8 +351,9 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                         scale_after=inner_scaler.get_scale(),
                     )
 
+                logger.info("(1.1) inner opt step F")
                 scheduler.step()
-
+                logger.info("(1.1) inner opt step G")
                 inner_optimizer.zero_grad()
 
                 training_time = time.time() - training_start_time
@@ -362,6 +368,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 new_model_hash = get_model_hash(model.state_dict())
                 logger.info(f"Updated model", old_model_hash=old_model_hash, new_model_hash=new_model_hash)
 
+            logger.info("log", not is_start_step, is_inner_optimizer_step)
             # === Log metric ===
             if (
                 is_inner_optimizer_step
@@ -381,6 +388,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 )
                 metric_logger.log(metrics, print_log=False)
 
+            logger.info("eval", not is_start_step, is_inner_optimizer_step)
             # === local validation and log metric ===
             if is_inner_optimizer_step and inner_opt_step % config.log.metric_interval == 0:
                 logger.info("(3) Local evaluation")
@@ -409,6 +417,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 logger.info("reached barrier, waiting for partial validation and metric logging to complete")
                 # dist.barrier(device_ids=[rank])
 
+            logger.info("saving", not is_start_step, is_inner_optimizer_step)
             # === save checkpoint ===
             if (
                 is_inner_optimizer_step
@@ -444,6 +453,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 logger.info("reached barrier, waiting for complete checkpoint saving")
                 # dist.barrier(device_ids=[rank])
 
+            logger.info("reload", not is_start_step, is_inner_optimizer_step)
             # === reload model ===
             if is_inner_optimizer_step:
                 logger.info("(5) Reload Model")
@@ -491,6 +501,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                     )
 
             # === Clean up ===
+            logger.info("clean up", not is_start_step, is_inner_optimizer_step)
             if is_inner_optimizer_step:
                 logger.info("(6) Clean up")
                 loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
@@ -499,6 +510,8 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 torch.cuda.empty_cache()
                 logger.info("Clean up completed")
 
+        logger.info("used up train dataloader")
+    
     except Exception:
         logger.error("Quit training", exc_info=True)
         # dist.destroy_process_group()

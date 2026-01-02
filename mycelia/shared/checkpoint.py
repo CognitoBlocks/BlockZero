@@ -446,6 +446,7 @@ def get_sorted_checkpoints(checkpoint_path: str) -> dict[ModelMeta]:
     for f in fs.ls(root, detail=False):
         if "yaml" in f.lower():  # safer, catches .YAML/.Yaml/.yml too
             continue
+        
         meta = parse_dynamic_filename(f)
         if meta is None:
             continue

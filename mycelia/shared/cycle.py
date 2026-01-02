@@ -75,10 +75,12 @@ def should_act(config: MinerConfig, phase_name: PhaseNames, retry_blocks: int) -
     else:
         should_submit = phase_response.phase_name == phase_name
     
-    blocks_till = get_blocks_until_next_phase(config)[phase_name]
+    blocks_till_next_phase = get_blocks_until_next_phase(config)
     
-    if blocks_till is None:
+    if blocks_till_next_phase is None:
         blocks_till = retry_blocks
+    else:
+        blocks_till = blocks_till_next_phase[phase_name]
     
     return should_submit, blocks_till, phase_response
 

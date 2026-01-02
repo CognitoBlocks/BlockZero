@@ -100,9 +100,6 @@ def cleanup(global_model, base_model) -> None:
 
     _cuda_mem_report("after cleanup")
 
-    # Optional: very verbose allocator state (can be long)
-    print(torch.cuda.memory_summary(abbreviated=True))
-
 def setup_training(
     config,
     rank: int,
