@@ -221,8 +221,11 @@ async def submit_checkpoint(
     hasher = hashlib.sha256()
     bytes_written = 0
     dest_path = config.ckpt.miner_submission_path / model_name
+    tmp_path = dest_path.with_name(f".tmp_{dest_path.name}")
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path.unlink(missing_ok=True)
     try:
-        async with aiofiles.open(dest_path, "wb") as out:
+        async with aiofiles.open(tmp_path, "wb") as out:
             while True:
                 chunk = await file.read(1024 * 1024)  # 1 MiB
                 if not chunk:
@@ -231,10 +234,11 @@ async def submit_checkpoint(
                 await out.write(chunk)
                 bytes_written += len(chunk)
 
+        os.replace(tmp_path, dest_path)
     except Exception as e:
         # Clean up partial writes
         with contextlib.suppress(Exception):
-            dest_path.unlink(missing_ok=True)
+            tmp_path.unlink(missing_ok=True)
         logger.exception("Failed to store uploaded checkpoint")
         raise HTTPException(status_code=500, detail="Failed to store file") from e
     finally:
