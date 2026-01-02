@@ -203,12 +203,25 @@ def download_model(
     resume: bool = False,
     timeout: int = 30,
 ):
+    out_path = Path(out_dir)
+    tmp_path = out_path.with_name(f".tmp_{out_path.name}")
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     mode = "wb"
     start_at = 0
 
-    if resume and os.path.exists(out_dir):
-        start_at = os.path.getsize(out_dir)
+    if not resume and tmp_path.exists():
+        tmp_path.unlink()
+
+    if resume:
+        if tmp_path.exists():
+            start_at = tmp_path.stat().st_size
+        elif out_path.exists():
+            # Resume from a previously completed/partial download by moving it to tmp
+            out_path.replace(tmp_path)
+            start_at = tmp_path.stat().st_size
+
         if start_at > 0:
             headers["Range"] = f"bytes={start_at}-"
             mode = "ab"
@@ -221,22 +234,30 @@ def download_model(
         signature=sign_message(my_hotkey, construct_block_message(target_hotkey_ss58, block=block)),
     ).to_dict()
 
-    with requests.get(url, headers=headers, stream=True, timeout=timeout, data=data) as r:
+    def _start_request() -> Response:
+        return requests.get(url, headers=headers, stream=True, timeout=timeout, data=data)
+
+    r = _start_request()
+    try:
         logger.info("HTTP response received", status_code=r.status_code)
 
         if r.status_code in (401, 403):
             sys.exit(f"Auth failed (HTTP {r.status_code}). Check your token.")
         if r.status_code == 416:
             logger.info("Nothing to resume; file already complete.")
+            if tmp_path.exists():
+                os.replace(tmp_path, out_path)
             return
         if resume and r.status_code not in (200, 206):
             logger.info(f"Server did not honor range request (HTTP {r.status_code}). Restarting full download.")
-            # retry full download
             headers.pop("Range", None)
             mode = "wb"
             start_at = 0
             r.close()
-            r = requests.get(url, headers=headers, stream=True, timeout=timeout)
+            if tmp_path.exists():
+                tmp_path.unlink()
+            r = _start_request()
+            logger.info("HTTP response received", status_code=r.status_code)
 
         r.raise_for_status()
 
@@ -247,7 +268,7 @@ def download_model(
         t0 = time.time()
         last_print = t0
 
-        with open(out_dir, mode) as f:
+        with open(tmp_path, mode) as f:
             for chunk in r.iter_content(chunk_size=CHUNK):
                 if not chunk:
                     continue
@@ -272,7 +293,10 @@ def download_model(
             bar = f"{human(downloaded)} / {human(total)} (100.0%)"
         else:
             bar = f"{human(downloaded)}"
-        logger.info(f"\rDone:       {bar} in {elapsed:.1f}s @ {human(rate)}/s")
+        os.replace(tmp_path, out_path)
+        logger.info(f"\rDone:       {bar} in {elapsed:.1f}s @ {human(rate)}/s", final_path=str(out_path))
+    finally:
+        r.close()
 
 
 if __name__ == "__main__":
