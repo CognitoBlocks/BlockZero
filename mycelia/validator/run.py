@@ -438,6 +438,9 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
 
             # === global optimizer ===
             logger.info("(6) Running global model optimization step")
+
+            org_model_hash = get_model_hash(global_model.state_dict())
+            
             run_global_optimization(
                 model=base_model,
                 global_model=global_model.to("cpu"),
@@ -447,6 +450,9 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                 miner_jobs=miner_jobs,
                 score_aggregator=score_aggregator,
             )
+
+            logger.info("Complete optimzation step", org_model_hash = org_model_hash, new_model_hash = get_model_hash(global_model.state_dict()), new_base_model_hash = get_model_hash(base_model.state_dict()))
+
 
             cleanup(global_model, base_model)
 
