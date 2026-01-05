@@ -54,19 +54,51 @@ configure_logging()
 logger = structlog.get_logger(__name__)
 
 
+def _cuda_mem_report(tag: str = "", device: int | None = None) -> None:
+    if not torch.cuda.is_available():
+        print(f"[{tag}] CUDA not available")
+        return
+
+    if device is None:
+        device = torch.cuda.current_device()
+
+    torch.cuda.synchronize(device)
+
+    allocated = torch.cuda.memory_allocated(device)
+    reserved  = torch.cuda.memory_reserved(device)
+
+    free, total = torch.cuda.mem_get_info(device)  # bytes
+
+    def mb(x): return x / 1024**2
+
+    print(
+        f"[{tag}] cuda:{device} "
+        f"allocated={mb(allocated):.1f}MB "
+        f"reserved={mb(reserved):.1f}MB "
+        f"free={mb(free):.1f}MB "
+        f"total={mb(total):.1f}MB "
+        f"(alloc%={allocated/total*100:.1f} reserved%={reserved/total*100:.1f})"
+    )
+
 def cleanup(global_model, base_model) -> None:
     """
     Cleans up the distributed training environment.
-
-    Returns:
-        None
     """
+    _cuda_mem_report("before cleanup")
+
+    # Move models off GPU
     torch.cuda.synchronize()
     global_model.to("cpu")
     base_model.to("cpu")
+
+    # Drop any lingering references if you have them (optional):
+    # del global_model, base_model
+
     gc.collect()
     torch.cuda.empty_cache()
+    torch.cuda.synchronize()
 
+    _cuda_mem_report("after cleanup")
 
 def setup_training(
     config,
@@ -198,6 +230,12 @@ def run_global_optimization(
 ):
     # --- sync + outer step ---
     # keep global model on device for syncing/stepping, then move back to CPU
+    for state in outer_optimizer.state.values():
+        for k, v in state.items():
+            if torch.is_tensor(v):
+                state[k] = v.to(device, non_blocking=True)
+
+    
     global_model.to(device)
 
     old_shared_name, old_shared_sum = get_weight_sum(model, shared=True)
@@ -228,6 +266,13 @@ def run_global_optimization(
         new_sum=round(float(new_expert_sum), 6),
     )
 
+    for state in outer_optimizer.state.values():
+        for k, v in state.items():
+            if torch.is_tensor(v):
+                state[k] = v.cpu()
+
+    torch.cuda.empty_cache()
+
 
 def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
     """
@@ -244,6 +289,8 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
     if rank == 0:
         config.write()
 
+    torch.cuda.memory._record_memory_history(enabled=True)
+    
     # === create checkpoint directory ===
     os.makedirs(config.ckpt.base_checkpoint_path, exist_ok=True)
     os.makedirs(config.ckpt.checkpoint_path, exist_ok=True)
@@ -346,9 +393,12 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             logger.info("(2) Gathering miner job")
             miner_jobs = gather_validation_job(config, subtensor, step=global_opt_step)
             logger.info("miner job(s)", global_opt_step=global_opt_step, miner_jobs=miner_jobs)
+            if len(miner_jobs) == 0:
+                logger.warning("couldnt collect any miner job to evaluate", global_opt_step=global_opt_step, miner_jobs=miner_jobs)
 
             # === Get miner model and evaluate the miners ===
             logger.info("(3) Evaluating miners")
+            cleanup(global_model, base_model)
             asyncio.run(
                 run_evaluation(
                     config=config,
@@ -379,6 +429,8 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                 )
             )
 
+            cleanup(global_model, base_model)
+
             # === wait till merging phase and aggragate miner gradient change ===
             wait_till(config, PhaseNames.merge)
             logger.info("(5) Syncing gradient across validators")
@@ -386,6 +438,9 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
 
             # === global optimizer ===
             logger.info("(6) Running global model optimization step")
+
+            org_model_hash = get_model_hash(global_model.state_dict())
+            
             run_global_optimization(
                 model=base_model,
                 global_model=global_model.to("cpu"),
@@ -395,6 +450,9 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                 miner_jobs=miner_jobs,
                 score_aggregator=score_aggregator,
             )
+
+            logger.info("Complete optimzation step", org_model_hash = org_model_hash, new_model_hash = get_model_hash(global_model.state_dict()), new_base_model_hash = get_model_hash(base_model.state_dict()))
+
 
             cleanup(global_model, base_model)
 
@@ -468,14 +526,14 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
 
     except KeyboardInterrupt:
         logger.warning("KeyboardInterrupt received, shutting down validator loop")
-        cleanup()
+        cleanup(global_model, base_model)
         metric_logger.close()
         for _, a in group_averagers.items():
             a.shutdown()
         raise
     except Exception:
         logger.error("Quit training", exc_info=True)
-        cleanup()
+        cleanup(global_model, base_model)
         metric_logger.close()
         for _, a in group_averagers.items():
             a.shutdown()

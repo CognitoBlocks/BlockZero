@@ -53,7 +53,7 @@ def wait_till(config: MinerConfig, phase_name: PhaseNames, poll_fallback_block: 
     should_submit = False
     logger.info(f"<{phase_name}> waiting to begin...")
     while not should_submit:
-        should_submit, blocks_till, phase_response = should_act(config, phase_name)
+        should_submit, blocks_till, phase_response = should_act(config, phase_name, retry_blocks = poll_fallback_block)
         if should_submit is False and blocks_till > 0:
             sleep_sec = min(blocks_till, max(poll_fallback_block, blocks_till * 0.9)) * 12
 
@@ -67,10 +67,21 @@ def wait_till(config: MinerConfig, phase_name: PhaseNames, poll_fallback_block: 
     return should_submit, phase_response.phase_end_block
 
 
-def should_act(config: MinerConfig, phase_name: PhaseNames) -> tuple[bool, int, int]:
-    phase_response: PhaseResponse = get_phase(config)
-    should_submit = phase_response.phase_name == phase_name
-    blocks_till = get_blocks_until_next_phase(config)[phase_name]
+def should_act(config: MinerConfig, phase_name: PhaseNames, retry_blocks: int) -> tuple[bool, int, int]:
+    phase_response: PhaseResponse | None = get_phase(config)
+    
+    if phase_response is None:
+        should_submit = False
+    else:
+        should_submit = phase_response.phase_name == phase_name
+    
+    blocks_till_next_phase = get_blocks_until_next_phase(config)
+    
+    if blocks_till_next_phase is None:
+        blocks_till = retry_blocks
+    else:
+        blocks_till = blocks_till_next_phase[phase_name]
+    
     return should_submit, blocks_till, phase_response
 
 
@@ -202,40 +213,109 @@ def get_miners_from_commit(config, commits):
     return miners
 
 
-def get_phase(config: WorkerConfig) -> PhaseResponse:
+def get_phase(config: WorkerConfig) -> PhaseResponse | None:
     """
     Determine current phase based on block schedule.
 
     Returns:
         str: one of ["training", "submission", "waiting"]
     """
-    resp = requests.get(f"{config.cycle.owner_url}/get_phase")
-    resp.raise_for_status()
-    return PhaseResponse(**resp.json())
+    url = f"{config.cycle.owner_url}/get_phase"
+
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        return PhaseResponse(**resp.json())
+
+    except requests.exceptions.HTTPError as e:
+        r = e.response
+        status = r.status_code if r is not None else None
+        body_snippet = (r.text[:500] if (r is not None and r.text) else "")
+        logger.exception(
+            "HTTPError calling %s (status=%s). Body (first 500 chars): %r",
+            url, status, body_snippet
+        )
+        return None
+
+    except requests.exceptions.RequestException as e:
+        logger.exception("RequestException calling %s: %s", url, e)
+        return None
+
+    except (ValueError, TypeError) as e:
+        # ValueError: JSON decode problems
+        # TypeError: PhaseResponse(**...) got unexpected/missing fields
+        logger.exception("Bad response payload from %s: %s", url, e)
+        return None
 
 
-def get_blocks_until_next_phase(config: WorkerConfig) -> PhaseResponse:
+def get_blocks_until_next_phase(config: WorkerConfig) -> PhaseResponse | None:
     """
     Determine current phase based on block schedule.
 
     Returns:
         str: one of ["training", "submission", "waiting"]
     """
-    resp = requests.get(f"{config.cycle.owner_url}/blocks_until_next_phase")
-    resp.raise_for_status()
-    return resp.json()
+    url = f"{config.cycle.owner_url}/blocks_until_next_phase"
+
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+
+    except requests.exceptions.HTTPError as e:
+        # HTTP error responses (4xx/5xx)
+        r = e.response
+        status = r.status_code if r is not None else None
+        body_snippet = (r.text[:500] if (r is not None and r.text) else "")
+        logger.exception(
+            "HTTPError calling %s (status=%s). Body (first 500 chars): %r",
+            url, status, body_snippet
+        )
+        return None
+
+    except requests.exceptions.RequestException as e:
+        # Connection errors, timeouts, DNS, etc.
+        logger.exception("RequestException calling %s: %s", url, e)
+        return None
+
+    except ValueError as e:
+        # JSON decoding failed
+        logger.exception("Invalid JSON from %s: %s", url, e)
+        return None
 
 
-def get_blocks_from_previous_phase(config: WorkerConfig) -> PhaseResponse:
+def get_blocks_from_previous_phase(config: WorkerConfig) -> PhaseResponse | None:
     """
     Determine current phase based on block schedule.
 
     Returns:
         str: one of ["training", "submission", "waiting"]
     """
-    resp = requests.get(f"{config.cycle.owner_url}/previous_phase_blocks")
-    resp.raise_for_status()
-    return resp.json()
+    url = f"{config.cycle.owner_url}/previous_phase_blocks"
+
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+
+    except requests.exceptions.HTTPError as e:
+        r = e.response
+        status = r.status_code if r is not None else None
+        body_snippet = (r.text[:500] if (r is not None and r.text) else "")
+        logger.exception(
+            "HTTPError calling %s (status=%s). Body (first 500 chars): %r",
+            url, status, body_snippet
+        )
+        return None
+
+    except requests.exceptions.RequestException as e:
+        logger.exception("RequestException calling %s: %s", url, e)
+        return None
+
+    except ValueError as e:
+        # JSON decoding failed
+        logger.exception("Invalid JSON from %s: %s", url, e)
+        return None
 
 
 def load_submission_files(folder: str = "miner_submission"):

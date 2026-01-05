@@ -80,6 +80,8 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
             config.task.data.dataset_name,
             data_dir=config.task.data.data_dir,
             streaming=True,
+            name = "default",
+            revision="main"
         )
 
         # Select split
@@ -132,7 +134,7 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
 def get_dataloader(
     config,
     tokenizer: PreTrainedTokenizerBase,
-    seed: int = 0,
+    seed: int | None = None,
     rank: int | None = None,
     world_size: int | None = None,
     train: bool = True,

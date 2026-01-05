@@ -1,4 +1,6 @@
+import errno
 import os
+import shutil
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import total_ordering
@@ -85,10 +87,10 @@ def start_model_from(
 
     # --- Return based on more updated version ---
     if secondary_model_meta >= primary_model_meta and latest_secondary_ckpt is not None:
-        logger.info("Start model from", secondary_model_meta)
+        logger.info("Largest local model", secondary_model_meta)
         return secondary_ckpt_found, secondary_model_meta, latest_secondary_ckpt
     else:
-        logger.info("Start model from", primary_model_meta)
+        logger.info("Largest local model", primary_model_meta)
         return primary_ckpt_found, primary_model_meta, latest_primary_ckpt
 
 
@@ -203,7 +205,7 @@ def save_state_dict_by_expert_group(
 
 
 def save_checkpoint(
-    checkpoint_path: str,
+    checkpoint_path: str | Path,
     model: torch.nn.Module,
     rank: int,
     scheduler: torch.optim.lr_scheduler.LambdaLR | None = None,
@@ -223,20 +225,29 @@ def save_checkpoint(
     Returns:
         None
     """
+    checkpoint_path = Path(checkpoint_path)
+    tmp_checkpoint_path = checkpoint_path.with_name(f".tmp_{checkpoint_path.name}")
+
+    if tmp_checkpoint_path.exists():
+        shutil.rmtree(tmp_checkpoint_path)
+    tmp_checkpoint_path.mkdir(parents=True, exist_ok=True)
+
+    write_path = tmp_checkpoint_path
+
     # === save model, optimizer ===
 
     if save_model_by_expert_group and expert_manager is not None:
         state_dict = {k: v.detach().to("cpu", non_blocking=True) for k, v in model.state_dict().items()}
-        save_state_dict_by_expert_group(state_dict, expert_manager.expert_group_assignment, checkpoint_path)
+        save_state_dict_by_expert_group(state_dict, expert_manager.expert_group_assignment, write_path)
 
     else:
         checkpoint = {
             "model_state_dict": {k: v.detach().to("cpu", non_blocking=True) for k, v in model.state_dict().items()},
             "loss": loss,
         }
-        target = os.path.join(checkpoint_path, "model.pt")
-        if not os.path.exists(target):
-            with fsspec.open(target, "wb") as f:
+        target = write_path / "model.pt"
+        if not target.exists():
+            with fsspec.open(str(target), "wb") as f:
                 torch.save(checkpoint, f)
 
     # === save optimizer ===
@@ -245,18 +256,18 @@ def save_checkpoint(
             "optimizer_state_dict": inner_optimizer.state_dict(),
         }
 
-        target = os.path.join(checkpoint_path, "inner_optimizer.pt")
-        if not os.path.exists(target):
-            with fsspec.open(target, "wb") as f:
+        target = write_path / "inner_optimizer.pt"
+        if not target.exists():
+            with fsspec.open(str(target), "wb") as f:
                 torch.save(opt_checkpoint, f)
 
     if outer_optimizer is not None:
         opt_checkpoint = {
             "optimizer_state_dict": outer_optimizer.state_dict(),
         }
-        target = os.path.join(checkpoint_path, "outer_optimizer.pt")
-        if not os.path.exists(target):
-            with fsspec.open(target, "wb") as f:
+        target = write_path / "outer_optimizer.pt"
+        if not target.exists():
+            with fsspec.open(str(target), "wb") as f:
                 torch.save(opt_checkpoint, f)
 
     # === save dataloader ===
@@ -264,32 +275,39 @@ def save_checkpoint(
         rank_state_dict = {}
         rank_state_dict["data_loader"] = data_loader.state_dict()
 
-        target = os.path.join(checkpoint_path, f"dataloader_rank{rank}.pt")
-        if not os.path.exists(target):
-            with fsspec.open(target, "wb") as f:
+        target = write_path / f"dataloader_rank{rank}.pt"
+        if not target.exists():
+            with fsspec.open(str(target), "wb") as f:
                 torch.save(rank_state_dict, f)
 
         del rank_state_dict
 
-    if not save_global_state:
-        return
+    if save_global_state:
+        # === save global state ===
+        global_state_dict = {
+            "scheduler": scheduler.state_dict() if scheduler is not None else None,
+            "loss": loss if loss is not None else 0,
+        }
 
-    # === save global state ===
-    global_state_dict = {
-        "scheduler": scheduler.state_dict() if scheduler is not None else None,
-        "loss": loss if loss is not None else 0,
-    }
+        if inner_scaler is not None:
+            global_state_dict["inner_scaler_state_dict"] = inner_scaler.state_dict()
 
-    if inner_scaler is not None:
-        global_state_dict["inner_scaler_state_dict"] = inner_scaler.state_dict()
+        if outer_scaler is not None:
+            global_state_dict["outer_scaler_state_dict"] = outer_scaler.state_dict()
 
-    if outer_scaler is not None:
-        global_state_dict["outer_scaler_state_dict"] = outer_scaler.state_dict()
+        target = write_path / "global_state.pt"
+        if not target.exists():
+            with fsspec.open(str(target), "wb") as f:
+                torch.save(global_state_dict, f)
 
-    target = os.path.join(checkpoint_path, "global_state.pt")
-    if not os.path.exists(target):
-        with fsspec.open(target, "wb") as f:
-            torch.save(global_state_dict, f)
+    try:
+        os.replace(write_path, checkpoint_path)
+    except OSError as e:
+        if checkpoint_path.exists() and e.errno in (errno.EEXIST, errno.ENOTEMPTY):
+            shutil.rmtree(checkpoint_path)
+            os.replace(write_path, checkpoint_path)
+        else:
+            raise
 
     logger.info(f"Checkpoint saved to {checkpoint_path}")
 
@@ -444,8 +462,12 @@ def get_sorted_checkpoints(checkpoint_path: str) -> dict[ModelMeta]:
 
     ckpt_files = []
     for f in fs.ls(root, detail=False):
+        if Path(f).name.startswith(".tmp_"):
+            continue
+
         if "yaml" in f.lower():  # safer, catches .YAML/.Yaml/.yml too
             continue
+        
         meta = parse_dynamic_filename(f)
         if meta is None:
             continue
@@ -517,7 +539,7 @@ def delete_old_checkpoints_by_hotkey(folder_path: Path):
         entries.sort(key=lambda x: x[0], reverse=True)
 
         # Keep the first (latest) one, delete the rest
-        for _, file_path in entries[1:]:
+        for _, file_path in entries[2:]:
             try:
                 os.remove(file_path)
                 deleted_files.append(file_path.name)

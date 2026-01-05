@@ -52,25 +52,24 @@ def init_process(local_rank: int, config: MinerConfig, world_size: int, fn: call
     Returns:
         None
     """
-    os.environ["MASTER_ADDR"] = config.local_par.ip_address
-    os.environ["MASTER_PORT"] = str(config.local_par.port)
-
     if local_rank == 0:
-        print(config)  # pretty JSON
+        print(config)
 
-    # torch.cuda.set_device(local_rank)
+    if world_size > 1:
+        os.environ["MASTER_ADDR"] = config.local_par.ip_address
+        os.environ["MASTER_PORT"] = str(config.local_par.port)
 
-    dist.init_process_group(
-        backend,
-        rank=local_rank,
-        world_size=world_size,
-        timeout=datetime.timedelta(seconds=3600),
-        device_id=(
-            torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
-            if local_rank < world_size
-            else None
-        ),
-    )
+        dist.init_process_group(
+            backend,
+            rank=local_rank,
+            world_size=world_size,
+            timeout=datetime.timedelta(seconds=3600),
+            device_id=(
+                torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+                if local_rank < world_size
+                else None
+            ),
+        )
 
     fn(local_rank, world_size, config)
 
@@ -275,49 +274,62 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 not is_start_step
             ):  # skip training when it is the start step, so that we can benchamrk the original model first
                 model.train()
+                logger.info("training A")
                 if training_start_time is None:
                     training_start_time = time.time()
 
+                logger.info("training B")
                 batch_device = {}
                 for key in batch.keys():
                     batch_device[key] = batch[key].to(device)
 
+                logger.info("training C")
                 with torch.amp.autocast("cuda", dtype=torch.float16):
                     outputs = model(**batch_device)
                     loss = outputs.loss / config.local_par.gradient_accumulation_steps
                     # aux_loss = outputs.aux_loss / config.local_par.gradient_accumulation_steps if outputs.aux_loss is not None else torch.tensor(0)
                     aux_loss = torch.tensor(0)
 
+                logger.info("training D")
                 loss_batch += loss.item()
                 aux_loss_batch += aux_loss.item()
+                logger.info("training E")
                 logger.info("training", loss=loss, grad_sum=sum_model_gradients(model))
 
+                logger.info("training F")
                 inner_scaler.scale(loss).backward()
 
                 # === Aggressively free intermediate tensors ===
                 del loss, aux_loss, batch_device, outputs
                 gc.collect()
+                logger.info("training G")
 
+            logger.info("training H", not is_start_step, is_inner_optimizer_step)
             # === inner optimizer ===
             if not is_start_step and is_inner_optimizer_step:
+                logger.info("(1.1) inner opt step A")
                 old_model_hash = get_model_hash(model.state_dict())
 
                 for n, p in model.named_parameters():
                     if p.grad is None or torch.isnan(p.grad.sum()):
                         continue
-                    dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
+                    # dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
                     p.grad.div_(world_size)
-
+                logger.info("(1.1) inner opt step B")
                 inner_scaler.unscale_(optimizer=inner_optimizer)
-
+                logger.info("(1.1) inner opt step B1")
                 grad_norm = clip_grad_norm_(
                     [p for p in model.parameters() if p.grad is not None and not torch.isnan(p.grad.sum())], 1.0
                 )  # gradient clipping # <- turned grad to nan
 
+                logger.info("(1.1) inner opt step C")
                 scale_before = inner_scaler.get_scale() if inner_scaler.is_enabled() else None
+                logger.info("(1.1) inner opt step C1")
                 step_result = inner_scaler.step(inner_optimizer)
+                logger.info("(1.1) inner opt step C2")
                 step_skipped = inner_scaler.is_enabled() and step_result is None
-
+                
+                logger.info("(1.1) inner opt step D")
                 if step_skipped:
                     logger.warning(
                         "GradScaler skipped optimizer step due to inf/NaN gradients",
@@ -331,7 +343,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                         grad_norm=float(grad_norm),
                         scale_before=scale_before,
                     )
-
+                logger.info("(1.1) inner opt step E")
                 inner_scaler.update()
                 if inner_scaler.is_enabled():
                     logger.info(
@@ -339,8 +351,9 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                         scale_after=inner_scaler.get_scale(),
                     )
 
+                logger.info("(1.1) inner opt step F")
                 scheduler.step()
-
+                logger.info("(1.1) inner opt step G")
                 inner_optimizer.zero_grad()
 
                 training_time = time.time() - training_start_time
@@ -355,6 +368,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 new_model_hash = get_model_hash(model.state_dict())
                 logger.info(f"Updated model", old_model_hash=old_model_hash, new_model_hash=new_model_hash)
 
+            logger.info("log", not is_start_step, is_inner_optimizer_step)
             # === Log metric ===
             if (
                 is_inner_optimizer_step
@@ -374,6 +388,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 )
                 metric_logger.log(metrics, print_log=False)
 
+            logger.info("eval", not is_start_step, is_inner_optimizer_step)
             # === local validation and log metric ===
             if is_inner_optimizer_step and inner_opt_step % config.log.metric_interval == 0:
                 logger.info("(3) Local evaluation")
@@ -402,6 +417,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 logger.info("reached barrier, waiting for partial validation and metric logging to complete")
                 # dist.barrier(device_ids=[rank])
 
+            logger.info("saving", not is_start_step, is_inner_optimizer_step)
             # === save checkpoint ===
             if (
                 is_inner_optimizer_step
@@ -437,6 +453,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 logger.info("reached barrier, waiting for complete checkpoint saving")
                 # dist.barrier(device_ids=[rank])
 
+            logger.info("reload", not is_start_step, is_inner_optimizer_step)
             # === reload model ===
             if is_inner_optimizer_step:
                 logger.info("(5) Reload Model")
@@ -484,6 +501,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                     )
 
             # === Clean up ===
+            logger.info("clean up", not is_start_step, is_inner_optimizer_step)
             if is_inner_optimizer_step:
                 logger.info("(6) Clean up")
                 loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
@@ -492,9 +510,11 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 torch.cuda.empty_cache()
                 logger.info("Clean up completed")
 
+        logger.info("used up train dataloader")
+    
     except Exception:
         logger.error("Quit training", exc_info=True)
-        dist.destroy_process_group()
+        # dist.destroy_process_group()
         torch.cuda.synchronize()
         metric_logger.close()
 
@@ -516,11 +536,15 @@ def run_distributed_training() -> None:
     else:
         config = MinerConfig()
 
-    mp.spawn(
-        init_process,
-        args=(config, config.local_par.world_size, train_worker),
-        nprocs=config.local_par.world_size,
-    )
+    if config.local_par.world_size > 1:
+
+        mp.spawn(
+            init_process,
+            args=(config, config.local_par.world_size, train_worker),
+            nprocs=config.local_par.world_size,
+        )
+    else:
+        init_process(0, config, config.local_par.world_size, train_worker)
 
 
 if __name__ == "__main__":
