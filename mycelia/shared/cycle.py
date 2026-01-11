@@ -53,7 +53,7 @@ def wait_till(config: MinerConfig, phase_name: PhaseNames, poll_fallback_block: 
     should_submit = False
     logger.info(f"<{phase_name}> waiting to begin...")
     while not should_submit:
-        should_submit, blocks_till, phase_response = should_act(config, phase_name, retry_blocks = poll_fallback_block)
+        should_submit, blocks_till, phase_response = should_act(config, phase_name, retry_blocks=poll_fallback_block)
         if should_submit is False and blocks_till > 0:
             sleep_sec = min(blocks_till, max(poll_fallback_block, blocks_till * 0.9)) * 12
 
@@ -69,19 +69,19 @@ def wait_till(config: MinerConfig, phase_name: PhaseNames, poll_fallback_block: 
 
 def should_act(config: MinerConfig, phase_name: PhaseNames, retry_blocks: int) -> tuple[bool, int, int]:
     phase_response: PhaseResponse | None = get_phase(config)
-    
+
     if phase_response is None:
         should_submit = False
     else:
         should_submit = phase_response.phase_name == phase_name
-    
+
     blocks_till_next_phase = get_blocks_until_next_phase(config)
-    
+
     if blocks_till_next_phase is None:
         blocks_till = retry_blocks
     else:
         blocks_till = blocks_till_next_phase[phase_name]
-    
+
     return should_submit, blocks_till, phase_response
 
 
@@ -230,11 +230,8 @@ def get_phase(config: WorkerConfig) -> PhaseResponse | None:
     except requests.exceptions.HTTPError as e:
         r = e.response
         status = r.status_code if r is not None else None
-        body_snippet = (r.text[:500] if (r is not None and r.text) else "")
-        logger.exception(
-            "HTTPError calling %s (status=%s). Body (first 500 chars): %r",
-            url, status, body_snippet
-        )
+        body_snippet = r.text[:500] if (r is not None and r.text) else ""
+        logger.exception("HTTPError calling %s (status=%s). Body (first 500 chars): %r", url, status, body_snippet)
         return None
 
     except requests.exceptions.RequestException as e:
@@ -266,11 +263,8 @@ def get_blocks_until_next_phase(config: WorkerConfig) -> PhaseResponse | None:
         # HTTP error responses (4xx/5xx)
         r = e.response
         status = r.status_code if r is not None else None
-        body_snippet = (r.text[:500] if (r is not None and r.text) else "")
-        logger.exception(
-            "HTTPError calling %s (status=%s). Body (first 500 chars): %r",
-            url, status, body_snippet
-        )
+        body_snippet = r.text[:500] if (r is not None and r.text) else ""
+        logger.exception("HTTPError calling %s (status=%s). Body (first 500 chars): %r", url, status, body_snippet)
         return None
 
     except requests.exceptions.RequestException as e:
@@ -301,11 +295,8 @@ def get_blocks_from_previous_phase(config: WorkerConfig) -> PhaseResponse | None
     except requests.exceptions.HTTPError as e:
         r = e.response
         status = r.status_code if r is not None else None
-        body_snippet = (r.text[:500] if (r is not None and r.text) else "")
-        logger.exception(
-            "HTTPError calling %s (status=%s). Body (first 500 chars): %r",
-            url, status, body_snippet
-        )
+        body_snippet = r.text[:500] if (r is not None and r.text) else ""
+        logger.exception("HTTPError calling %s (status=%s). Body (first 500 chars): %r", url, status, body_snippet)
         return None
 
     except requests.exceptions.RequestException as e:

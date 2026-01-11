@@ -11,6 +11,7 @@ logger = structlog.getLogger(__name__)
 
 tqdm(disable=True, total=0)
 
+
 def evaluate_model(
     step: int,
     model: nn.Module,

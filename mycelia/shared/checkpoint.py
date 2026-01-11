@@ -18,7 +18,7 @@ from mycelia.shared.expert_manager import (
     ExpertManager,
     get_layer_expert_id,
 )
-from mycelia.shared.helper import parse_dynamic_filename
+from mycelia.shared.helper import get_model_hash, parse_dynamic_filename
 
 logger = structlog.getLogger(__name__)
 
@@ -198,6 +198,7 @@ def save_state_dict_by_expert_group(
     for gid, sd in grouped_state.items():
         fname = f"model_expgroup_{gid}.pt" if gid != "shared" else "model_shared.pt"
         path = os.path.join(save_dir, fname)
+        logger.info("Saving for expert group", gid = gid, model_hash = get_model_hash(sd, hex = True))
         torch.save({"model_state_dict": sd}, path)
         paths[gid] = path
 
@@ -375,11 +376,29 @@ def get_model_files(checkpoint_path):
     return files
 
 
-def compile_full_state_dict_from_path(checkpoint_path):
+def compile_full_state_dict_from_path(checkpoint_path, expert_groups: list[int | str] | None = None):
+    def _matches_expert_group(file_path: str | Path, groups) -> bool:
+        if groups is None:
+            return True
+
+        if isinstance(groups, (list, tuple, set)):
+            return any(_matches_expert_group(file_path, g) for g in groups)
+
+        filename = Path(file_path).name
+        if groups == "shared":
+            return filename == "model_shared.pt"
+
+        return filename == f"model_expgroup_{groups}.pt"
+
     full_state_dict = {}
     model_files = get_model_files(checkpoint_path)
     for f in model_files:
+        if expert_groups is not None and not _matches_expert_group(f.path, expert_groups):
+            logger.info("skipping checkpoint file", path=f, expert_groups=expert_groups)
+            continue
+
         with f as fh:
+            logger.info("compiling checkpoint file", path=f, expert_groups=expert_groups)
             state_dict = torch.load(fh, map_location=torch.device("cpu"))
             full_state_dict = full_state_dict | state_dict["model_state_dict"]
             logger.info(
@@ -467,7 +486,7 @@ def get_sorted_checkpoints(checkpoint_path: str) -> dict[ModelMeta]:
 
         if "yaml" in f.lower():  # safer, catches .YAML/.Yaml/.yml too
             continue
-        
+
         meta = parse_dynamic_filename(f)
         if meta is None:
             continue

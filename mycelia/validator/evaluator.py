@@ -38,6 +38,7 @@ EVAL_MAX_BATCHES = 50
 #     model.load_state_dict(sd, strict=False)
 #     return model.to(device)
 
+
 def load_model_from_path(path: str, base_model: nn.Module, device: torch.device) -> nn.Module:
     ckpt = torch.load(path, map_location="cpu")
     sd = ckpt["model_state_dict"]  # checkpoint state_dict
@@ -58,20 +59,22 @@ def load_model_from_path(path: str, base_model: nn.Module, device: torch.device)
     print(f"[load_model] common keys (same shape): {len(common_same_shape)}")
     # Print the actual sets (sorted for readability)
     print("[load_model] common keys (same shape):")
-    print(sorted(common_same_shape))
+    # print(sorted(common_same_shape))
 
     # 2) Keys containing 'expert' that exist in the checkpoint but NOT in the base model
     expert_not_in_base = {k for k in ckpt_keys - base_keys if "expert" in k}
 
     print(f"[load_model] 'expert' keys in checkpoint but not in base_model: {len(expert_not_in_base)}")
-    print("[load_model] expert_not_in_base:")
-    print(sorted(expert_not_in_base))
+    # print("[load_model] expert_not_in_base:")
+    # print(sorted(expert_not_in_base))
 
     # 3) "expert" keys in base_model but NOT in checkpoint/common_keys
     expert_in_base_not_common = {k for k in (base_keys - common_keys) if "expert" in k}
-    print(f"[load_model] 'expert' keys in base_model but not in checkpoint/common_keys: {len(expert_in_base_not_common)}")
-    print("[load_model] expert_in_base_not_common:")
-    print(sorted(expert_in_base_not_common))
+    print(
+        f"[load_model] 'expert' keys in base_model but not in checkpoint/common_keys: {len(expert_in_base_not_common)}"
+    )
+    # print("[load_model] expert_in_base_not_common:")
+    # print(sorted(expert_in_base_not_common))
 
     # Load weights (strict=False so missing/unexpected are allowed)
     incompatible = model.load_state_dict(sd, strict=False)
@@ -118,15 +121,19 @@ async def evaluator_worker(
             logger.info(f"{name}: Evaluating hotkey={job.hotkey}")
 
             # Load model (potentially blocking) in a thread
-            
+
             model = await asyncio.to_thread(load_model_from_path, job.model_path, base_model, device)
-            
-            logger.info(f"{name}: Evaluating hotkey={job.hotkey}", base_hash = get_model_hash(base_model.state_dict()), merged_hash = get_model_hash(model.state_dict()))
+
+            logger.info(
+                f"{name}: Evaluating",
+                hotkey=job.hotkey,
+                base_hash=get_model_hash(base_model.state_dict()),
+                merged_hash=get_model_hash(model.state_dict()),
+            )
 
             eval_dataloader = await asyncio.to_thread(
                 get_dataloader, config=config, tokenizer=tokenizer, seed=combinded_seed, rank=0, world_size=10
             )
-
 
             metrics = await asyncio.to_thread(
                 evaluate_model, job.step, model, eval_dataloader, device, max_eval_batches, rank
