@@ -87,9 +87,13 @@ def commit_status(
 
     data = json.dumps(data_dict)
 
-    subtensor.set_commitment(wallet=wallet, netuid=config.chain.netuid, data=data, raise_error=True)
-
-    logger.info("Committed status to chain", status=data_dict)
+    success = subtensor.set_commitment(wallet=wallet, netuid=config.chain.netuid, data=data, raise_error=False)
+    
+    if not success: 
+        logger.warning("Failed to commit status to chain", status=data_dict)
+    else:
+        logger.info("Committed status to chain", status=data_dict)
+    
     return data_dict
 
 
