@@ -53,21 +53,26 @@ class TopKRouter(nn.Module):
         mask = mask_1d.view(shape).to(dtype=x.dtype)
 
         mask_bool = mask.to(torch.bool)  # True = keep
-        fill = x.min() - 2  # scalar, computed BEFORE masking
+        fill = max(x.min().item() - 1e-6, 0)   # scalar, computed BEFORE masking
         x_masked = x.masked_fill(~mask_bool, fill)
         return x_masked
 
     def forward(self, hidden_states):
         router_logits = self.weight(hidden_states)
-
+        # logger.warning("wc - non-finite hidden_states", fin = torch.isfinite(router_logits).all(), stage="routing A")
         routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)  # a
-        routing_weights = self._mask_routing_weights(router_logits)  # b
+        # logger.warning("wc - non-finite hidden_states", w = routing_weights, s = routing_weights.shape, m = routing_weights.min(), stage="routing B")
+        routing_weights = self._mask_routing_weights(routing_weights)  # b
+        # logger.warning("wc - non-finite hidden_states", w = routing_weights, s = routing_weights.shape, stage="routing C")
         routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
+        # logger.warning("wc - non-finite hidden_states", fin = torch.isfinite(routing_weights).all(), stage="routing D")
         if self.norm_topk_prob:
             routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
+        # logger.warning("wc - non-finite hidden_states", fin = torch.isfinite(routing_weights).all(), stage="routing E")
 
         # we cast back to the input dtype
         routing_weights = routing_weights.to(hidden_states.dtype)
+        # logger.warning("wc - non-finite hidden_states", fin = torch.isfinite(routing_weights).all(), stage="routing F")
         return router_logits, routing_weights, selected_experts
 
 
@@ -111,12 +116,14 @@ class SparseMoeBlock(Qwen3NextSparseMoeBlock):
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
+        # logger.warning("wc - non-finite hidden_states", fin = torch.isfinite(hidden_states).all(), stage="input")
         # router_logits: (batch * sequence_length, n_experts)
         router_logits, routing_weights, selected_experts = self.gate(hidden_states)
 
         final_hidden_states = torch.zeros(
             (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
         )
+        # logger.warning("wc - non-finite hidden_states", fin = torch.isfinite(final_hidden_states).all(), stage="init final")
 
         # One hot encode the selected experts to create an expert mask
         # this will be used to easily index which expert is going to be sollicitated
@@ -135,18 +142,35 @@ class SparseMoeBlock(Qwen3NextSparseMoeBlock):
             # the current expert. We need to make sure to multiply the output hidden
             # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
             current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
-            current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
+            # logger.warning("wc - non-finite hidden_states", fin = torch.isfinite(current_state).all(), stage="curr A")
+            # logger.warning("wc - non-finite hidden_states", fin = torch.isfinite(routing_weights[top_x, idx, None]).all(), stage="rout")
+            # logger.warning("wc - non-finite hidden_states", expert_idx = expert_idx, layer = expert_layer, self_experts = self.experts.keys(), stage="expert layer")
+            # for name, param in expert_layer.named_parameters():
+            #     logger.warning(
+            #         "wc - expert param finite",
+            #         expert_idx=expert_idx,
+            #         param=name,
+            #         fin=torch.isfinite(param).all(),
+            #     )
+            expert_hidden_state = expert_layer(current_state)
+            # logger.warning("wc - non-finite hidden_states", fin = torch.isfinite(expert_hidden_state).all(), stage="expert layer")
+            current_hidden_states = expert_hidden_state * routing_weights[top_x, idx, None]
+            # logger.warning("wc - non-finite hidden_states", fin = torch.isfinite(current_hidden_states).all(), stage="curr B")
             # However `index_add_` only support torch tensors for indexing so we'll use
             # the `top_x` tensor here.
             final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
+            # logger.warning("wc - non-finite hidden_states", fin = torch.isfinite(final_hidden_states).all(), stage="final add")
 
         shared_expert_output = self.shared_expert(hidden_states)
         shared_expert_output = F.sigmoid(self.shared_expert_gate(hidden_states)) * shared_expert_output
 
         final_hidden_states = final_hidden_states + shared_expert_output
 
+        # logger.warning("wc - non-finite hidden_states", fin = torch.isfinite(final_hidden_states).all(), stage="post_moe")
+
         final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)
 
+        # logger.warning("wc - non-finite hidden_states", fin = torch.isfinite(final_hidden_states).all(), stage="out")
         return final_hidden_states, router_logits
 
 

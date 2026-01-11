@@ -167,12 +167,17 @@ def commit_worker(
             if latest_checkpoint_path is None:
                 raise FileNotReadyError("Not checkpoint found, skip commit.")
 
-            model_path = f"{latest_checkpoint_path}/model.pt"
-            model_hash = get_model_hash(compile_full_state_dict_from_path(model_path)).hex()
+            model_hash = get_model_hash(
+                compile_full_state_dict_from_path(latest_checkpoint_path, expert_groups=[config.task.expert_group_id]), hex = True
+            )
 
             logger.info(
-                f"<{PhaseNames.commit}> committing model version {model_meta.global_ver} with hash {model_hash}."
+                f"<{PhaseNames.commit}> committing",
+                model_version=model_meta.global_ver,
+                hash=model_hash,
+                path=latest_checkpoint_path,
             )
+
             commit_status(
                 config,
                 wallet,
@@ -234,7 +239,17 @@ def submit_worker(
                 model_path=f"{latest_checkpoint_path}/model_expgroup_{config.task.expert_group_id}.pt",
             )
 
-            logger.info(f"<{PhaseNames.submission}> submitted model to {destination_axon.hotkey} at block {block}.")
+            model_hash = get_model_hash(
+                compile_full_state_dict_from_path(latest_checkpoint_path, expert_groups=[config.task.expert_group_id])
+            )
+
+            logger.info(
+                f"<{PhaseNames.submission}> submitted model",
+                destination={destination_axon.hotkey},
+                block=block,
+                hash=model_hash,
+                path=latest_checkpoint_path/"model_expgroup_{config.task.expert_group_id}.pt",
+            )
 
         except FileNotReadyError as e:
             logger.warning(f"<{PhaseNames.submission}> File not ready error: {e}")

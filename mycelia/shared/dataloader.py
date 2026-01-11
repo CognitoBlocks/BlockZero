@@ -75,24 +75,44 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
         seed: str | None = None,
         fraction: float | None = None,
     ):
-        # Load streaming dataset. `disable_tqdm=True` silences progress bars.
-        ds = load_dataset(
-            config.task.data.dataset_name,
-            data_dir=config.task.data.data_dir,
-            streaming=True,
-            name = "default",
-            revision="main"
-        )
+        logger.info("Getting tokenised dataset.")
 
-        # Select split
+        def _ensure_split(ds, split_name: str):
+            if split_name not in ds:
+                raise ValueError(
+                    f"Dataset split '{split_name}' not found for "
+                    f"{config.task.data.dataset_name}:{config.task.data.data_dir}"
+                )
+            return ds[split_name]
+
         split_name = "train" if train else "validation"
-        if split_name not in ds:
-            raise ValueError(
-                f"Dataset split '{split_name}' not found for "
-                f"{config.task.data.dataset_name}:{config.task.data.data_dir}"
-            )
 
-        split = ds[split_name]
+        # Try streaming first; if shards are missing (common when offline/hub download fails),
+        # fall back to a local/non-streaming load and convert to an iterable dataset.
+        try:
+            ds = load_dataset(
+                config.task.data.dataset_name,
+                data_dir=config.task.data.data_dir,
+                streaming=True,
+                name="default",
+                revision="main",
+            )
+            split = _ensure_split(ds, split_name)
+        except FileNotFoundError as e:
+            logger.warning(
+                "Streaming dataset missing shard, falling back to local cache",
+                dataset=config.task.data.dataset_name,
+                split=split_name,
+                error=str(e),
+            )
+            cached_ds = load_dataset(
+                config.task.data.dataset_name,
+                data_dir=config.task.data.data_dir,
+                streaming=False,
+                name="default",
+                revision="main",
+            )
+            split = _ensure_split(cached_ds, split_name).to_iterable_dataset()
 
         # Optional deterministic subsampling based on (seed, fraction)
         # Applied *before* sharding on the streaming iterable.

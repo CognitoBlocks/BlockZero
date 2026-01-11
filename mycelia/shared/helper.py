@@ -121,7 +121,7 @@ def serialize_torch_model_path(state) -> bytes:
         raise ValueError("Model file must contain a state_dict or nn.Module")
 
     buffer = []
-    for key, tensor in state.items():
+    for key, tensor in sorted(state.items(), key=lambda item: item[0]):
         buffer.append(key.encode())
         buffer.append(tensor.cpu().numpy().tobytes())
 
@@ -135,7 +135,7 @@ def hash_model_bytes(model_bytes: bytes) -> bytes:
     return hashlib.blake2b(model_bytes, digest_size=24).digest()
 
 
-def get_model_hash(state):
+def get_model_hash(state, hex = False):
     """
     Create a model hash from model mocated at specified path.
     """
@@ -144,4 +144,7 @@ def get_model_hash(state):
 
     # 2. Hash model to 32 bytes
     model_hash = hash_model_bytes(model_bytes)
-    return model_hash
+    if hex:
+        return model_hash.hex()
+    else:
+        return model_hash

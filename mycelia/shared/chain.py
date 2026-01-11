@@ -188,9 +188,9 @@ def scan_chain_for_new_model(
     # 1) collect candidates that are newer than the current version
     most_updated_commits = []  # type: ignore
     for c, n in commits:
-        raw_ver = getattr(c, "global_ver", None)
-        global_ver = raw_ver if isinstance(raw_ver, int) else 0
-        if ModelMeta(global_ver=global_ver) >= max_model_meta:
+        raw_ver = getattr(c, "global_ver", 0)
+        c.global_ver = raw_ver if isinstance(raw_ver, int) else 0
+        if ModelMeta(global_ver=c.global_ver) >= max_model_meta:
             most_updated_commits.append((c, n))
 
     if len(most_updated_commits) == 0:

@@ -36,7 +36,7 @@ from mycelia.shared.modeling.mycelia import get_base_tokenizer
 
 configure_logging()
 logger = structlog.get_logger(__name__)
-
+torch.autograd.set_detect_anomaly(True)
 
 # this is for local DP only
 def init_process(local_rank: int, config: MinerConfig, world_size: int, fn: callable, backend: str = "nccl") -> None:
@@ -129,6 +129,14 @@ def setup_training(
     # === optimizers ===
     logger.info(f"init - optimizer")
     trainable_params = [p for p in model.parameters() if p.requires_grad]
+    logger.info(f"trainable params: {len(trainable_params)} / total: {sum(1 for _ in model.parameters())}")
+    if len(trainable_params) == 0:
+        sample_names = [name for name, _ in list(model.named_parameters())[:8]]
+        logger.warning(
+            "No trainable parameters found; check expert_group_id and get_layer_expert_id() matching.",
+            expert_group_id=config.task.expert_group_id,
+            sample_param_names=sample_names,
+        )
     inner_optimizer = torch.optim.AdamW(trainable_params, lr=config.opt.lr, weight_decay=0.1, betas=(0.9, 0.95))
 
     # === scheduler === (for inner optimizer)
@@ -141,9 +149,13 @@ def setup_training(
 
     # === scaler ===
     logger.info(f"init - inner scaler")
+    precision = get_nested_attr(config, "model.precision", "fp16-mixed")
+    if precision == "bf16-mixed" and torch.cuda.is_available() and not torch.cuda.is_bf16_supported():
+        logger.warning("BF16 not supported on this device; falling back to fp16-mixed")
+        precision = "fp16-mixed"
     inner_scaler = torch.amp.GradScaler(
         "cuda",
-        enabled=False,  # enabled=(get_nested_attr(config, "model.precision", "") == "fp16-mixed")
+        enabled=False# (precision == "fp16-mixed"),
     )
 
     # === dataloader ===
@@ -239,6 +251,13 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
     ) = setup_training(config, rank, device, tokenizer, subtensor, wallet, current_model_meta=None)
 
     # === training ===
+    precision = get_nested_attr(config, "model.precision", "fp16-mixed")
+    if precision == "bf16-mixed" and torch.cuda.is_available() and not torch.cuda.is_bf16_supported():
+        logger.warning("BF16 not supported on this device; falling back to fp16-mixed")
+        precision = "fp16-mixed"
+    amp_enabled = precision in ("fp16-mixed", "bf16-mixed")
+    autocast_dtype = torch.float16 if precision == "fp16-mixed" else torch.bfloat16
+    autocast_device = "cuda" if device.type == "cuda" else "cpu"
     loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
     aux_loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
     training_time = 0
@@ -274,76 +293,99 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 not is_start_step
             ):  # skip training when it is the start step, so that we can benchamrk the original model first
                 model.train()
-                logger.info("training A")
                 if training_start_time is None:
                     training_start_time = time.time()
-
-                logger.info("training B")
                 batch_device = {}
                 for key in batch.keys():
                     batch_device[key] = batch[key].to(device)
+                labels = batch_device.get("labels")
+                if labels is not None:
+                    logger.info("detected none label")
+                    valid_labels = labels.ne(-100)
+                    num_valid = int(valid_labels.sum().item())
+                    if num_valid == 0:
+                        logger.warning("Skipping batch with no valid labels", step=step)
+                        continue
 
-                logger.info("training C")
                 with torch.amp.autocast("cuda", dtype=torch.float16):
                     outputs = model(**batch_device)
+
                     loss = outputs.loss / config.local_par.gradient_accumulation_steps
                     # aux_loss = outputs.aux_loss / config.local_par.gradient_accumulation_steps if outputs.aux_loss is not None else torch.tensor(0)
                     aux_loss = torch.tensor(0)
 
-                logger.info("training D")
+                if not torch.isfinite(loss):
+                    logits = outputs.logits
+                    logits_finite = torch.isfinite(logits)
+                    logits_finite_ratio = float(logits_finite.float().mean().item())
+                    logits_min = float(logits.min().item())
+                    logits_max = float(logits.max().item())
+                    label_min = None
+                    label_max = None
+                    if labels is not None and num_valid > 0:
+                        label_min = int(labels[valid_labels].min().item())
+                        label_max = int(labels[valid_labels].max().item())
+                    logger.error(
+                        "Non-finite loss detected",
+                        loss=float(loss.item()) if loss.numel() == 1 else None,
+                        logits_min=logits_min,
+                        logits_max=logits_max,
+                        logits_finite_ratio=logits_finite_ratio,
+                        label_min=label_min,
+                        label_max=label_max,
+                        num_valid_labels=num_valid if labels is not None else None,
+                        precision=precision,
+                        step=step,
+                    )
+                    raise RuntimeError("Non-finite loss detected; see logs for details.")
+                logger.info("batch loss", loss)
+
                 loss_batch += loss.item()
                 aux_loss_batch += aux_loss.item()
-                logger.info("training E")
-                logger.info("training", loss=loss, grad_sum=sum_model_gradients(model))
 
-                logger.info("training F")
                 inner_scaler.scale(loss).backward()
+
+                grad_total = sum_model_gradients(model)
+                sample_grads = []
+                for name, param in model.named_parameters():
+                    if param.requires_grad:
+                        p_norm = param.norm().item()
+                        grad_norm = param.grad.norm().item() if param.grad is not None else 0.0
+                        sample_grads.append((name, grad_norm, p_norm))
+                        if len(sample_grads) >= 5:
+                            break
 
                 # === Aggressively free intermediate tensors ===
                 del loss, aux_loss, batch_device, outputs
                 gc.collect()
-                logger.info("training G")
 
-            logger.info("training H", not is_start_step, is_inner_optimizer_step)
             # === inner optimizer ===
             if not is_start_step and is_inner_optimizer_step:
-                logger.info("(1.1) inner opt step A")
-                old_model_hash = get_model_hash(model.state_dict())
+                old_model_hash = get_model_hash(model.state_dict(), hex = True)
 
                 for n, p in model.named_parameters():
                     if p.grad is None or torch.isnan(p.grad.sum()):
                         continue
                     # dist.all_reduce(p.grad, op=dist.ReduceOp.SUM)
                     p.grad.div_(world_size)
-                logger.info("(1.1) inner opt step B")
                 inner_scaler.unscale_(optimizer=inner_optimizer)
-                logger.info("(1.1) inner opt step B1")
+
                 grad_norm = clip_grad_norm_(
                     [p for p in model.parameters() if p.grad is not None and not torch.isnan(p.grad.sum())], 1.0
-                )  # gradient clipping # <- turned grad to nan
+                )
 
-                logger.info("(1.1) inner opt step C")
                 scale_before = inner_scaler.get_scale() if inner_scaler.is_enabled() else None
-                logger.info("(1.1) inner opt step C1")
                 step_result = inner_scaler.step(inner_optimizer)
-                logger.info("(1.1) inner opt step C2")
                 step_skipped = inner_scaler.is_enabled() and step_result is None
-                
-                logger.info("(1.1) inner opt step D")
-                if step_skipped:
-                    logger.warning(
-                        "GradScaler skipped optimizer step due to inf/NaN gradients",
-                        grad_norm=float(grad_norm),
-                        scale_before=scale_before,
-                    )
 
-                else:
-                    logger.info(
-                        "Optimizer step applied",
-                        grad_norm=float(grad_norm),
+                logger.info(
+                        "GradScaler for optimizer step",
+                        grad_norm=grad_norm,
+                        grad_sum = sum_model_gradients(model),
                         scale_before=scale_before,
-                    )
-                logger.info("(1.1) inner opt step E")
+                        skipped = step_skipped
+                )
+
                 inner_scaler.update()
                 if inner_scaler.is_enabled():
                     logger.info(
@@ -351,9 +393,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                         scale_after=inner_scaler.get_scale(),
                     )
 
-                logger.info("(1.1) inner opt step F")
                 scheduler.step()
-                logger.info("(1.1) inner opt step G")
                 inner_optimizer.zero_grad()
 
                 training_time = time.time() - training_start_time
@@ -363,12 +403,10 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 # === Clear memory after optimizer step ===
                 gc.collect()
                 torch.cuda.empty_cache()
-                logger.info("Memory cleared after optimizer step")
 
-                new_model_hash = get_model_hash(model.state_dict())
+                new_model_hash = get_model_hash(model.state_dict(), hex = True)
                 logger.info(f"Updated model", old_model_hash=old_model_hash, new_model_hash=new_model_hash)
 
-            logger.info("log", not is_start_step, is_inner_optimizer_step)
             # === Log metric ===
             if (
                 is_inner_optimizer_step
@@ -388,7 +426,6 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 )
                 metric_logger.log(metrics, print_log=False)
 
-            logger.info("eval", not is_start_step, is_inner_optimizer_step)
             # === local validation and log metric ===
             if is_inner_optimizer_step and inner_opt_step % config.log.metric_interval == 0:
                 logger.info("(3) Local evaluation")
@@ -417,7 +454,6 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 logger.info("reached barrier, waiting for partial validation and metric logging to complete")
                 # dist.barrier(device_ids=[rank])
 
-            logger.info("saving", not is_start_step, is_inner_optimizer_step)
             # === save checkpoint ===
             if (
                 is_inner_optimizer_step
@@ -453,7 +489,6 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 logger.info("reached barrier, waiting for complete checkpoint saving")
                 # dist.barrier(device_ids=[rank])
 
-            logger.info("reload", not is_start_step, is_inner_optimizer_step)
             # === reload model ===
             if is_inner_optimizer_step:
                 logger.info("(5) Reload Model")
@@ -501,7 +536,6 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                     )
 
             # === Clean up ===
-            logger.info("clean up", not is_start_step, is_inner_optimizer_step)
             if is_inner_optimizer_step:
                 logger.info("(6) Clean up")
                 loss_batch = torch.tensor(0, dtype=torch.float32, device=device)
@@ -511,7 +545,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 logger.info("Clean up completed")
 
         logger.info("used up train dataloader")
-    
+
     except Exception:
         logger.error("Quit training", exc_info=True)
         # dist.destroy_process_group()
@@ -537,7 +571,6 @@ def run_distributed_training() -> None:
         config = MinerConfig()
 
     if config.local_par.world_size > 1:
-
         mp.spawn(
             init_process,
             args=(config, config.local_par.world_size, train_worker),

@@ -65,11 +65,12 @@ def _cuda_mem_report(tag: str = "", device: int | None = None) -> None:
     torch.cuda.synchronize(device)
 
     allocated = torch.cuda.memory_allocated(device)
-    reserved  = torch.cuda.memory_reserved(device)
+    reserved = torch.cuda.memory_reserved(device)
 
     free, total = torch.cuda.mem_get_info(device)  # bytes
 
-    def mb(x): return x / 1024**2
+    def mb(x):
+        return x / 1024**2
 
     print(
         f"[{tag}] cuda:{device} "
@@ -79,6 +80,7 @@ def _cuda_mem_report(tag: str = "", device: int | None = None) -> None:
         f"total={mb(total):.1f}MB "
         f"(alloc%={allocated/total*100:.1f} reserved%={reserved/total*100:.1f})"
     )
+
 
 def cleanup(global_model, base_model) -> None:
     """
@@ -99,6 +101,7 @@ def cleanup(global_model, base_model) -> None:
     torch.cuda.synchronize()
 
     _cuda_mem_report("after cleanup")
+
 
 def setup_training(
     config,
@@ -235,7 +238,6 @@ def run_global_optimization(
             if torch.is_tensor(v):
                 state[k] = v.to(device, non_blocking=True)
 
-    
     global_model.to(device)
 
     old_shared_name, old_shared_sum = get_weight_sum(model, shared=True)
@@ -290,7 +292,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
         config.write()
 
     torch.cuda.memory._record_memory_history(enabled=True)
-    
+
     # === create checkpoint directory ===
     os.makedirs(config.ckpt.base_checkpoint_path, exist_ok=True)
     os.makedirs(config.ckpt.checkpoint_path, exist_ok=True)
@@ -394,7 +396,9 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             miner_jobs = gather_validation_job(config, subtensor, step=global_opt_step)
             logger.info("miner job(s)", global_opt_step=global_opt_step, miner_jobs=miner_jobs)
             if len(miner_jobs) == 0:
-                logger.warning("couldnt collect any miner job to evaluate", global_opt_step=global_opt_step, miner_jobs=miner_jobs)
+                logger.warning(
+                    "couldnt collect any miner job to evaluate", global_opt_step=global_opt_step, miner_jobs=miner_jobs
+                )
 
             # === Get miner model and evaluate the miners ===
             logger.info("(3) Evaluating miners")
@@ -439,8 +443,8 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             # === global optimizer ===
             logger.info("(6) Running global model optimization step")
 
-            org_model_hash = get_model_hash(global_model.state_dict())
-            
+            org_model_hash = get_model_hash(global_model.state_dict(), hex = True)
+
             run_global_optimization(
                 model=base_model,
                 global_model=global_model.to("cpu"),
@@ -451,8 +455,12 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                 score_aggregator=score_aggregator,
             )
 
-            logger.info("Complete optimzation step", org_model_hash = org_model_hash, new_model_hash = get_model_hash(global_model.state_dict()), new_base_model_hash = get_model_hash(base_model.state_dict()))
-
+            logger.info(
+                "Complete optimzation step",
+                org_model_hash=org_model_hash,
+                new_model_hash=get_model_hash(global_model.state_dict(), hex = True),
+                new_base_model_hash=get_model_hash(base_model.state_dict(), hex = True),
+            )
 
             cleanup(global_model, base_model)
 
@@ -474,7 +482,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             )
 
             # === Comit to chain for new model ===
-            current_model_hash = get_model_hash(compile_full_state_dict_from_path(ckpt_path)).hex()
+            current_model_hash = get_model_hash(compile_full_state_dict_from_path(ckpt_path), hex = True)
             commit_status(
                 config,
                 wallet,
