@@ -413,7 +413,7 @@ class WorkerConfig(BaseConfig):
             self.task.expert_group_name = expert_group_name
             self._refresh_paths()  # base path may change
 
-        self.task.expert_group = ExpertCfg.from_path(self.task.path / "config.yaml")  # type: ignore
+        self.task.exp = ExpertCfg.from_path(self.task.path / "config.yaml")  # type: ignore
         self._refresh_paths()  # base path may change
 
     # ---- Persistence ----
