@@ -198,7 +198,7 @@ def get_validator_seed_from_commit(config, commits):
         neuron.hotkey: commit.miner_seed
         for commit, neuron in commits
         if isinstance(commit, ValidatorChainCommit)
-        and getattr(commit, "expert_group", None) == config.task.expert_group_id
+        and getattr(commit, "expert_group", None) == config.task.exp.group_id
     }
     return validator_seeds
 
@@ -207,7 +207,7 @@ def get_miners_from_commit(config, commits):
     miners: list[str] = [
         neuron.hotkey
         for commit, neuron in commits
-        if isinstance(commit, MinerChainCommit) and getattr(commit, "expert_group", None) == config.task.expert_group_id
+        if isinstance(commit, MinerChainCommit) and getattr(commit, "expert_group", None) == config.task.exp.group_id
     ]
 
     return miners

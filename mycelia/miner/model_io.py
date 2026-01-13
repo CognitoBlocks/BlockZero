@@ -110,7 +110,7 @@ def download_worker(
                 config,
                 subtensor,
                 wallet,
-                expert_group_ids=[config.task.expert_group_id],
+                expert_group_ids=[config.task.exp.group_id],
             )
 
             if (
@@ -168,7 +168,7 @@ def commit_worker(
                 raise FileNotReadyError("Not checkpoint found, skip commit.")
 
             model_hash = get_model_hash(
-                compile_full_state_dict_from_path(latest_checkpoint_path, expert_groups=[config.task.expert_group_id]), hex = True
+                compile_full_state_dict_from_path(latest_checkpoint_path, expert_groups=[config.task.exp.group_id]), hex = True
             )
 
             logger.info(
@@ -183,7 +183,7 @@ def commit_worker(
                 wallet,
                 subtensor,
                 MinerChainCommit(
-                    expert_group=config.task.expert_group_id,
+                    expert_group=config.task.exp.group_id,
                     model_hash=model_hash,
                     block=subtensor.block,
                     global_ver=model_meta.global_ver,
@@ -236,11 +236,11 @@ def submit_worker(
                 my_hotkey=wallet.hotkey,  # type: ignore
                 target_hotkey_ss58=destination_axon.hotkey,
                 block=block,
-                model_path=f"{latest_checkpoint_path}/model_expgroup_{config.task.expert_group_id}.pt",
+                model_path=f"{latest_checkpoint_path}/model_expgroup_{config.task.exp.group_id}.pt",
             )
 
             model_hash = get_model_hash(
-                compile_full_state_dict_from_path(latest_checkpoint_path, expert_groups=[config.task.expert_group_id])
+                compile_full_state_dict_from_path(latest_checkpoint_path, expert_groups=[config.task.exp.group_id])
             )
 
             logger.info(
@@ -248,7 +248,7 @@ def submit_worker(
                 destination={destination_axon.hotkey},
                 block=block,
                 hash=model_hash,
-                path=latest_checkpoint_path/"model_expgroup_{config.task.expert_group_id}.pt",
+                path=latest_checkpoint_path/"model_expgroup_{config.task.exp.group_id}.pt",
             )
 
         except FileNotReadyError as e:

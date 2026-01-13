@@ -85,8 +85,7 @@ class CycleCfg(BaseConfig):
     submission_period: int = 10
     validate_period: int = 10
     merge_period: int = 10
-
-    owner_url: str = "http://localhost:7000"
+    owner_url: str = "http://149.137.225.62:7000"
 
 
 class RunCfg(BaseConfig):
@@ -143,7 +142,7 @@ class OptimizerCfg(BaseConfig):
 class ParallelismCfg(BaseConfig):  # parallelism for local training
     gradient_accumulation_steps: PositiveInt = 5
     global_opt_interval: PositiveInt = 100
-    world_size: PositiveInt = 2
+    world_size: PositiveInt = 1
     port: PositiveInt = 29500
     ip_address: str = "127.0.0.1"
 
@@ -195,14 +194,14 @@ class OwnerCfg(BaseConfig):
     app_ip: str = "0.0.0.0"
     app_port: int = 7000
 
-
-class TaskCfg(BaseConfig):
+class ExpertCfg(BaseConfig):
     data: DataCfg = DataCfg()
-    expert_group_id: int = 0
+    group_id: int = 0
+class TaskCfg(BaseConfig):
     expert_group_name: str = "exp_math"
     base_path: Path = Path("expert_groups")
     path: Path | None = None
-
+    exp: ExpertCfg = ExpertCfg()
 
 # ---------------------------
 # Top-level config
@@ -414,7 +413,7 @@ class WorkerConfig(BaseConfig):
             self.task.expert_group_name = expert_group_name
             self._refresh_paths()  # base path may change
 
-        self.task = TaskCfg.from_path(self.task.path / "config.yaml")  # type: ignore
+        self.task.exp = ExpertCfg.from_path(self.task.path / "config.yaml")  # type: ignore
         self._refresh_paths()  # base path may change
 
     # ---- Persistence ----
@@ -424,7 +423,7 @@ class WorkerConfig(BaseConfig):
 
         Creates the directory if it does not exist.
         """
-        data = self.model_dump()
+        data = self.model_dump(exclude={"task": {"exp"}})
         data = convert_to_str(data)
 
         os.makedirs(self.ckpt.checkpoint_path, exist_ok=True)
@@ -452,7 +451,7 @@ class MinerConfig(WorkerConfig):
     def _derive_all(self):
         if self.local_par.gradient_accumulation_steps == 0:
             # ceil(batch_size / per_device_train_batch_size)
-            g = math.ceil(self.task.data.batch_size / self.task.data.per_device_train_batch_size)
+            g = math.ceil(self.task.exp.data.batch_size / self.task.exp.data.per_device_train_batch_size)
             self.local_par.gradient_accumulation_steps = max(1, int(g))
 
         goi = self.local_par.global_opt_interval

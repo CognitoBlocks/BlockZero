@@ -151,7 +151,7 @@ def setup_training(
 
     # === dataloader ===
     logger.info(f"setup training - load dataloader")
-    train_dataloader = get_dataloader(config, rank=rank, world_size=config.task.data.world_size, tokenizer=tokenizer)
+    train_dataloader = get_dataloader(config, rank=rank, world_size=config.task.exp.data.world_size, tokenizer=tokenizer)
 
     # === load checkpoint (if any) ===
     logger.info(
@@ -348,7 +348,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
         ValidatorChainCommit(
             model_hash=None,
             global_ver=global_opt_step,
-            expert_group=config.task.expert_group_id,
+            expert_group=config.task.exp.group_id,
             miner_seed=0,  # this should reveal later
             block=subtensor.block,
         ),
@@ -381,7 +381,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                 ValidatorChainCommit(
                     model_hash=current_model_hash,
                     global_ver=global_opt_step,
-                    expert_group=config.task.expert_group_id,
+                    expert_group=config.task.exp.group_id,
                     miner_seed=secrets.randbits(16),
                     block=subtensor.block,
                 ),
@@ -490,7 +490,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                 ValidatorChainCommit(
                     model_hash=current_model_hash,
                     global_ver=global_opt_step,
-                    expert_group=config.task.expert_group_id,
+                    expert_group=config.task.exp.group_id,
                     miner_seed=0,
                     block=subtensor.block,
                 ),

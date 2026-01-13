@@ -124,7 +124,7 @@ def setup_training(
     expert_manager = ExpertManager(config)
     model, model_meta = load_model(rank, config, expert_manager, subtensor, wallet)
     model = model.to(device)
-    model = freeze_parameters(model=model, expert_manager=expert_manager, expert_group_id=config.task.expert_group_id)
+    model = freeze_parameters(model=model, expert_manager=expert_manager, expert_group_id=config.task.exp.group_id)
 
     # === optimizers ===
     logger.info(f"init - optimizer")
@@ -134,7 +134,7 @@ def setup_training(
         sample_names = [name for name, _ in list(model.named_parameters())[:8]]
         logger.warning(
             "No trainable parameters found; check expert_group_id and get_layer_expert_id() matching.",
-            expert_group_id=config.task.expert_group_id,
+            expert_group_id=config.task.exp.group_id,
             sample_param_names=sample_names,
         )
     inner_optimizer = torch.optim.AdamW(trainable_params, lr=config.opt.lr, weight_decay=0.1, betas=(0.9, 0.95))
@@ -160,7 +160,7 @@ def setup_training(
 
     # === dataloader ===
     logger.info(f"init - train dataloader")
-    train_dataloader = get_dataloader(config, rank=rank, world_size=config.task.data.world_size, tokenizer=tokenizer)
+    train_dataloader = get_dataloader(config, rank=rank, world_size=config.task.exp.data.world_size, tokenizer=tokenizer)
 
     # === load checkpoint (if any) ===
     logger.info(f"init - load checkpoint")
