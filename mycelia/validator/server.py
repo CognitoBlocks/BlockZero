@@ -50,7 +50,6 @@ def require_auth(authorization: str | None) -> None:
 
 
 def file_response_for(path: Path, download_name: str | None = None) -> FileResponse:
-    logger.info("file response for", path=path)
     if not path.exists() or not path.is_file():
         logger.info("file response for, path dosent exist", path.exists(), path.is_file())
         raise HTTPException(status_code=404, detail="Checkpoint not found")
@@ -163,8 +162,9 @@ async def get_checkpoint(
     if not latest_checkpoint_path:
         raise HTTPException(status_code=500, detail="CHECKPOINT_PATH env var is not set")
 
-    # Choose checkpoint filename
-    logger.info("checkpoint, D", expert_group_id=expert_group_id)
+
+    logger.info("<download> Received get checkpoint request", from_hk = origin_hotkey_ss58, block = block, expert_group_id=expert_group_id)
+
     if expert_group_id is not None:
         if expert_group_id == "shared":
             ckpt_path = latest_checkpoint_path / "model_shared.pt"
@@ -180,6 +180,7 @@ async def get_checkpoint(
             detail=f"Checkpoint not found: {ckpt_path.name}",
         )
 
+    logger.info("<download> Preparing file response for path", path=Path(ckpt_path))
     result = file_response_for(Path(ckpt_path), f"step{model_meta.global_ver}")
 
     return result
@@ -246,7 +247,7 @@ async def submit_checkpoint(
 
     computed = hasher.hexdigest()
 
-    logger.info(f"Stored checkpoint at {dest_path} ({bytes_written} bytes) sha256={computed}")
+    logger.info(f"<submit> Stored checkpoint at {dest_path} ({bytes_written} bytes) sha256={computed}")
 
     verify_message(
         origin_hotkey_ss58=origin_hotkey_ss58,
@@ -254,7 +255,7 @@ async def submit_checkpoint(
         signature_hex=signature,
     )
 
-    logger.info(f"Verified submission at {dest_path}.")
+    logger.info(f"<submit> Verified submission at {dest_path}.")
 
     delete_old_checkpoints_by_hotkey(config.ckpt.miner_submission_path)
 

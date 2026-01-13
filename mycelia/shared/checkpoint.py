@@ -398,7 +398,6 @@ def compile_full_state_dict_from_path(checkpoint_path, expert_groups: list[int |
             continue
 
         with f as fh:
-            logger.info("compiling checkpoint file", path=f, expert_groups=expert_groups)
             state_dict = torch.load(fh, map_location=torch.device("cpu"))
             full_state_dict = full_state_dict | state_dict["model_state_dict"]
             logger.info(

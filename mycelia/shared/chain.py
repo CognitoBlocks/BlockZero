@@ -238,7 +238,7 @@ def fetch_model_from_chain(
     config: WorkerConfig,
     subtensor: bittensor.Subtensor,
     wallet: bittensor.Wallet,
-    expert_group_ids: list = [],
+    expert_group_ids: list[int | str],
 ) -> dict | None:
     should_download, download_metas = scan_chain_for_new_model(current_model_meta, config, subtensor)
 
@@ -273,15 +273,16 @@ def fetch_model_from_chain(
 
                 out_folder.mkdir(parents=True, exist_ok=True)
 
-                if len(expert_group_ids) == 0:
-                    expert_group_ids = [config.task.expert_group_id, "shared"]
-
                 for expert_group_id in expert_group_ids:
-                    out_file = (
-                        f"model_expgroup_{expert_group_id}.pt"
-                        if isinstance(expert_group_id, int)
-                        else "model_shared.pt"
-                    )
+                                            
+                    if isinstance(expert_group_id, int):
+                        out_file = f"model_expgroup_{expert_group_id}.pt"
+                    elif expert_group_id == "shared":
+                            out_file = "model_shared.pt"
+                    else:
+                        logger.warning("Invalid expert_group_id, skipping:", expert_group_id=expert_group_id)
+                        continue
+                    
                     out_path = out_folder / out_file
                     try:
                         download_model(

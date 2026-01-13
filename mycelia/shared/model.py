@@ -134,5 +134,5 @@ def load_model(
             secondary_ckpt_path=config.ckpt.checkpoint_path,
         )
 
-    fetch_model_from_chain(current_model_meta=current_model_meta, config=config, subtensor=subtensor, wallet=wallet)
+    fetch_model_from_chain(current_model_meta=current_model_meta, config=config, subtensor=subtensor, wallet=wallet, expert_group_ids=[config.task.expert_group_id])
     return get_model_from_checkpoint(rank=rank, config=config, expert_manager=expert_manager)
