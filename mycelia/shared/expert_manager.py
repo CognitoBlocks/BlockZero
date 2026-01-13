@@ -11,7 +11,7 @@ import torch.distributed as dist
 import torch.nn as nn
 
 from mycelia.shared.app_logging import structlog
-from mycelia.shared.config import TaskCfg, WorkerConfig
+from mycelia.shared.config import ExpertCfg, WorkerConfig
 
 logger = structlog.getLogger(__name__)
 
@@ -124,7 +124,7 @@ class ExpertManager:
         for task_folder in task_folders:
             logger.debug("loading expert group assignment from folder", task_folder)
             # Load per-task config (to get expert_group_id)
-            task_config = TaskCfg.from_path(task_folder / "config.yaml")
+            expert_config = ExpertCfg.from_path(task_folder / "config.yaml")
 
             # Load raw JSON assignment
             with open(task_folder / "expert_assignment.json", encoding="utf-8") as f:
@@ -140,7 +140,7 @@ class ExpertManager:
                 layer_assignments[layer_id] = mappings
 
             # Map this task's expert_group_id -> its layer assignments
-            expert_assignments[task_config.exp.group_id] = layer_assignments
+            expert_assignments[expert_config.group_id] = layer_assignments
 
         return expert_assignments
 

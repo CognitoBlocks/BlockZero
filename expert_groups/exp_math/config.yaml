@@ -1,4 +1,4 @@
-expert_group_id: 0
+group_id: 0
 data:
   dataset_name: "open-r1/OpenR1-Math-220k"
   data_dir: null
