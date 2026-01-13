@@ -140,7 +140,7 @@ class ExpertManager:
                 layer_assignments[layer_id] = mappings
 
             # Map this task's expert_group_id -> its layer assignments
-            expert_assignments[expert_config.exp.group_id] = layer_assignments
+            expert_assignments[expert_config.group_id] = layer_assignments
 
         return expert_assignments
 
