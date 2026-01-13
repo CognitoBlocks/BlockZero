@@ -7,7 +7,7 @@ from mycelia.shared.dataloader import DefaultStreamingTorchDataset
 
 # -------------------------------------------------------------
 # Customer Extension Point: Customize how your dataset is loaded
-# make sure this class was pointed to in the config through config.task.data.dataset_class
+# make sure this class was pointed to in the config through config.task.exp.data.dataset_class
 # -------------------------------------------------------------
 class StreamingTorchDataset(DefaultStreamingTorchDataset):
     @staticmethod

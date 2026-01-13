@@ -191,6 +191,6 @@ def get_moe_model_config(config: MinerConfig, topk: int, org_model_config: AutoC
     base_config.output_router_logits = get_nested_attr(config, "moe.aux_load_balance", False)
     base_config.router_aux_loss_coef = get_nested_attr(config, "moe.router_aux_loss_coef", False)
     base_config.norm_topk_prob = True
-    base_config.max_position_embeddings = config.task.data.sequence_length
+    base_config.max_position_embeddings = config.task.exp.data.sequence_length
 
     return base_config

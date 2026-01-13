@@ -81,7 +81,7 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
             if split_name not in ds:
                 raise ValueError(
                     f"Dataset split '{split_name}' not found for "
-                    f"{config.task.data.dataset_name}:{config.task.data.data_dir}"
+                    f"{config.task.exp.data.dataset_name}:{config.task.exp.data.data_dir}"
                 )
             return ds[split_name]
 
@@ -91,8 +91,8 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
         # fall back to a local/non-streaming load and convert to an iterable dataset.
         try:
             ds = load_dataset(
-                config.task.data.dataset_name,
-                data_dir=config.task.data.data_dir,
+                config.task.exp.data.dataset_name,
+                data_dir=config.task.exp.data.data_dir,
                 streaming=True,
                 name="default",
                 revision="main",
@@ -101,13 +101,13 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
         except FileNotFoundError as e:
             logger.warning(
                 "Streaming dataset missing shard, falling back to local cache",
-                dataset=config.task.data.dataset_name,
+                dataset=config.task.exp.data.dataset_name,
                 split=split_name,
                 error=str(e),
             )
             cached_ds = load_dataset(
-                config.task.data.dataset_name,
-                data_dir=config.task.data.data_dir,
+                config.task.exp.data.dataset_name,
+                data_dir=config.task.exp.data.data_dir,
                 streaming=False,
                 name="default",
                 revision="main",
@@ -142,7 +142,7 @@ class DefaultStreamingTorchDataset(TorchIterableDataset):
         tokenized_stream = cls(
             hf_iterable=split,
             tokenizer=tokenizer,
-            seq_length=config.task.data.sequence_length,
+            seq_length=config.task.exp.data.sequence_length,
         )
 
         return tokenized_stream
@@ -188,10 +188,10 @@ def get_dataloader(
     """
     logger.info("get_dataloader", train=train, seed=seed)
     # Prefer provided rank/world_size, else fall back to config (if present), else no sharding.
-    world_size = world_size if world_size is not None else config.task.data.world_size
-    rank = rank if rank is not None else config.task.data.rank
+    world_size = world_size if world_size is not None else config.task.exp.data.world_size
+    rank = rank if rank is not None else config.task.exp.data.rank
 
-    dataset_class_path = getattr(config.task.data, "dataset_class", None)
+    dataset_class_path = getattr(config.task.exp.data, "dataset_class", None)
     if dataset_class_path is None:
         DatasetCls = DefaultStreamingTorchDataset
     else:
@@ -204,7 +204,7 @@ def get_dataloader(
         world_size=world_size,
         train=train,
         seed=seed,  # e.g. combined validator seed
-        fraction=config.task.data.vali_fraction,  # use ~20% of the dataset
+        fraction=config.task.exp.data.vali_fraction,  # use ~20% of the dataset
     )
 
     # Collator for causal LM (no MLM)
@@ -215,7 +215,7 @@ def get_dataloader(
     loader = StatefulDataLoader(
         tokenised_dataset,  # split
         collate_fn=data_collator,
-        batch_size=config.task.data.per_device_train_batch_size,
+        batch_size=config.task.exp.data.per_device_train_batch_size,
         num_workers=1,  # tune based on CPU/disk throughput
     )
     return loader

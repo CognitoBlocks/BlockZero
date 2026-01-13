@@ -231,7 +231,7 @@ def get_moe_model_config(
 
     # merge our subnet config to the base config
     base_config.n_group = config.moe.num_worker_groups
-    base_config.max_position_embeddings = config.task.data.sequence_length
+    base_config.max_position_embeddings = config.task.exp.data.sequence_length
     base_config.num_experts = (
         expert_manager.num_experts
     )  # this stays the same regardless of full/partial cause we keep the same router size either case
