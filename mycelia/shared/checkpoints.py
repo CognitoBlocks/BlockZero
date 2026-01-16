@@ -358,7 +358,7 @@ class Checkpoints(BaseModel):
         return None
 
 
-def build_ordered_local_checkpoints(ckpt_dir: Path, role: str = "miner") -> ModelCheckpoints:
+def build_local_checkpoints(ckpt_dir: Path, role: str = "miner") -> ModelCheckpoints:
     fs, root = fsspec.core.url_to_fs(str(ckpt_dir))
     checkpoints: list[ModelCheckpoint] = []
 
@@ -383,12 +383,16 @@ def build_ordered_local_checkpoints(ckpt_dir: Path, role: str = "miner") -> Mode
             )
         )
 
-    return ModelCheckpoints(checkpoints=checkpoints).ordered()
+    return ModelCheckpoints(checkpoints=checkpoints)
 
 
 def select_best_checkpoint(
-    primary_dir: Path, secondary_dir: Path | None = None
+    primary_dir: Path, secondary_dir: Path | None = None, resume: bool = True
 ) -> ModelCheckpoint | None:
+    
+    if not resume:
+        return None
+    
     primary = build_local_checkpoints(primary_dir, role="miner")
 
     if secondary_dir is None:

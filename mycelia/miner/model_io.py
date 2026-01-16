@@ -8,12 +8,11 @@ import bittensor
 
 from mycelia.shared.app_logging import configure_logging, structlog
 from mycelia.shared.chain import MinerChainCommit, _subtensor_lock, commit_status
-from mycelia.shared.checkpoint import (
-    ModelMeta,
+from mycelia.shared.checkpoint_helper import (
     compile_full_state_dict_from_path,
-    delete_old_checkpoints,
-    get_resume_info,
-    start_model_from,
+)
+from mycelia.shared.checkpoints import (
+    select_best_checkpoint,
 )
 from mycelia.shared.client import submit_model
 from mycelia.shared.config import MinerConfig, parse_args
@@ -96,11 +95,10 @@ def download_worker(
         job = download_queue.get()
         try:
             # Read current version/hash snapshot
-            _, current_model_meta, _ = start_model_from(
-                0,
-                config,
-                primary_ckpt_path=config.ckpt.validator_checkpoint_path,
-                secondary_ckpt_path=config.ckpt.checkpoint_path,
+            current_model_meta = select_best_checkpoint(
+                primary_dir=config.ckpt.validator_checkpoint_path,
+                secondary_dir=config.ckpt.checkpoint_path,
+                resume=config.ckpt.resume,
             )
 
             current_model_meta.model_hash = current_model_hash
@@ -123,11 +121,10 @@ def download_worker(
             logger.info(f"<{PhaseNames.distribute}> downloaded model metadata from chain: {download_meta}.")
 
             # Update shared state with new version/hash
-            _, current_model_meta, _ = start_model_from(
-                0,
-                config,
-                primary_ckpt_path=config.ckpt.validator_checkpoint_path,
-                secondary_ckpt_path=config.ckpt.checkpoint_path,
+            current_model_meta = select_best_checkpoint(
+                primary_dir=config.ckpt.validator_checkpoint_path,
+                secondary_dir=config.ckpt.checkpoint_path,
+                resume = config.ckpt.resume,
             )
 
             with shared_state.lock:
@@ -159,23 +156,23 @@ def commit_worker(
     while True:
         job = commit_queue.get()
         try:
-            _, model_meta, latest_checkpoint_path = get_resume_info(rank=0, config=config)
+            latest_checkpoint = select_best_checkpoint(primary_dir=config.ckpt.miner_checkpoint_path, resume=config.ckpt.resume)
 
             with shared_state.lock:
-                shared_state.latest_checkpoint_path = latest_checkpoint_path
+                shared_state.latest_checkpoint_path = latest_checkpoint.path
 
-            if latest_checkpoint_path is None:
+            if latest_checkpoint is None or latest_checkpoint.path is None:
                 raise FileNotReadyError("Not checkpoint found, skip commit.")
 
             model_hash = get_model_hash(
-                compile_full_state_dict_from_path(latest_checkpoint_path, expert_groups=[config.task.exp.group_id]), hex = True
+                compile_full_state_dict_from_path(latest_checkpoint.path, expert_groups=[config.task.exp.group_id]), hex = True
             )
 
             logger.info(
                 f"<{PhaseNames.commit}> committing",
-                model_version=model_meta.global_ver,
+                model_version=latest_checkpoint.global_ver,
                 hash=model_hash,
-                path=latest_checkpoint_path,
+                path=latest_checkpoint.path,
             )
 
             commit_status(
@@ -186,8 +183,8 @@ def commit_worker(
                     expert_group=config.task.exp.group_id,
                     model_hash=model_hash,
                     block=subtensor.block,
-                    global_ver=model_meta.global_ver,
-                    inner_opt=model_meta.inner_opt,
+                    global_ver=latest_checkpoint.global_ver,
+                    inner_opt=latest_checkpoint.inner_opt,
                 ),
             )
 

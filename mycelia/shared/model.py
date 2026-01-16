@@ -8,7 +8,8 @@ from torch import nn
 
 from mycelia.shared.app_logging import structlog
 from mycelia.shared.chain import fetch_model_from_chain
-from mycelia.shared.checkpoint import ModelMeta, load_checkpoint, start_model_from
+from mycelia.shared.checkpoint_helper import ModelMeta, load_checkpoint
+from mycelia.shared.checkpoints import select_best_checkpoint
 from mycelia.shared.config import MinerConfig, ValidatorConfig
 from mycelia.shared.expert_manager import (
     ExpertAssignments,
@@ -87,17 +88,17 @@ def get_model_from_checkpoint(
 
     # load from checkpoint
     if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
-        resume, model_version, latest_checkpoint_path = start_model_from(
+        latest_checkpoint= select_best_checkpoint(
             rank,
             config,
             primary_ckpt_path=config.ckpt.validator_checkpoint_path,
             secondary_ckpt_path=config.ckpt.checkpoint_path,
         )
 
-        if resume and latest_checkpoint_path:
+        if resume and latest_checkpoint.path:
             load_checkpoint(
                 config=config,
-                checkpoint_path=latest_checkpoint_path,
+                checkpoint_path=latest_checkpoint.path,
                 model=model,
                 rank=rank,
                 device=config.model.device,
@@ -107,7 +108,7 @@ def get_model_from_checkpoint(
 
     model = model.to(config.model.device)
     model.gradient_checkpointing_enable()
-    return model, model_version
+    return model, latest_checkpoint
 
 
 def load_model(
@@ -116,7 +117,7 @@ def load_model(
     expert_manager: ExpertManager,
     subtensor: bittensor.Subtensor,
     wallet: bittensor.Wallet,
-    current_model_meta: ModelMeta | None = None,
+    current_checkpoint: ModelMeta | None = None,
 ) -> tuple[nn.Module, dict]:
     """
     Main entry point used by miners (and potentially validator itself).
@@ -126,13 +127,11 @@ def load_model(
     """
     # download new model from chain into file
 
-    if current_model_meta is None:
-        _, current_model_meta, _ = start_model_from(
-            rank,
-            config,
-            primary_ckpt_path=config.ckpt.validator_checkpoint_path,
-            secondary_ckpt_path=config.ckpt.checkpoint_path,
+    if current_checkpoint is None:
+        current_checkpoint = select_best_checkpoint(
+            primary_dir=config.ckpt.validator_checkpoint_path,
+            secondary_dir=config.ckpt.checkpoint_path,
         )
 
-    fetch_model_from_chain(current_model_meta=current_model_meta, config=config, subtensor=subtensor, wallet=wallet, expert_group_ids=[config.task.exp.group_id])
+    fetch_model_from_chain(current_model_meta=current_checkpoint, config=config, subtensor=subtensor, wallet=wallet, expert_group_ids=[config.task.exp.group_id])
     return get_model_from_checkpoint(rank=rank, config=config, expert_manager=expert_manager)

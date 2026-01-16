@@ -19,8 +19,8 @@ from pydantic import BaseModel
 from mycelia.shared.app_logging import configure_logging, structlog
 from mycelia.shared.chain import _subtensor_lock
 from mycelia.shared.checkpoint import (
+    build_local_checkpoint,
     delete_old_checkpoints_by_hotkey,
-    get_resume_info,
 )
 from mycelia.shared.config import ValidatorConfig, parse_args
 from mycelia.shared.schema import (
@@ -157,9 +157,9 @@ async def get_checkpoint(
         signature_hex=signature,
     )
 
-    resume, model_meta, latest_checkpoint_path = get_resume_info(rank=0, config=config)
+    latest_checkpoint = select_best_checkpoint(primary_dir=config.ckpt.checkpoint_path)
 
-    if not latest_checkpoint_path:
+    if not latest_checkpoint or not latest_checkpoint.path:
         raise HTTPException(status_code=500, detail="CHECKPOINT_PATH env var is not set")
 
 
@@ -167,12 +167,12 @@ async def get_checkpoint(
 
     if expert_group_id is not None:
         if expert_group_id == "shared":
-            ckpt_path = latest_checkpoint_path / "model_shared.pt"
+            ckpt_path = latest_checkpoint.path / "model_shared.pt"
         else:
-            ckpt_path = latest_checkpoint_path / f"model_expgroup_{expert_group_id}.pt"
+            ckpt_path = latest_checkpoint.path / f"model_expgroup_{expert_group_id}.pt"
 
     else:
-        ckpt_path = latest_checkpoint_path / "model.pt"
+        ckpt_path = latest_checkpoint.path / "model.pt"
 
     if not ckpt_path.exists():
         raise HTTPException(
@@ -181,7 +181,7 @@ async def get_checkpoint(
         )
 
     logger.info("<download> Preparing file response for path", path=Path(ckpt_path))
-    result = file_response_for(Path(ckpt_path), f"step{model_meta.global_ver}")
+    result = file_response_for(Path(ckpt_path), f"step{latest_checkpoint.global_ver}")
 
     return result
 
