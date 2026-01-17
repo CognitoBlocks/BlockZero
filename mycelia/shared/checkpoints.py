@@ -490,7 +490,7 @@ def build_chain_checkpoints(
                     uid=getattr(neuron, "uid", None),
                     ip=getattr(neuron.axon_info, "ip", None),
                     port=getattr(neuron.axon_info, "port", None),
-                    target_hotkey_ss58=getattr(neuron, "hotkey", None),
+                    hotkey=getattr(neuron, "hotkey", None),
 
                     signature_required = True,
                     hash_required = True,
