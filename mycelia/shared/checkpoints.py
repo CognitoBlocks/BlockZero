@@ -299,6 +299,10 @@ class ChainCheckpoints(BaseModel):
         return len(self.checkpoints)
 
     def filter_checkpoints(self) -> ChainCheckpoints:
+
+        for ckpt in self.checkpoints:
+            logger.info("chain checkpoint A", ckpt=ckpt)
+
         # filter out incomplete checkpoints
         filtered = []
         for ckpt in self.checkpoints:
@@ -307,6 +311,9 @@ class ChainCheckpoints(BaseModel):
             
             filtered.append(ckpt)
         
+        for ckpt in filtered:
+            logger.info("chain checkpoint B", ckpt=ckpt)
+
         if not filtered:
             return ChainCheckpoints(checkpoints=[])
         
@@ -318,6 +325,9 @@ class ChainCheckpoints(BaseModel):
             if max_model_checkpoint and ckpt >= max_model_checkpoint:
                 version_filtered.append(ckpt)
 
+        for ckpt in version_filtered:
+            logger.info("chain checkpoint C", ckpt=ckpt)
+
         if not version_filtered:
             return ChainCheckpoints(checkpoints=[])
 
@@ -327,7 +337,13 @@ class ChainCheckpoints(BaseModel):
             return ChainCheckpoints(checkpoints=[])
 
         majority_hash, _count = hash_counts.most_common(1)[0]
-        return ChainCheckpoints(checkpoints=[ckpt for ckpt in filtered if ckpt.model_hash == majority_hash])
+        
+        majority_filtered = ChainCheckpoints(checkpoints=[ckpt for ckpt in filtered if ckpt.model_hash == majority_hash])
+
+        for ckpt in majority_filtered.checkpoints:
+            logger.info("chain checkpoint D", ckpt=ckpt)
+        
+        return majority_filtered
 
     def renew(self) -> None:
         before = len(self.checkpoints)
