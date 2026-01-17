@@ -18,13 +18,13 @@ from mycelia.miner.train_helper import free_cuda_models, get_status
 from mycelia.shared.app_logging import configure_logging, structlog
 from mycelia.shared.chain import setup_chain_worker
 from mycelia.shared.checkpoint_helper import (
-    ModelMeta,
     delete_old_checkpoints,
     load_checkpoint,
     save_checkpoint,
 )
 from mycelia.shared.checkpoints import (
     select_best_checkpoint,
+    ModelCheckpoint,
 )
 from mycelia.shared.config import MinerConfig, parse_args
 from mycelia.shared.dataloader import get_dataloader
@@ -82,7 +82,7 @@ def setup_training(
     tokenizer: PreTrainedTokenizerBase,
     subtensor: bittensor.Subtensor,
     wallet: bittensor.Wallet,
-    current_model_meta: ModelMeta,
+    current_model_meta: ModelCheckpoint,
 ) -> tuple[
     torch.nn.Module,  # model
     torch.optim.Optimizer,  # inner_optimizer

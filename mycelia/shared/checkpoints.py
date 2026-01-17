@@ -1,14 +1,13 @@
 from __future__ import annotations
-
+from functools import total_ordering
 import time
 from pathlib import Path
 from typing import Any
-
 import fsspec
 from pydantic import BaseModel, ConfigDict, Field
 
 from mycelia.shared.app_logging import structlog
-from mycelia.shared.checkpoint import compile_full_state_dict_from_path
+from mycelia.shared.checkpoint_helper import compile_full_state_dict_from_path
 from mycelia.shared.helper import get_model_hash, parse_dynamic_filename
 from mycelia.shared.schema import construct_block_message, construct_model_message, sign_message, verify_message
 
@@ -33,7 +32,7 @@ def _hash_bytes(value: str | bytes) -> bytes:
     except ValueError:
         return value.encode()
 
-
+@total_ordering
 class ModelCheckpoint(BaseModel):
     model_config = ConfigDict(populate_by_name=True, arbitrary_types_allowed=True, extra="allow")
 
@@ -55,6 +54,33 @@ class ModelCheckpoint(BaseModel):
     expert_group_verified: bool = False
 
     validated: bool = False  # for validator only
+
+    def __eq__(self, other: object) -> bool:
+        try:
+            other_global_ver = other.global_ver  # type: ignore[attr-defined]
+            other_inner_opt = other.inner_opt  # type: ignore[attr-defined]
+            other_model_hash = getattr(other, "model_hash", None)
+        except AttributeError:
+            return NotImplemented
+        return (
+            self.global_ver == other_global_ver
+            and self.inner_opt == other_inner_opt
+            and self.model_hash == other_model_hash
+        )
+
+    def __lt__(self, other: "ModelCheckpoint") -> bool:
+        try:
+            other_global_ver = other.global_ver  # type: ignore[attr-defined]
+            other_inner_opt = other.inner_opt  # type: ignore[attr-defined]
+        except AttributeError:
+            return NotImplemented
+
+        # Compare by global_ver first
+        if self.global_ver != other_global_ver:
+            return self.global_ver < other_global_ver
+
+        # Then compare by inner_opt
+        return self.inner_opt < other_inner_opt
 
     def _extra(self, key: str, default: Any | None = None) -> Any | None:
         if self.model_extra and key in self.model_extra:

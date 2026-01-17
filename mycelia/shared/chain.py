@@ -13,7 +13,8 @@ import bittensor
 from pydantic import BaseModel, ConfigDict, Field
 
 from mycelia.shared.app_logging import structlog
-from mycelia.shared.checkpoint import ModelMeta, delete_old_checkpoints
+from mycelia.shared.checkpoint_helper import delete_old_checkpoints
+from mycelia.shared.checkpoints import ModelCheckpoint
 from mycelia.shared.client import download_model
 from mycelia.shared.config import WorkerConfig
 from mycelia.shared.schema import verify_message
@@ -149,7 +150,7 @@ def submit_weight() -> str:
 
 # --- Get model from chain ---
 def scan_chain_for_new_model(
-    current_model_meta: ModelMeta | None,
+    current_model_meta: ModelCheckpoint | None,
     config: WorkerConfig,
     subtensor: bittensor.Subtensor,
 ) -> tuple[bool, list[dict]]:
@@ -162,7 +163,7 @@ def scan_chain_for_new_model(
     """
     commits: tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(config, subtensor)
 
-    max_model_meta = ModelMeta(
+    max_model_meta = ModelCheckpoint(
         global_ver=max(
             (c.global_ver for c, n in commits if c is not None and getattr(c, "global_ver", None) is not None),
             default=0,
@@ -194,7 +195,7 @@ def scan_chain_for_new_model(
     for c, n in commits:
         raw_ver = getattr(c, "global_ver", 0)
         c.global_ver = raw_ver if isinstance(raw_ver, int) else 0
-        if ModelMeta(global_ver=c.global_ver) >= max_model_meta:
+        if ModelCheckpoint(global_ver=c.global_ver) >= max_model_meta:
             most_updated_commits.append((c, n))
 
     if len(most_updated_commits) == 0:
@@ -234,7 +235,7 @@ def scan_chain_for_new_model(
 
 
 def fetch_model_from_chain(
-    current_model_meta: ModelMeta | None,
+    current_model_meta: ModelCheckpoint | None,
     config: WorkerConfig,
     subtensor: bittensor.Subtensor,
     wallet: bittensor.Wallet,

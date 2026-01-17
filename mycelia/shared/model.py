@@ -8,7 +8,8 @@ from torch import nn
 
 from mycelia.shared.app_logging import structlog
 from mycelia.shared.chain import fetch_model_from_chain
-from mycelia.shared.checkpoint_helper import ModelMeta, load_checkpoint
+from mycelia.shared.checkpoint_helper import load_checkpoint
+from mycelia.shared.checkpoints import ModelCheckpoint
 from mycelia.shared.checkpoints import select_best_checkpoint
 from mycelia.shared.config import MinerConfig, ValidatorConfig
 from mycelia.shared.expert_manager import (
@@ -69,7 +70,7 @@ def freeze_parameters(
 
 def get_model_from_checkpoint(
     rank: int, config: MinerConfig | ValidatorConfig, expert_manager: ExpertManager
-) -> tuple[nn.Module, ModelMeta]:
+) -> tuple[nn.Module, ModelCheckpoint]:
     resume = False
     latest_checkpoint_path = None
 
@@ -89,10 +90,9 @@ def get_model_from_checkpoint(
     # load from checkpoint
     if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
         latest_checkpoint= select_best_checkpoint(
-            rank,
-            config,
-            primary_ckpt_path=config.ckpt.validator_checkpoint_path,
-            secondary_ckpt_path=config.ckpt.checkpoint_path,
+            primary_dir=config.ckpt.validator_checkpoint_path,
+            secondary_dir=config.ckpt.checkpoint_path,
+            resume = config.ckpt.resume,
         )
 
         if resume and latest_checkpoint.path:
@@ -117,7 +117,7 @@ def load_model(
     expert_manager: ExpertManager,
     subtensor: bittensor.Subtensor,
     wallet: bittensor.Wallet,
-    current_checkpoint: ModelMeta | None = None,
+    current_checkpoint: ModelCheckpoint | None = None,
 ) -> tuple[nn.Module, dict]:
     """
     Main entry point used by miners (and potentially validator itself).
