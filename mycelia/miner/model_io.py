@@ -18,7 +18,7 @@ from mycelia.shared.client import submit_model
 from mycelia.shared.config import MinerConfig, parse_args
 from mycelia.shared.cycle import search_model_submission_destination, setup_chain_worker, wait_till
 from mycelia.shared.helper import get_model_hash
-from mycelia.shared.model import fetch_model_from_chain
+from mycelia.shared.model import fetch_model_from_chain_validator
 from mycelia.shared.schema import sign_message
 from mycelia.sn_owner.cycle import PhaseNames
 
@@ -103,7 +103,7 @@ def download_worker(
 
             current_model_meta.model_hash = current_model_hash
 
-            download_meta = fetch_model_from_chain(
+            download_meta = fetch_model_from_chain_validator(
                 current_model_meta,
                 config,
                 subtensor,

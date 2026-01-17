@@ -1,5 +1,11 @@
+from __future__ import annotations
+
+import base64
 import hashlib
+import json
+import threading
 import time
+import traceback
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -7,7 +13,7 @@ from typing import Any
 
 import bittensor
 import requests
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from mycelia.shared.app_logging import configure_logging, structlog
 from mycelia.shared.chain import (
@@ -16,9 +22,16 @@ from mycelia.shared.chain import (
     WorkerChainCommit,
     get_chain_commits,
     serve_axon,
-    _subtensor_lock,
 )
+from mycelia.shared.checkpoints import (
+    ChainCheckpoints,
+    ModelCheckpoint,
+    build_chain_checkpoints,
+    delete_old_checkpoints,
+)
+from mycelia.shared.client import download_model
 from mycelia.shared.config import MinerConfig, ValidatorConfig, WorkerConfig
+from mycelia.shared.cycle import PhaseNames, get_blocks_from_previous_phase_from_api
 from mycelia.shared.helper import h256_int, parse_dynamic_filename
 from mycelia.validator.evaluator import MinerEvalJob
 
@@ -323,7 +336,11 @@ def load_submission_files(folder: str = "miner_submission"):
 
     files_dict = {}
     for file_name in folder_path.glob("*.pt"):
+        if file_name.name.startswith("._tmp"):
+            continue
         meta = parse_dynamic_filename(file_name.name)
+        if meta is None:
+            continue
         files_dict[file_name.name] = meta
 
     return files_dict
@@ -338,6 +355,7 @@ def gather_validation_job(config: ValidatorConfig, subtensor: bittensor.Subtenso
     hotkeys = subtensor.metagraph(netuid=config.chain.netuid).hotkeys
     miner_jobs = []
     for file_name, submission_meta in miner_submission_files.items():
+        logger.debug("Evaluating submission file", file_name=file_name, submission_meta=submission_meta)
         if (
             submission_meta["hotkey"] in miner_assignment
             and submission_meta["block"] >= previous_phase_range[0]
@@ -353,3 +371,5 @@ def gather_validation_job(config: ValidatorConfig, subtensor: bittensor.Subtenso
             )
 
     return miner_jobs
+
+

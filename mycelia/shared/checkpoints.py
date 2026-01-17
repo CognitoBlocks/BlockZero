@@ -457,34 +457,42 @@ def build_local_checkpoints(ckpt_dir: Path, role: str = "miner") -> ModelCheckpo
 
     return ModelCheckpoints(checkpoints=checkpoints)
 
-
-
-
-
 def build_chain_checkpoints(
-    commits: list[tuple[Any, Any]],
+    signed_hash_chain_commits: list[tuple[Any, Any]],
+    hash_chain_commits: list[tuple[Any, Any]],
 ) -> ChainCheckpoints:
     """
-    Build chain checkpoints from on-chain commits.
+    Build chain checkpoints by joining signed-hash commits with hash commits.
     """
-    checkpoints: list[ChainCheckpoint] = []
-    for commit, neuron in commits:
+    signed_by_hotkey: dict[str, str] = {}
+    for commit, neuron in signed_hash_chain_commits:
         try:
+            hotkey = getattr(neuron, "hotkey", None)
+            signed = getattr(commit, "signed_model_hash", None)
+            if hotkey and signed:
+                signed_by_hotkey[hotkey] = signed
+        except Exception:
+            logger.info("Cannot read signed hash commit", commit=commit)
+
+    checkpoints: list[ChainCheckpoint] = []
+    for commit, neuron in hash_chain_commits:
+        try:
+            hotkey = getattr(neuron, "hotkey", None)
             checkpoints.append(
                 ChainCheckpoint(
+                    signed_model_hash=signed_by_hotkey.get(hotkey) if hotkey else None,
                     model_hash=getattr(commit, "model_hash", None),
                     global_ver=getattr(commit, "global_ver", None),
                     expert_group=getattr(commit, "expert_group", None),
                     miner_seed=getattr(commit, "miner_seed", None),
-                    
+                    inner_opt=getattr(commit, "inner_opt", None),
                     uid=getattr(neuron, "uid", None),
                     ip=getattr(neuron.axon_info, "ip", None),
                     port=getattr(neuron.axon_info, "port", None),
-                    hotkey=getattr(neuron, "hotkey", None),
-
-                    signature_required = True,
-                    hash_required = True,
-                    expert_group_check_required = True,
+                    hotkey=hotkey,
+                    signature_required=True,
+                    hash_required=True,
+                    expert_group_check_required=True,
                 )
             )
         except Exception:
@@ -494,8 +502,7 @@ def build_chain_checkpoints(
 
     if len(filtered_checkpoints) == 0:
         return ChainCheckpoints(checkpoints=[])
-    else:
-        return filtered_checkpoints
+    return filtered_checkpoints
 
 def delete_old_checkpoints(checkpoint_path: str | Path, topk: int) -> list[str]:
     """
