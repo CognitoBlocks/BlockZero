@@ -135,7 +135,7 @@ def hash_model_bytes(model_bytes: bytes) -> bytes:
     return hashlib.blake2b(model_bytes, digest_size=24).digest()
 
 
-def get_model_hash(state, hex = False):
+def get_model_hash(state, hex=False):
     """
     Create a model hash from model mocated at specified path.
     """

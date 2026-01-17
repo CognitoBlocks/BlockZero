@@ -17,13 +17,22 @@ class PhaseManager:
         # ordered phase
         phases = [
             {"name": names.distribute, "length": config.cycle.distribute_period},  # miner download model from validator
-            {"name": names.train,"length": config.cycle.train_period},  # miner train
-            {"name": names.miner_commit_1, "length": config.cycle.commit_period},  # miner commit model hash and validator commit seed
-            {"name": names.miner_commit_2, "length": config.cycle.commit_period},  # miner commit model hash and validator commit seed
+            {"name": names.train, "length": config.cycle.train_period},  # miner train
+            {
+                "name": names.miner_commit_1,
+                "length": config.cycle.commit_period,
+            },  # miner commit model hash and validator commit seed
+            {
+                "name": names.miner_commit_2,
+                "length": config.cycle.commit_period,
+            },  # miner commit model hash and validator commit seed
             {"name": names.submission, "length": config.cycle.submission_period},  # miner submit model to validator
             {"name": names.validate, "length": config.cycle.validate_period},  # validator validate models from miners
             {"name": names.merge, "length": config.cycle.merge_period},  # validator merge models
-            {"name": names.validator_commit_1, "length": config.cycle.commit_period},  # validator commit signed_model_hash
+            {
+                "name": names.validator_commit_1,
+                "length": config.cycle.commit_period,
+            },  # validator commit signed_model_hash
             {"name": names.validator_commit_2, "length": config.cycle.commit_period},  # validator commit model_hash
         ]
         return phases

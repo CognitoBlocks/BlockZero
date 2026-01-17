@@ -39,6 +39,7 @@ configure_logging()
 logger = structlog.get_logger(__name__)
 torch.autograd.set_detect_anomaly(True)
 
+
 # this is for local DP only
 def init_process(local_rank: int, config: MinerConfig, world_size: int, fn: callable, backend: str = "nccl") -> None:
     """
@@ -156,12 +157,14 @@ def setup_training(
         precision = "fp16-mixed"
     inner_scaler = torch.amp.GradScaler(
         "cuda",
-        enabled=False# (precision == "fp16-mixed"),
+        enabled=False,  # (precision == "fp16-mixed"),
     )
 
     # === dataloader ===
     logger.info(f"init - train dataloader")
-    train_dataloader = get_dataloader(config, rank=rank, world_size=config.task.exp.data.world_size, tokenizer=tokenizer)
+    train_dataloader = get_dataloader(
+        config, rank=rank, world_size=config.task.exp.data.world_size, tokenizer=tokenizer
+    )
 
     # === load checkpoint (if any) ===
     logger.info(f"init - load checkpoint")
@@ -362,7 +365,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
 
             # === inner optimizer ===
             if not is_start_step and is_inner_optimizer_step:
-                old_model_hash = get_model_hash(model.state_dict(), hex = True)
+                old_model_hash = get_model_hash(model.state_dict(), hex=True)
 
                 for n, p in model.named_parameters():
                     if p.grad is None or torch.isnan(p.grad.sum()):
@@ -380,11 +383,11 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 step_skipped = inner_scaler.is_enabled() and step_result is None
 
                 logger.info(
-                        "GradScaler for optimizer step",
-                        grad_norm=grad_norm,
-                        grad_sum = sum_model_gradients(model),
-                        scale_before=scale_before,
-                        skipped = step_skipped
+                    "GradScaler for optimizer step",
+                    grad_norm=grad_norm,
+                    grad_sum=sum_model_gradients(model),
+                    scale_before=scale_before,
+                    skipped=step_skipped,
                 )
 
                 inner_scaler.update()
@@ -405,7 +408,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 gc.collect()
                 torch.cuda.empty_cache()
 
-                new_model_hash = get_model_hash(model.state_dict(), hex = True)
+                new_model_hash = get_model_hash(model.state_dict(), hex=True)
                 logger.info(f"Updated model", old_model_hash=old_model_hash, new_model_hash=new_model_hash)
 
             # === Log metric ===
@@ -514,7 +517,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                         largest_avail_model=select_best_checkpoint(
                             primary_dir=config.ckpt.validator_checkpoint_path,
                             secondary_dir=config.ckpt.checkpoint_path,
-                        )
+                        ),
                     )
                     (
                         model,

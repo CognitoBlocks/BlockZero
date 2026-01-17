@@ -371,5 +371,3 @@ def gather_validation_job(config: ValidatorConfig, subtensor: bittensor.Subtenso
             )
 
     return miner_jobs
-
-

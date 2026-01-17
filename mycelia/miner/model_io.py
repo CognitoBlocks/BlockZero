@@ -71,7 +71,9 @@ def scheduler_service(
         download_queue.put(Job(job_type=JobType.DOWNLOAD))
 
         # --------- COMISSION SCHEDULING ---------
-        _, phase_end_block = wait_till(config, phase_name=PhaseNames.miner_commit_1, poll_fallback_block=poll_fallback_block)
+        _, phase_end_block = wait_till(
+            config, phase_name=PhaseNames.miner_commit_1, poll_fallback_block=poll_fallback_block
+        )
         commit_queue.put(Job(job_type=JobType.COMMIT, phase_end_block=phase_end_block))
 
         # --------- SUBMISSION SCHEDULING ---------
@@ -124,7 +126,7 @@ def download_worker(
             current_model_meta = select_best_checkpoint(
                 primary_dir=config.ckpt.validator_checkpoint_path,
                 secondary_dir=config.ckpt.checkpoint_path,
-                resume = config.ckpt.resume_from_ckpt,
+                resume=config.ckpt.resume_from_ckpt,
             )
 
             with shared_state.lock:
@@ -156,9 +158,10 @@ def commit_worker(
     while True:
         job = commit_queue.get()
         try:
-            latest_checkpoint = select_best_checkpoint(primary_dir=config.ckpt.checkpoint_path, resume=config.ckpt.resume_from_ckpt)
+            latest_checkpoint = select_best_checkpoint(
+                primary_dir=config.ckpt.checkpoint_path, resume=config.ckpt.resume_from_ckpt
+            )
             latest_checkpoint.sign_hash(wallet=wallet)
-
 
             with shared_state.lock:
                 shared_state.latest_checkpoint_path = latest_checkpoint.path
@@ -203,7 +206,6 @@ def commit_worker(
                     inner_opt=latest_checkpoint.inner_opt,
                 ),
             )
-
 
         except FileNotReadyError as e:
             logger.warning(f"<{PhaseNames.miner_commit_1}> File not ready error: {e}")
@@ -262,7 +264,7 @@ def submit_worker(
                 destination={destination_axon.hotkey},
                 block=block,
                 hash=model_hash,
-                path=latest_checkpoint_path/"model_expgroup_{config.task.exp.group_id}.pt",
+                path=latest_checkpoint_path / "model_expgroup_{config.task.exp.group_id}.pt",
             )
 
         except FileNotReadyError as e:

@@ -159,8 +159,12 @@ async def get_checkpoint(
     if not latest_checkpoint or not latest_checkpoint.path:
         raise HTTPException(status_code=500, detail="CHECKPOINT_PATH env var is not set")
 
-
-    logger.info("<download> Received get checkpoint request", from_hk = origin_hotkey_ss58, block = block, expert_group_id=expert_group_id)
+    logger.info(
+        "<download> Received get checkpoint request",
+        from_hk=origin_hotkey_ss58,
+        block=block,
+        expert_group_id=expert_group_id,
+    )
 
     if expert_group_id is not None:
         if expert_group_id == "shared":
@@ -248,7 +252,8 @@ async def submit_checkpoint(
 
     verify_message(
         origin_hotkey_ss58=origin_hotkey_ss58,
-        message=construct_model_message(model_path=dest_path) + construct_block_message(target_hotkey_ss58, block=block),
+        message=construct_model_message(model_path=dest_path)
+        + construct_block_message(target_hotkey_ss58, block=block),
         signature_hex=signature,
     )
 

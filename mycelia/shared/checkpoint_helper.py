@@ -59,9 +59,10 @@ logger = structlog.getLogger(__name__)
 #         # Then compare by inner_opt
 #         return self.inner_opt < other_inner_opt
 
-#====================
+
+# ====================
 # Checkpoint saving / loading
-#====================
+# ====================
 def save_state_dict_by_expert_group(
     state_dict: dict[str, torch.Tensor],
     expert_groups: ExpertAssignments,
@@ -115,7 +116,7 @@ def save_state_dict_by_expert_group(
     for gid, sd in grouped_state.items():
         fname = f"model_expgroup_{gid}.pt" if gid != "shared" else "model_shared.pt"
         path = os.path.join(save_dir, fname)
-        logger.info("Saving for expert group", gid = gid, model_hash = get_model_hash(sd, hex = True))
+        logger.info("Saving for expert group", gid=gid, model_hash=get_model_hash(sd, hex=True))
         torch.save({"model_state_dict": sd}, path)
         paths[gid] = path
 
@@ -377,9 +378,10 @@ def load_checkpoint(
 
     return global_state_dict["loss"]
 
-#====================
+
+# ====================
 # Checkpoint selection
-#====================
+# ====================
 
 # def start_model_from(
 #     rank: int, config: MinerConfig, primary_ckpt_path: Path, secondary_ckpt_path: Path | None
@@ -498,6 +500,7 @@ def load_checkpoint(
 #         ckpt_files,
 #         key=lambda item: (-item.global_ver, -item.inner_opt),
 #     )
+
 
 def get_model_files(checkpoint_path):
     checkpoint_path = Path(checkpoint_path)  # normalize to Path object

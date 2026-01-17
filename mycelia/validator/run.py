@@ -150,7 +150,9 @@ def setup_training(
 
     # === dataloader ===
     logger.info(f"setup training - load dataloader")
-    train_dataloader = get_dataloader(config, rank=rank, world_size=config.task.exp.data.world_size, tokenizer=tokenizer)
+    train_dataloader = get_dataloader(
+        config, rank=rank, world_size=config.task.exp.data.world_size, tokenizer=tokenizer
+    )
 
     # === load checkpoint (if any) ===
     logger.info(
@@ -442,7 +444,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             # === global optimizer ===
             logger.info("(6) Running global model optimization step")
 
-            org_model_hash = get_model_hash(global_model.state_dict(), hex = True)
+            org_model_hash = get_model_hash(global_model.state_dict(), hex=True)
 
             run_global_optimization(
                 model=base_model,
@@ -457,8 +459,8 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             logger.info(
                 "Complete optimzation step",
                 org_model_hash=org_model_hash,
-                new_model_hash=get_model_hash(global_model.state_dict(), hex = True),
-                new_base_model_hash=get_model_hash(base_model.state_dict(), hex = True),
+                new_model_hash=get_model_hash(global_model.state_dict(), hex=True),
+                new_base_model_hash=get_model_hash(base_model.state_dict(), hex=True),
             )
 
             cleanup(global_model, base_model)

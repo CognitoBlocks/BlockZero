@@ -53,7 +53,7 @@ class TopKRouter(nn.Module):
         mask = mask_1d.view(shape).to(dtype=x.dtype)
 
         mask_bool = mask.to(torch.bool)  # True = keep
-        fill = max(x.min().item() - 1e-6, 0)   # scalar, computed BEFORE masking
+        fill = max(x.min().item() - 1e-6, 0)  # scalar, computed BEFORE masking
         x_masked = x.masked_fill(~mask_bool, fill)
         return x_masked
 

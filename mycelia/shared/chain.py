@@ -45,6 +45,7 @@ class WorkerChainCommit(BaseModel):
     stake: float
     validator_permit: bool
 
+
 class SignedModelHashChainCommit(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -99,19 +100,25 @@ def commit_status(
     data = json.dumps(data_dict)
 
     success = subtensor.set_commitment(wallet=wallet, netuid=config.chain.netuid, data=data, raise_error=False)
-    
-    if not success: 
+
+    if not success:
         logger.warning("Failed to commit status to chain", status=data_dict)
     else:
         logger.info("Committed status to chain", status=data_dict)
-    
+
     return data_dict
 
 
 def get_chain_commits(
-    config: WorkerConfig, subtensor: bittensor.Subtensor, wait_to_decrypt: bool = False, block: int | None = None, signature_commit:bool = False
+    config: WorkerConfig,
+    subtensor: bittensor.Subtensor,
+    wait_to_decrypt: bool = False,
+    block: int | None = None,
+    signature_commit: bool = False,
 ) -> tuple[WorkerChainCommit, bittensor.Neuron]:
-    all_commitments = subtensor.get_all_commitments(netuid=config.chain.netuid, block=block, wait_to_decrypt=wait_to_decrypt)
+    all_commitments = subtensor.get_all_commitments(
+        netuid=config.chain.netuid, block=block, wait_to_decrypt=wait_to_decrypt
+    )
     metagraph = subtensor.metagraph(netuid=config.chain.netuid, block=block)
 
     parsed = []
@@ -127,7 +134,7 @@ def get_chain_commits(
             else:
                 chain_commit = (
                     ValidatorChainCommit.model_validate(status_dict)
-                    if "miner_seed" in status_dict or "s" in status_dict # TODO: fix this check
+                    if "miner_seed" in status_dict or "s" in status_dict  # TODO: fix this check
                     else MinerChainCommit.model_validate(status_dict)
                 )
 
@@ -185,4 +192,3 @@ def submit_weight() -> str:
 
 #     should_download = len(download_meta) > 0
 #     return should_download, download_meta
-

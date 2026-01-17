@@ -205,7 +205,7 @@ def save_state_dict_by_expert_group(
     for gid, sd in grouped_state.items():
         fname = f"model_expgroup_{gid}.pt" if gid != "shared" else "model_shared.pt"
         path = os.path.join(save_dir, fname)
-        logger.info("Saving for expert group", gid = gid, model_hash = get_model_hash(sd, hex = True))
+        logger.info("Saving for expert group", gid=gid, model_hash=get_model_hash(sd, hex=True))
         torch.save({"model_state_dict": sd}, path)
         paths[gid] = path
 

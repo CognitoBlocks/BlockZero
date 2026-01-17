@@ -126,10 +126,10 @@ def get_model_from_checkpoint(
 
     # load from checkpoint
     if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
-        latest_checkpoint= select_best_checkpoint(
+        latest_checkpoint = select_best_checkpoint(
             primary_dir=config.ckpt.validator_checkpoint_path,
             secondary_dir=config.ckpt.checkpoint_path,
-            resume = config.ckpt.resume_from_ckpt,
+            resume=config.ckpt.resume_from_ckpt,
         )
 
         if resume and latest_checkpoint.path:
@@ -170,7 +170,13 @@ def load_model(
             secondary_dir=config.ckpt.checkpoint_path,
         )
 
-    fetch_model_from_chain_validator(current_model_meta=current_checkpoint, config=config, subtensor=subtensor, wallet=wallet, expert_group_ids=[config.task.exp.group_id])
+    fetch_model_from_chain_validator(
+        current_model_meta=current_checkpoint,
+        config=config,
+        subtensor=subtensor,
+        wallet=wallet,
+        expert_group_ids=[config.task.exp.group_id],
+    )
     return get_model_from_checkpoint(rank=rank, config=config, expert_manager=expert_manager)
 
 
@@ -183,28 +189,38 @@ def fetch_model_from_chain_validator(
 ) -> dict | None:
     """
     Fetches a model from the chain validator if it's has the right commit format from the previous phase commits (validator_commit_1 & validator_commit_2) and newer than the current model.
-    """ 
+    """
     # --- Get block ranges for previous phases ---
     previous_phase_range = get_blocks_from_previous_phase_from_api(config)
     validator_commit_1_end_block = previous_phase_range[PhaseNames.validator_commit_1][1] + 1
     validator_commit_2_end_block = previous_phase_range[PhaseNames.validator_commit_2][1] + 1
 
     # --- Get commits from chain at the right blocks ---
-    signed_hash_chain_commits: tuple[SignedModelHashChainCommit, bittensor.Neuron] = get_chain_commits(config, subtensor, block = validator_commit_1_end_block)
-    hash_chain_commits: tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(config, subtensor, block = validator_commit_2_end_block)
-    
+    signed_hash_chain_commits: tuple[SignedModelHashChainCommit, bittensor.Neuron] = get_chain_commits(
+        config, subtensor, block=validator_commit_1_end_block
+    )
+    hash_chain_commits: tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(
+        config, subtensor, block=validator_commit_2_end_block
+    )
+
     # --- Build chain checkpoints ---
     chain_checkpoints = build_chain_checkpoints(
-        signed_hash_chain_commits=signed_hash_chain_commits, 
-        hash_chain_commits=hash_chain_commits
+        signed_hash_chain_commits=signed_hash_chain_commits, hash_chain_commits=hash_chain_commits
     )
 
     # --- Filter to only newer than current model ---
-    chain_checkpoints = ChainCheckpoints(checkpoints=[ckpt for ckpt in chain_checkpoints.checkpoints if ckpt > current_model_meta])
+    chain_checkpoints = ChainCheckpoints(
+        checkpoints=[ckpt for ckpt in chain_checkpoints.checkpoints if ckpt > current_model_meta]
+    )
     should_download = len(chain_checkpoints.checkpoints) > 0
 
-    logger.info("Fetching model from chain", should_download=should_download, chain_checkpoints=chain_checkpoints, current_model_meta=current_model_meta)
-    
+    logger.info(
+        "Fetching model from chain",
+        should_download=should_download,
+        chain_checkpoints=chain_checkpoints,
+        current_model_meta=current_model_meta,
+    )
+
     # --- Download model if available ---
     if should_download and chain_checkpoints:
         download_success = False
@@ -235,7 +251,7 @@ def fetch_model_from_chain_validator(
                     if isinstance(expert_group_id, int):
                         out_file = f"model_expgroup_{expert_group_id}.pt"
                     elif expert_group_id == "shared":
-                            out_file = "model_shared.pt"
+                        out_file = "model_shared.pt"
                     else:
                         logger.warning("Invalid expert_group_id, skipping:", expert_group_id=expert_group_id)
                         continue
@@ -283,4 +299,3 @@ def fetch_model_from_chain_validator(
             logger.error(f"❌ All download attempts failed after {retries} retries.")
 
             return None
-

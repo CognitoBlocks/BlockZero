@@ -1,5 +1,5 @@
 from __future__ import annotations
-import bittensor 
+import bittensor
 from collections import Counter
 from functools import total_ordering
 import os
@@ -36,13 +36,14 @@ def _hash_bytes(value: str | bytes) -> bytes:
     except ValueError:
         return value.encode()
 
+
 @total_ordering
 class ModelCheckpoint(BaseModel):
     model_config = ConfigDict(populate_by_name=True, arbitrary_types_allowed=True, extra="allow")
 
     signed_model_hash: str | None = Field(default=None, alias="h")
     model_hash: str | None = None
-    global_ver: int | None= None
+    global_ver: int | None = None
     expert_group: int | None = None
 
     inner_opt: int | None = None
@@ -52,10 +53,10 @@ class ModelCheckpoint(BaseModel):
 
     signature_required: bool = False
     signature_verified: bool = False
-    
+
     hash_required: bool = False
     hash_verified: bool = False
-    
+
     expert_group_check_required: bool = False
     expert_group_verified: bool = False
 
@@ -141,7 +142,7 @@ class ModelCheckpoint(BaseModel):
         self.hash_verified = True
         return self.model_hash
 
-    def sign_hash(self, wallet:bittensor.Wallet) -> str:
+    def sign_hash(self, wallet: bittensor.Wallet) -> str:
         if self.model_hash is None:
             self.hash_model()
 
@@ -156,16 +157,16 @@ class ModelCheckpoint(BaseModel):
         if self.path is None:
             self.hash_verified = False
             return False
-        
+
         state = compile_full_state_dict_from_path(self.path / f"model_expgroup_{self.expert_group}.pt")
         expected_hash = get_model_hash(state, hex=True)
-    
+
         if expected_hash is None:
             self.hash_verified = False
             return False
 
         self.hash_verified = self.model_hash == expected_hash
-        
+
         return self.hash_verified
 
     def verify_signature(self) -> bool:
@@ -173,7 +174,9 @@ class ModelCheckpoint(BaseModel):
             self.signature_verified = False
             return False
 
-        self.signature_verified = verify_message(self.hotkey, message = self.model_hash, signature_hex = self.signed_model_hash)
+        self.signature_verified = verify_message(
+            self.hotkey, message=self.model_hash, signature_hex=self.signed_model_hash
+        )
 
         return self.signature_verified
 
@@ -207,7 +210,7 @@ class ModelCheckpoint(BaseModel):
             return False
 
         return True
-    
+
     def active(self) -> bool:
         if self.expired():
             return False
@@ -223,10 +226,11 @@ class ModelCheckpoint(BaseModel):
 
         return True
 
+
 class ChainCheckpoint(ModelCheckpoint):
     uid: int | None = Field(default=None, alias="h")
     ip: str | None = None
-    port: int | None= None
+    port: int | None = None
     hotkey: str | None = None
 
     def __init__(self, **data: Any):
@@ -262,37 +266,36 @@ class ChainCheckpoints(BaseModel):
         return len(self.checkpoints)
 
     def filter_checkpoints(self) -> ChainCheckpoints:
-
         for ckpt in self.checkpoints:
             logger.info("chain checkpoint A", ckpt=ckpt)
 
         # filter out incomplete checkpoints
         filtered = []
         for ckpt in self.checkpoints:
-            if (ckpt.model_hash is None or \
-                ckpt.global_ver is None or \
-                ckpt.expert_group is None or \
-                ckpt.miner_seed is None or \
-                ckpt.uid is None or \
-                ckpt.ip is None or \
-                ckpt.port is None or \
-                ckpt.hotkey is None
-                ):
+            if (
+                ckpt.model_hash is None
+                or ckpt.global_ver is None
+                or ckpt.expert_group is None
+                or ckpt.miner_seed is None
+                or ckpt.uid is None
+                or ckpt.ip is None
+                or ckpt.port is None
+                or ckpt.hotkey is None
+            ):
                 continue
-            
+
             filtered.append(ckpt)
-        
+
         for ckpt in filtered:
             logger.info("chain checkpoint B", ckpt=ckpt)
 
         if not filtered:
             return ChainCheckpoints(checkpoints=[])
-        
+
         # keep only checkpoints with the highest global_ver
         version_filtered = []
         max_model_checkpoint = max(filtered) if filtered else None
         for ckpt in filtered:
-            
             if max_model_checkpoint and ckpt >= max_model_checkpoint:
                 version_filtered.append(ckpt)
 
@@ -308,12 +311,14 @@ class ChainCheckpoints(BaseModel):
             return ChainCheckpoints(checkpoints=[])
 
         majority_hash, _count = hash_counts.most_common(1)[0]
-        
-        majority_filtered = ChainCheckpoints(checkpoints=[ckpt for ckpt in filtered if ckpt.model_hash == majority_hash])
+
+        majority_filtered = ChainCheckpoints(
+            checkpoints=[ckpt for ckpt in filtered if ckpt.model_hash == majority_hash]
+        )
 
         for ckpt in majority_filtered.checkpoints:
             logger.info("chain checkpoint D", ckpt=ckpt)
-        
+
         return majority_filtered
 
     def renew(self) -> None:
@@ -414,6 +419,7 @@ class Checkpoints(BaseModel):
 
         return None
 
+
 def build_local_checkpoint(path: Path, role: str = "miner") -> ModelCheckpoint | None:
     if path.name.startswith(".tmp_") or "yaml" in path.name.lower():
         return None
@@ -429,6 +435,7 @@ def build_local_checkpoint(path: Path, role: str = "miner") -> ModelCheckpoint |
         role=role,
         place="local",
     )
+
 
 def build_local_checkpoints(ckpt_dir: Path, role: str = "miner") -> ModelCheckpoints:
     fs, root = fsspec.core.url_to_fs(str(ckpt_dir))
@@ -456,6 +463,7 @@ def build_local_checkpoints(ckpt_dir: Path, role: str = "miner") -> ModelCheckpo
         )
 
     return ModelCheckpoints(checkpoints=checkpoints)
+
 
 def build_chain_checkpoints(
     signed_hash_chain_commits: list[tuple[Any, Any]],
@@ -504,6 +512,7 @@ def build_chain_checkpoints(
         return ChainCheckpoints(checkpoints=[])
     return filtered_checkpoints
 
+
 def delete_old_checkpoints(checkpoint_path: str | Path, topk: int) -> list[str]:
     """
     Deletes old checkpoints, keeping only the top 'k' most recent ones.
@@ -516,6 +525,7 @@ def delete_old_checkpoints(checkpoint_path: str | Path, topk: int) -> list[str]:
         fs.rm(str(model_meta.path), recursive=True)
         ckpt_deleted.append(str(model_meta.path))
     return ckpt_deleted
+
 
 def delete_old_checkpoints_by_hotkey(folder_path: Path) -> list[str]:
     """
@@ -557,13 +567,13 @@ def delete_old_checkpoints_by_hotkey(folder_path: Path) -> list[str]:
 
     return deleted_files
 
+
 def select_best_checkpoint(
     primary_dir: Path, secondary_dir: Path | None = None, resume: bool = True
 ) -> ModelCheckpoint | None:
-    
     if not resume:
         return None
-    
+
     primary = build_local_checkpoints(primary_dir, role="miner")
 
     if secondary_dir is None:
