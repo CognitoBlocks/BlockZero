@@ -18,11 +18,11 @@ from mycelia.miner.train_helper import free_cuda_models, get_status
 from mycelia.shared.app_logging import configure_logging, structlog
 from mycelia.shared.chain import setup_chain_worker
 from mycelia.shared.checkpoint_helper import (
-    delete_old_checkpoints,
     load_checkpoint,
     save_checkpoint,
 )
 from mycelia.shared.checkpoints import (
+    delete_old_checkpoints,
     select_best_checkpoint,
     ModelCheckpoint,
 )

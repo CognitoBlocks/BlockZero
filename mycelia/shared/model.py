@@ -92,7 +92,7 @@ def get_model_from_checkpoint(
         latest_checkpoint= select_best_checkpoint(
             primary_dir=config.ckpt.validator_checkpoint_path,
             secondary_dir=config.ckpt.checkpoint_path,
-            resume = config.ckpt.resume,
+            resume = config.ckpt.resume_from_ckpt,
         )
 
         if resume and latest_checkpoint.path:

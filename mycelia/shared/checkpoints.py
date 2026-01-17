@@ -1,9 +1,11 @@
 from __future__ import annotations
 from functools import total_ordering
+import os
 import time
 from pathlib import Path
 from typing import Any
 import fsspec
+from fsspec.generic import GenericFileSystem
 from pydantic import BaseModel, ConfigDict, Field
 
 from mycelia.shared.app_logging import structlog
@@ -383,7 +385,6 @@ class Checkpoints(BaseModel):
 
         return None
 
-
 def build_local_checkpoints(ckpt_dir: Path, role: str = "miner") -> ModelCheckpoints:
     fs, root = fsspec.core.url_to_fs(str(ckpt_dir))
     checkpoints: list[ModelCheckpoint] = []
@@ -411,6 +412,58 @@ def build_local_checkpoints(ckpt_dir: Path, role: str = "miner") -> ModelCheckpo
 
     return ModelCheckpoints(checkpoints=checkpoints)
 
+def delete_old_checkpoints(checkpoint_path: str | Path, topk: int) -> list[str]:
+    """
+    Deletes old checkpoints, keeping only the top 'k' most recent ones.
+    """
+    fs = GenericFileSystem()
+    sorted_ckpt_files = build_local_checkpoints(checkpoint_path).ordered()
+
+    ckpt_deleted = []
+    for model_meta in sorted_ckpt_files[topk:]:
+        fs.rm(str(model_meta.path), recursive=True)
+        ckpt_deleted.append(str(model_meta.path))
+    return ckpt_deleted
+
+def delete_old_checkpoints_by_hotkey(folder_path: Path) -> list[str]:
+    """
+    Deletes all non-latest submission files coming from the same hotkey.
+    Keeps only the file with the highest block number per hotkey.
+    """
+    if not folder_path.exists():
+        raise FileNotFoundError(f"Folder not found: {folder_path.resolve()}")
+
+    submissions_by_hotkey: dict[str, list[tuple[int, Path]]] = {}
+    for file_path in folder_path.glob("*.pt"):
+        meta = parse_dynamic_filename(file_path.name)
+        if "hotkey" not in meta or "block" not in meta:
+            print(f"Skipping malformed filename: {file_path.name}")
+            continue
+
+        hotkey = meta["hotkey"]
+        block = meta["block"]
+
+        if hotkey not in submissions_by_hotkey:
+            submissions_by_hotkey[hotkey] = []
+        submissions_by_hotkey[hotkey].append((block, file_path))
+
+    deleted_files = []
+    for _, entries in submissions_by_hotkey.items():
+        entries.sort(key=lambda x: x[0], reverse=True)
+
+        for _, file_path in entries[2:]:
+            try:
+                os.remove(file_path)
+                deleted_files.append(file_path.name)
+            except Exception as exc:
+                print(f"Failed to delete {file_path.name}: {exc}")
+
+    if deleted_files:
+        logger.info("Deleted outdated submissions", count=len(deleted_files), files=deleted_files)
+    else:
+        logger.info("No outdated submissions found.")
+
+    return deleted_files
 
 def select_best_checkpoint(
     primary_dir: Path, secondary_dir: Path | None = None, resume: bool = True

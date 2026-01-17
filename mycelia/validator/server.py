@@ -18,9 +18,7 @@ from pydantic import BaseModel
 
 from mycelia.shared.app_logging import configure_logging, structlog
 from mycelia.shared.chain import _subtensor_lock
-from mycelia.shared.checkpoint_helper import (
-    delete_old_checkpoints_by_hotkey,
-)
+from mycelia.shared.checkpoints import delete_old_checkpoints_by_hotkey
 from mycelia.shared.config import ValidatorConfig, parse_args
 from mycelia.shared.schema import (
     construct_block_message,

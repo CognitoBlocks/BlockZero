@@ -513,73 +513,73 @@ def get_model_files(checkpoint_path):
     return files
 
 
-def delete_old_checkpoints(checkpoint_path: str, topk: int) -> list[str]:
-    """
-    Deletes old checkpoints, keeping only the top 'k' most recent ones.
+# def delete_old_checkpoints(checkpoint_path: str, topk: int) -> list[str]:
+#     """
+#     Deletes old checkpoints, keeping only the top 'k' most recent ones.
 
-    Args:
-        checkpoint_path (str): The path to the checkpoint directory.
-        topk (int): The number of recent checkpoints to keep.
+#     Args:
+#         checkpoint_path (str): The path to the checkpoint directory.
+#         topk (int): The number of recent checkpoints to keep.
 
-    Returns:
-        list[str]: A list of deleted checkpoint filenames.
-    """
-    fs = GenericFileSystem()
-    sorted_ckpt_files = get_sorted_checkpoints(checkpoint_path)
+#     Returns:
+#         list[str]: A list of deleted checkpoint filenames.
+#     """
+#     fs = GenericFileSystem()
+#     sorted_ckpt_files = get_sorted_checkpoints(checkpoint_path)
 
-    ckpt_deleted = []
-    for model_meta in sorted_ckpt_files[topk:]:
-        fs.rm(str(model_meta.path), recursive=True)
-        ckpt_deleted.append(str(model_meta.path))
-    return ckpt_deleted
+#     ckpt_deleted = []
+#     for model_meta in sorted_ckpt_files[topk:]:
+#         fs.rm(str(model_meta.path), recursive=True)
+#         ckpt_deleted.append(str(model_meta.path))
+#     return ckpt_deleted
 
 
-def delete_old_checkpoints_by_hotkey(folder_path: Path):
-    """
-    Deletes all non-latest submission files coming from the same hotkey.
-    Keeps only the file with the highest block number per hotkey.
+# def delete_old_checkpoints_by_hotkey(folder_path: Path):
+#     """
+#     Deletes all non-latest submission files coming from the same hotkey.
+#     Keeps only the file with the highest block number per hotkey.
 
-    Requires: parse_dynamic_filename(filename: str) -> dict
-    """
-    if not folder_path.exists():
-        raise FileNotFoundError(f"Folder not found: {folder_path.resolve()}")
+#     Requires: parse_dynamic_filename(filename: str) -> dict
+#     """
+#     if not folder_path.exists():
+#         raise FileNotFoundError(f"Folder not found: {folder_path.resolve()}")
 
-    # Step 1: Group files by hotkey
-    submissions_by_hotkey = {}
-    for file_path in folder_path.glob("*.pt"):
-        meta = parse_dynamic_filename(file_path.name)
-        if "hotkey" not in meta or "block" not in meta:
-            print(f"⚠️ Skipping malformed filename: {file_path.name}")
-            continue
+#     # Step 1: Group files by hotkey
+#     submissions_by_hotkey = {}
+#     for file_path in folder_path.glob("*.pt"):
+#         meta = parse_dynamic_filename(file_path.name)
+#         if "hotkey" not in meta or "block" not in meta:
+#             print(f"⚠️ Skipping malformed filename: {file_path.name}")
+#             continue
 
-        hotkey = meta["hotkey"]
-        block = meta["block"]
+#         hotkey = meta["hotkey"]
+#         block = meta["block"]
 
-        # Track the latest submission per hotkey
-        if hotkey not in submissions_by_hotkey:
-            submissions_by_hotkey[hotkey] = []
-        submissions_by_hotkey[hotkey].append((block, file_path))
+#         # Track the latest submission per hotkey
+#         if hotkey not in submissions_by_hotkey:
+#             submissions_by_hotkey[hotkey] = []
+#         submissions_by_hotkey[hotkey].append((block, file_path))
 
-    # Step 2: For each hotkey, keep only the highest block file
-    deleted_files = []
-    for _, entries in submissions_by_hotkey.items():
-        # Sort by block number descending (latest first)
-        entries.sort(key=lambda x: x[0], reverse=True)
+#     # Step 2: For each hotkey, keep only the highest block file
+#     deleted_files = []
+#     for _, entries in submissions_by_hotkey.items():
+#         # Sort by block number descending (latest first)
+#         entries.sort(key=lambda x: x[0], reverse=True)
 
-        # Keep the first (latest) one, delete the rest
-        for _, file_path in entries[2:]:
-            try:
-                os.remove(file_path)
-                deleted_files.append(file_path.name)
-            except Exception as e:
-                print(f"❌ Failed to delete {file_path.name}: {e}")
+#         # Keep the first (latest) one, delete the rest
+#         for _, file_path in entries[2:]:
+#             try:
+#                 os.remove(file_path)
+#                 deleted_files.append(file_path.name)
+#             except Exception as e:
+#                 print(f"❌ Failed to delete {file_path.name}: {e}")
 
-    # Step 3: Log result
-    if deleted_files:
-        logger.info(f"🧹 Deleted {len(deleted_files)} outdated submission(s):", deleted_files)
-        for f in deleted_files:
-            print(f"   - {f}")
-    else:
-        logger.info("✅ No outdated submissions found.")
+#     # Step 3: Log result
+#     if deleted_files:
+#         logger.info(f"🧹 Deleted {len(deleted_files)} outdated submission(s):", deleted_files)
+#         for f in deleted_files:
+#             print(f"   - {f}")
+#     else:
+#         logger.info("✅ No outdated submissions found.")
 
-    return deleted_files
+#     return deleted_files

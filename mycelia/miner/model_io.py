@@ -98,7 +98,7 @@ def download_worker(
             current_model_meta = select_best_checkpoint(
                 primary_dir=config.ckpt.validator_checkpoint_path,
                 secondary_dir=config.ckpt.checkpoint_path,
-                resume=config.ckpt.resume,
+                resume=config.ckpt.resume_from_ckpt,
             )
 
             current_model_meta.model_hash = current_model_hash
@@ -124,7 +124,7 @@ def download_worker(
             current_model_meta = select_best_checkpoint(
                 primary_dir=config.ckpt.validator_checkpoint_path,
                 secondary_dir=config.ckpt.checkpoint_path,
-                resume = config.ckpt.resume,
+                resume = config.ckpt.resume_from_ckpt,
             )
 
             with shared_state.lock:

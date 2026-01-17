@@ -17,11 +17,10 @@ from mycelia.shared.app_logging import configure_logging, structlog
 from mycelia.shared.chain import ValidatorChainCommit, commit_status, setup_chain_worker
 from mycelia.shared.checkpoint_helper import (
     compile_full_state_dict_from_path,
-    delete_old_checkpoints,
     load_checkpoint,
     save_checkpoint,
 )
-from mycelia.shared.checkpoints import ModelCheckpoint
+from mycelia.shared.checkpoints import ModelCheckpoint, delete_old_checkpoints
 from mycelia.shared.config import ValidatorConfig, parse_args
 from mycelia.shared.cycle import gather_validation_job, get_combined_validator_seed, wait_till
 from mycelia.shared.dataloader import get_dataloader

@@ -13,8 +13,7 @@ import bittensor
 from pydantic import BaseModel, ConfigDict, Field
 
 from mycelia.shared.app_logging import structlog
-from mycelia.shared.checkpoint_helper import delete_old_checkpoints
-from mycelia.shared.checkpoints import ModelCheckpoint
+from mycelia.shared.checkpoints import ModelCheckpoint, delete_old_checkpoints
 from mycelia.shared.client import download_model
 from mycelia.shared.config import WorkerConfig
 from mycelia.shared.schema import verify_message
