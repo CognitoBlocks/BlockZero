@@ -14,7 +14,7 @@ from mycelia.shared.chain import (
     WorkerChainCommit,
     get_chain_commits,
 )
-from mycelia.shared.checkpoint_helper import load_checkpoint
+from mycelia.shared.checkpoint_helper import compile_full_state_dict_from_path, load_checkpoint
 from mycelia.shared.checkpoints import (
     ChainCheckpoints,
     ModelCheckpoint,
@@ -29,8 +29,9 @@ from mycelia.shared.expert_manager import (
     ExpertManager,
     get_layer_expert_id,
 )
-from mycelia.shared.helper import get_nested_attr
+from mycelia.shared.helper import get_model_hash, get_nested_attr
 from mycelia.shared.modeling.mycelia import get_base_model
+from mycelia.shared.schema import verify_message
 
 logger = structlog.get_logger(__name__)
 
@@ -204,7 +205,7 @@ def fetch_model_from_chain_validator(
         base_delay_s = 5  # backoff base
 
         while (not download_success) and (retries < max_retries):
-            for chain_checkpoint in chain_checkpoints:
+            for chain_checkpoint in chain_checkpoints.checkpoints:
                 logger.info(f"Downloading from chain: uid = {chain_checkpoint.uid}", chain_checkpoint=chain_checkpoint)
 
                 # Resolve URL if not provided; fall back to ip/port + default route
@@ -242,15 +243,32 @@ def fetch_model_from_chain_validator(
                             token=getattr(config.cycle, "token", ""),
                             out_dir=out_path,
                         )
-                        # If download_model doesn't raise, consider it a success
-                        download_success = True
+
+                        chain_checkpoint.path = out_folder
+                        validated = chain_checkpoint.validate()
+
+                        if not validated:
+                            logger.warning(
+                                "❌ Downloaded checkpoint failed validation",
+                                out_path=out_path,
+                                current_model_version=current_model_meta.global_ver
+                                if current_model_meta
+                                else None,
+                                current_model_hash=current_model_meta.model_hash if current_model_meta else None,
+                            )
+                            continue
+                        # If download + verification succeed, consider it a success
+                        download_success = validated
+
                         current_model_version = chain_checkpoint.global_ver
                         current_model_hash = chain_checkpoint.model_hash
+                        
                         logger.info(
-                            "✅ Downloaded checkpoint",
+                            "✅ Downloaded checkpoint (verified)",
                             out_path=out_path,
                             current_model_version=current_model_version,
                             current_model_hash=current_model_hash,
+                            validation_success=validated,
                         )
 
                         delete_old_checkpoints(

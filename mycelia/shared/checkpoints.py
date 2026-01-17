@@ -201,6 +201,12 @@ class ModelCheckpoint(BaseModel):
             self.expert_group_verified = self.expert_group == expected
         return self.expert_group_verified
 
+    def validate(self) -> bool:
+        self.verify_hash()
+        self.verify_signature()
+        self.verify_expert_group()
+        return self.validated()
+    
     def validated(self) -> bool:
         if self.expired():
             return False
