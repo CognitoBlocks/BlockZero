@@ -20,7 +20,6 @@ from mycelia.shared.chain import (
     serve_axon,
 )
 from mycelia.shared.config import MinerConfig, ValidatorConfig, WorkerConfig
-from mycelia.shared.cycle import PhaseNames, get_blocks_from_previous_phase_from_api
 from mycelia.shared.helper import h256_int, parse_dynamic_filename
 from mycelia.validator.evaluator import MinerEvalJob
 

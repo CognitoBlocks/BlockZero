@@ -104,7 +104,7 @@ def get_chain_commits(
     signature_commit: bool = False,
 ) -> tuple[WorkerChainCommit, bittensor.Neuron]:
     all_commitments = subtensor.get_all_commitments(
-        netuid=config.chain.netuid, block=block, wait_to_decrypt=wait_to_decrypt
+        netuid=config.chain.netuid, block=block,
     )
     metagraph = subtensor.metagraph(netuid=config.chain.netuid, block=block)
 

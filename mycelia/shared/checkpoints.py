@@ -275,7 +275,8 @@ class ChainCheckpoints(BaseModel):
         filtered = []
         for ckpt in self.checkpoints:
             if (
-                ckpt.model_hash is None
+                ckpt.signed_model_hash is None
+                or ckpt.model_hash is None
                 or ckpt.global_ver is None
                 or ckpt.expert_group is None
                 or ckpt.miner_seed is None
