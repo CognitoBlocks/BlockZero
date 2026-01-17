@@ -23,128 +23,45 @@ from mycelia.shared.helper import get_model_hash, parse_dynamic_filename
 logger = structlog.getLogger(__name__)
 
 
-@total_ordering
-@dataclass
-class ModelMeta:
-    global_ver: int = 0
-    inner_opt: int = 0
-    path: Path | None = None
-    role: str | None = None  # [miner, validator]
-    model_hash: str | None = None
+# @total_ordering
+# @dataclass
+# class ModelCheckpoint:
+#     global_ver: int = 0
+#     inner_opt: int = 0
+#     path: Path | None = None
+#     role: str | None = None  # [miner, validator]
+#     model_hash: str | None = None
 
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, ModelMeta):
-            return NotImplemented
-        return (
-            self.global_ver == other.global_ver
-            and self.inner_opt == other.inner_opt
-            and self.model_hash == other.model_hash
-        )
+#     def __eq__(self, other: object) -> bool:
+#         try:
+#             other_global_ver = other.global_ver  # type: ignore[attr-defined]
+#             other_inner_opt = other.inner_opt  # type: ignore[attr-defined]
+#             other_model_hash = getattr(other, "model_hash", None)
+#         except AttributeError:
+#             return NotImplemented
+#         return (
+#             self.global_ver == other_global_ver
+#             and self.inner_opt == other_inner_opt
+#             and self.model_hash == other_model_hash
+#         )
 
-    def __lt__(self, other: "ModelMeta") -> bool:
-        if not isinstance(other, ModelMeta):
-            return NotImplemented
+#     def __lt__(self, other: "ModelCheckpoint") -> bool:
+#         try:
+#             other_global_ver = other.global_ver  # type: ignore[attr-defined]
+#             other_inner_opt = other.inner_opt  # type: ignore[attr-defined]
+#         except AttributeError:
+#             return NotImplemented
 
-        # Compare by global_ver first
-        if self.global_ver != other.global_ver:
-            return self.global_ver < other.global_ver
+#         # Compare by global_ver first
+#         if self.global_ver != other_global_ver:
+#             return self.global_ver < other_global_ver
 
-        # Then compare by inner_opt
-        return self.inner_opt < other.inner_opt
+#         # Then compare by inner_opt
+#         return self.inner_opt < other_inner_opt
 
-
-def start_model_from(
-    rank: int, config: MinerConfig, primary_ckpt_path: Path, secondary_ckpt_path: Path | None
-) -> tuple[bool, ModelMeta, str | Path | None]:
-    # if it is a validator, then just start from its own checkpoint
-    if secondary_ckpt_path is None:
-        logger.info("returning primary checkpoint")
-        return get_resume_info(rank, config, config.ckpt.checkpoint_path)
-
-    primary_ckpt_found, primary_model_meta, latest_primary_ckpt = get_resume_info(rank, config, primary_ckpt_path)
-    secondary_ckpt_found, secondary_model_meta, latest_secondary_ckpt = get_resume_info(
-        rank, config, secondary_ckpt_path
-    )
-
-    # --- handling either miner / validator checkpoint not found ---
-    if not secondary_ckpt_found:
-        logger.info(
-            "secondary checkpoint not found, using primary",
-            primary_ckpt_path=primary_ckpt_path,
-            secondary_ckpt_path=secondary_ckpt_path,
-            model_meta=primary_model_meta,
-        )
-        return primary_ckpt_found, primary_model_meta, latest_primary_ckpt
-
-    if not primary_ckpt_found and latest_secondary_ckpt is not None:
-        logger.info(
-            "primary checkpoint not found, using secondary",
-            primary_ckpt_path=primary_ckpt_path,
-            secondary_ckpt_path=secondary_ckpt_path,
-            model_meta=secondary_model_meta,
-        )
-        return secondary_ckpt_found, secondary_model_meta, latest_secondary_ckpt
-
-    # --- Return based on more updated version ---
-    if secondary_model_meta >= primary_model_meta and latest_secondary_ckpt is not None:
-        logger.info("Largest local model", secondary_model_meta)
-        return secondary_ckpt_found, secondary_model_meta, latest_secondary_ckpt
-    else:
-        logger.info("Largest local model", primary_model_meta)
-        return primary_ckpt_found, primary_model_meta, latest_primary_ckpt
-
-
-def get_resume_info(
-    rank: int, config: MinerConfig | ValidatorConfig, path: Path | None = None, msg: str = ""
-) -> tuple[bool, ModelMeta, Path | None]:
-    """
-    Retrieves the resume information for a given rank and checkpoint configuration.
-
-    Args:
-        rank (int): The rank of the process.
-        ckpt_config (Config): The configuration object for the checkpoint.
-
-    Returns:
-        tuple[bool, int, str | None]: A tuple containing a boolean indicating success,
-        the checkpoint step, and an optional string message.
-    """
-    """
-    Check if we should resume from a checkpoint, if yes return the path to the checkpoint, otherwise return None
-    """
-    if config.ckpt.resume_from_ckpt is None:
-        return False, ModelMeta(), None
-
-    elif isinstance(config.ckpt.resume_from_ckpt, bool):
-        # Using fsspec to list directory contents
-        try:
-            if path is None:
-                path = config.ckpt.checkpoint_path
-
-            ckpt_files = get_sorted_checkpoints(path)
-
-        except FileNotFoundError:
-            logger.debug(
-                f"Get resume info from folder {msg}", result="folder not found", path={config.ckpt.checkpoint_path}
-            )
-            return False, ModelMeta(), None
-
-        if len(ckpt_files) == 0:
-            logger.debug(
-                f"Get resume info from folder {msg}", result="doesnt exist any file", path={config.ckpt.checkpoint_path}
-            )
-            return False, ModelMeta(), None
-
-        latest_ckpt = ckpt_files[0].path
-        model_meta = ckpt_files[0]
-        logger.debug(
-            "Get resume info from folder",
-            result="found",
-            path={config.ckpt.checkpoint_path},
-            model_meta=model_meta,
-        )
-        return True, model_meta, latest_ckpt
-
-
+#====================
+# Checkpoint saving / loading
+#====================
 def save_state_dict_by_expert_group(
     state_dict: dict[str, torch.Tensor],
     expert_groups: ExpertAssignments,
@@ -362,20 +279,6 @@ def load_optimizer(checkpoint_path, optimizer):
     optimizer.load_state_dict(_update_state_dict(optimizer.state_dict(), full_name_to_param))
 
 
-def get_model_files(checkpoint_path):
-    checkpoint_path = Path(checkpoint_path)  # normalize to Path object
-
-    # Case 1: checkpoint_path IS a .pt file
-    if checkpoint_path.is_file() and checkpoint_path.suffix == ".pt":
-        return fsspec.open_files(str(checkpoint_path), mode="rb")
-
-    # Case 2: checkpoint_path is a directory → match model*.pt inside it
-    pattern = str(checkpoint_path / "model*.pt")
-    files = fsspec.open_files(pattern, mode="rb")
-
-    return files
-
-
 def compile_full_state_dict_from_path(checkpoint_path, expert_groups: list[int | str] | None = None):
     def _matches_expert_group(file_path: str | Path, groups) -> bool:
         if groups is None:
@@ -474,102 +377,209 @@ def load_checkpoint(
 
     return global_state_dict["loss"]
 
+#====================
+# Checkpoint selection
+#====================
 
-def get_sorted_checkpoints(checkpoint_path: str) -> dict[ModelMeta]:
-    fs, root = fsspec.core.url_to_fs(checkpoint_path)
+# def start_model_from(
+#     rank: int, config: MinerConfig, primary_ckpt_path: Path, secondary_ckpt_path: Path | None
+# ) -> tuple[bool, ModelCheckpoint, str | Path | None]:
+#     # if it is a validator, then just start from its own checkpoint
+#     if secondary_ckpt_path is None:
+#         logger.info("returning primary checkpoint")
+#         return get_resume_info(rank, config, config.ckpt.checkpoint_path)
 
-    ckpt_files = []
-    for f in fs.ls(root, detail=False):
-        if Path(f).name.startswith(".tmp_"):
-            continue
+#     primary_ckpt_found, primary_model_meta, latest_primary_ckpt = get_resume_info(rank, config, primary_ckpt_path)
+#     secondary_ckpt_found, secondary_model_meta, latest_secondary_ckpt = get_resume_info(
+#         rank, config, secondary_ckpt_path
+#     )
 
-        if "yaml" in f.lower():  # safer, catches .YAML/.Yaml/.yml too
-            continue
+#     # --- handling either miner / validator checkpoint not found ---
+#     if not secondary_ckpt_found:
+#         logger.info(
+#             "secondary checkpoint not found, using primary",
+#             primary_ckpt_path=primary_ckpt_path,
+#             secondary_ckpt_path=secondary_ckpt_path,
+#             model_meta=primary_model_meta,
+#         )
+#         return primary_ckpt_found, primary_model_meta, latest_primary_ckpt
 
-        meta = parse_dynamic_filename(f)
-        if meta is None:
-            continue
+#     if not primary_ckpt_found and latest_secondary_ckpt is not None:
+#         logger.info(
+#             "primary checkpoint not found, using secondary",
+#             primary_ckpt_path=primary_ckpt_path,
+#             secondary_ckpt_path=secondary_ckpt_path,
+#             model_meta=secondary_model_meta,
+#         )
+#         return secondary_ckpt_found, secondary_model_meta, latest_secondary_ckpt
 
-        # ensure both fields exist and are numeric
-        model_meta = ModelMeta(
-            global_ver=int(meta.get("globalver", 0)), inner_opt=int(meta.get("inneropt", 0)), path=Path(f)
-        )
-        ckpt_files.append(model_meta)
-
-    # sort descending by globalver, then inneropt
-    return sorted(
-        ckpt_files,
-        key=lambda item: (-item.global_ver, -item.inner_opt),
-    )
-
-
-def delete_old_checkpoints(checkpoint_path: str, topk: int) -> list[str]:
-    """
-    Deletes old checkpoints, keeping only the top 'k' most recent ones.
-
-    Args:
-        checkpoint_path (str): The path to the checkpoint directory.
-        topk (int): The number of recent checkpoints to keep.
-
-    Returns:
-        list[str]: A list of deleted checkpoint filenames.
-    """
-    fs = GenericFileSystem()
-    sorted_ckpt_files = get_sorted_checkpoints(checkpoint_path)
-
-    ckpt_deleted = []
-    for model_meta in sorted_ckpt_files[topk:]:
-        fs.rm(str(model_meta.path), recursive=True)
-        ckpt_deleted.append(str(model_meta.path))
-    return ckpt_deleted
+#     # --- Return based on more updated version ---
+#     if secondary_model_meta >= primary_model_meta and latest_secondary_ckpt is not None:
+#         logger.info("Largest local model", secondary_model_meta)
+#         return secondary_ckpt_found, secondary_model_meta, latest_secondary_ckpt
+#     else:
+#         logger.info("Largest local model", primary_model_meta)
+#         return primary_ckpt_found, primary_model_meta, latest_primary_ckpt
 
 
-def delete_old_checkpoints_by_hotkey(folder_path: Path):
-    """
-    Deletes all non-latest submission files coming from the same hotkey.
-    Keeps only the file with the highest block number per hotkey.
+# def get_resume_info(
+#     rank: int, config: MinerConfig | ValidatorConfig, path: Path | None = None, msg: str = ""
+# ) -> tuple[bool, ModelCheckpoint, Path | None]:
+#     """
+#     Retrieves the resume information for a given rank and checkpoint configuration.
 
-    Requires: parse_dynamic_filename(filename: str) -> dict
-    """
-    if not folder_path.exists():
-        raise FileNotFoundError(f"Folder not found: {folder_path.resolve()}")
+#     Args:
+#         rank (int): The rank of the process.
+#         ckpt_config (Config): The configuration object for the checkpoint.
 
-    # Step 1: Group files by hotkey
-    submissions_by_hotkey = {}
-    for file_path in folder_path.glob("*.pt"):
-        meta = parse_dynamic_filename(file_path.name)
-        if "hotkey" not in meta or "block" not in meta:
-            print(f"⚠️ Skipping malformed filename: {file_path.name}")
-            continue
+#     Returns:
+#         tuple[bool, int, str | None]: A tuple containing a boolean indicating success,
+#         the checkpoint step, and an optional string message.
+#     """
+#     """
+#     Check if we should resume from a checkpoint, if yes return the path to the checkpoint, otherwise return None
+#     """
+#     if config.ckpt.resume_from_ckpt is None:
+#         return False, ModelCheckpoint(), None
 
-        hotkey = meta["hotkey"]
-        block = meta["block"]
+#     elif isinstance(config.ckpt.resume_from_ckpt, bool):
+#         # Using fsspec to list directory contents
+#         try:
+#             if path is None:
+#                 path = config.ckpt.checkpoint_path
 
-        # Track the latest submission per hotkey
-        if hotkey not in submissions_by_hotkey:
-            submissions_by_hotkey[hotkey] = []
-        submissions_by_hotkey[hotkey].append((block, file_path))
+#             ckpt_files = get_sorted_checkpoints(path)
 
-    # Step 2: For each hotkey, keep only the highest block file
-    deleted_files = []
-    for _, entries in submissions_by_hotkey.items():
-        # Sort by block number descending (latest first)
-        entries.sort(key=lambda x: x[0], reverse=True)
+#         except FileNotFoundError:
+#             logger.debug(
+#                 f"Get resume info from folder {msg}", result="folder not found", path={config.ckpt.checkpoint_path}
+#             )
+#             return False, ModelCheckpoint(), None
 
-        # Keep the first (latest) one, delete the rest
-        for _, file_path in entries[2:]:
-            try:
-                os.remove(file_path)
-                deleted_files.append(file_path.name)
-            except Exception as e:
-                print(f"❌ Failed to delete {file_path.name}: {e}")
+#         if len(ckpt_files) == 0:
+#             logger.debug(
+#                 f"Get resume info from folder {msg}", result="doesnt exist any file", path={config.ckpt.checkpoint_path}
+#             )
+#             return False, ModelCheckpoint(), None
 
-    # Step 3: Log result
-    if deleted_files:
-        logger.info(f"🧹 Deleted {len(deleted_files)} outdated submission(s):", deleted_files)
-        for f in deleted_files:
-            print(f"   - {f}")
-    else:
-        logger.info("✅ No outdated submissions found.")
+#         latest_ckpt = ckpt_files[0].path
+#         model_meta = ckpt_files[0]
+#         logger.debug(
+#             "Get resume info from folder",
+#             result="found",
+#             path={config.ckpt.checkpoint_path},
+#             model_meta=model_meta,
+#         )
+#         return True, model_meta, latest_ckpt
 
-    return deleted_files
+# def get_sorted_checkpoints(checkpoint_path: str) -> dict[ModelCheckpoint]:
+#     fs, root = fsspec.core.url_to_fs(checkpoint_path)
+
+#     ckpt_files = []
+#     for f in fs.ls(root, detail=False):
+#         if Path(f).name.startswith(".tmp_"):
+#             continue
+
+#         if "yaml" in f.lower():  # safer, catches .YAML/.Yaml/.yml too
+#             continue
+
+#         meta = parse_dynamic_filename(f)
+#         if meta is None:
+#             continue
+
+#         # ensure both fields exist and are numeric
+#         model_meta = ModelCheckpoint(
+#             global_ver=int(meta.get("globalver", 0)), inner_opt=int(meta.get("inneropt", 0)), path=Path(f)
+#         )
+#         ckpt_files.append(model_meta)
+
+#     # sort descending by globalver, then inneropt
+#     return sorted(
+#         ckpt_files,
+#         key=lambda item: (-item.global_ver, -item.inner_opt),
+#     )
+
+def get_model_files(checkpoint_path):
+    checkpoint_path = Path(checkpoint_path)  # normalize to Path object
+
+    # Case 1: checkpoint_path IS a .pt file
+    if checkpoint_path.is_file() and checkpoint_path.suffix == ".pt":
+        return fsspec.open_files(str(checkpoint_path), mode="rb")
+
+    # Case 2: checkpoint_path is a directory → match model*.pt inside it
+    pattern = str(checkpoint_path / "model*.pt")
+    files = fsspec.open_files(pattern, mode="rb")
+
+    return files
+
+
+# def delete_old_checkpoints(checkpoint_path: str, topk: int) -> list[str]:
+#     """
+#     Deletes old checkpoints, keeping only the top 'k' most recent ones.
+
+#     Args:
+#         checkpoint_path (str): The path to the checkpoint directory.
+#         topk (int): The number of recent checkpoints to keep.
+
+#     Returns:
+#         list[str]: A list of deleted checkpoint filenames.
+#     """
+#     fs = GenericFileSystem()
+#     sorted_ckpt_files = get_sorted_checkpoints(checkpoint_path)
+
+#     ckpt_deleted = []
+#     for model_meta in sorted_ckpt_files[topk:]:
+#         fs.rm(str(model_meta.path), recursive=True)
+#         ckpt_deleted.append(str(model_meta.path))
+#     return ckpt_deleted
+
+
+# def delete_old_checkpoints_by_hotkey(folder_path: Path):
+#     """
+#     Deletes all non-latest submission files coming from the same hotkey.
+#     Keeps only the file with the highest block number per hotkey.
+
+#     Requires: parse_dynamic_filename(filename: str) -> dict
+#     """
+#     if not folder_path.exists():
+#         raise FileNotFoundError(f"Folder not found: {folder_path.resolve()}")
+
+#     # Step 1: Group files by hotkey
+#     submissions_by_hotkey = {}
+#     for file_path in folder_path.glob("*.pt"):
+#         meta = parse_dynamic_filename(file_path.name)
+#         if "hotkey" not in meta or "block" not in meta:
+#             print(f"⚠️ Skipping malformed filename: {file_path.name}")
+#             continue
+
+#         hotkey = meta["hotkey"]
+#         block = meta["block"]
+
+#         # Track the latest submission per hotkey
+#         if hotkey not in submissions_by_hotkey:
+#             submissions_by_hotkey[hotkey] = []
+#         submissions_by_hotkey[hotkey].append((block, file_path))
+
+#     # Step 2: For each hotkey, keep only the highest block file
+#     deleted_files = []
+#     for _, entries in submissions_by_hotkey.items():
+#         # Sort by block number descending (latest first)
+#         entries.sort(key=lambda x: x[0], reverse=True)
+
+#         # Keep the first (latest) one, delete the rest
+#         for _, file_path in entries[2:]:
+#             try:
+#                 os.remove(file_path)
+#                 deleted_files.append(file_path.name)
+#             except Exception as e:
+#                 print(f"❌ Failed to delete {file_path.name}: {e}")
+
+#     # Step 3: Log result
+#     if deleted_files:
+#         logger.info(f"🧹 Deleted {len(deleted_files)} outdated submission(s):", deleted_files)
+#         for f in deleted_files:
+#             print(f"   - {f}")
+#     else:
+#         logger.info("✅ No outdated submissions found.")
+
+#     return deleted_files

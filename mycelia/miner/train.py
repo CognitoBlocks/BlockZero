@@ -17,13 +17,14 @@ from transformers import (
 from mycelia.miner.train_helper import free_cuda_models, get_status
 from mycelia.shared.app_logging import configure_logging, structlog
 from mycelia.shared.chain import setup_chain_worker
-from mycelia.shared.checkpoint import (
-    ModelMeta,
-    delete_old_checkpoints,
-    get_resume_info,
+from mycelia.shared.checkpoint_helper import (
     load_checkpoint,
     save_checkpoint,
-    start_model_from,
+)
+from mycelia.shared.checkpoints import (
+    delete_old_checkpoints,
+    select_best_checkpoint,
+    ModelCheckpoint,
 )
 from mycelia.shared.config import MinerConfig, parse_args
 from mycelia.shared.dataloader import get_dataloader
@@ -81,7 +82,7 @@ def setup_training(
     tokenizer: PreTrainedTokenizerBase,
     subtensor: bittensor.Subtensor,
     wallet: bittensor.Wallet,
-    current_model_meta: ModelMeta,
+    current_model_meta: ModelCheckpoint,
 ) -> tuple[
     torch.nn.Module,  # model
     torch.optim.Optimizer,  # inner_optimizer
@@ -122,7 +123,7 @@ def setup_training(
     # === model & Experts manager ===
     logger.info(f"init - model and expert manager")
     expert_manager = ExpertManager(config)
-    model, model_meta = load_model(rank, config, expert_manager, subtensor, wallet)
+    model, model_checkpoint = load_model(rank, config, expert_manager, subtensor, wallet)
     model = model.to(device)
     model = freeze_parameters(model=model, expert_manager=expert_manager, expert_group_id=config.task.exp.group_id)
 
@@ -165,14 +166,14 @@ def setup_training(
     # === load checkpoint (if any) ===
     logger.info(f"init - load checkpoint")
     resume = False
-    latest_checkpoint_path = None
-    if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
-        resume, start_step, latest_checkpoint_path = get_resume_info(rank, config)
 
-    if get_nested_attr(config, "resume_from_ckpt", False) and resume and latest_checkpoint_path:
+    if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
+        latest_checkpoint = select_best_checkpoint(config.ckpt.checkpoint_path, resume=config.ckpt.resume_from_ckpt)
+
+    if get_nested_attr(config, "resume_from_ckpt", False) and resume and latest_checkpoint.path is not None:
         _ = load_checkpoint(
             config=config,
-            checkpoint_path=latest_checkpoint_path,
+            checkpoint_path=latest_checkpoint.path,
             inner_optimizer=inner_optimizer,
             scheduler=scheduler,
             inner_scaler=inner_scaler,
@@ -189,7 +190,7 @@ def setup_training(
         scheduler,
         expert_manager,
         train_dataloader,
-        model_meta,
+        model_checkpoint,
     )
 
 
@@ -493,12 +494,10 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
             if is_inner_optimizer_step:
                 logger.info("(5) Reload Model")
 
-                newest_checkpoint = start_model_from(
-                    rank,
-                    config,
-                    primary_ckpt_path=config.ckpt.validator_checkpoint_path,
-                    secondary_ckpt_path=config.ckpt.checkpoint_path,
-                )[1]
+                newest_checkpoint = select_best_checkpoint(
+                    primary_dir=config.ckpt.validator_checkpoint_path,
+                    secondary_dir=config.ckpt.checkpoint_path,
+                )
 
                 if newest_checkpoint > current_model_meta:
                     logger.info(
@@ -512,12 +511,10 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                     logger.info(
                         "restarting model",
                         current_model_meta=current_model_meta,
-                        largest_avail_model=start_model_from(
-                            rank,
-                            config,
-                            primary_ckpt_path=config.ckpt.validator_checkpoint_path,
-                            secondary_ckpt_path=config.ckpt.checkpoint_path,
-                        )[1],
+                        largest_avail_model=select_best_checkpoint(
+                            primary_dir=config.ckpt.validator_checkpoint_path,
+                            secondary_dir=config.ckpt.checkpoint_path,
+                        )
                     )
                     (
                         model,

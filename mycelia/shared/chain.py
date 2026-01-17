@@ -6,14 +6,18 @@ import json
 import threading
 import time
 import traceback
-from collections import Counter
 from pathlib import Path
 
 import bittensor
 from pydantic import BaseModel, ConfigDict, Field
 
 from mycelia.shared.app_logging import structlog
-from mycelia.shared.checkpoint import ModelMeta, delete_old_checkpoints
+from mycelia.shared.checkpoints import (
+    ModelCheckpoint,
+    ChainCheckpoints,
+    build_chain_checkpoints,
+    delete_old_checkpoints,
+)
 from mycelia.shared.client import download_model
 from mycelia.shared.config import WorkerConfig
 from mycelia.shared.schema import verify_message
@@ -148,133 +152,71 @@ def submit_weight() -> str:
 
 
 # --- Get model from chain ---
-def scan_chain_for_new_model(
-    current_model_meta: ModelMeta | None,
-    config: WorkerConfig,
-    subtensor: bittensor.Subtensor,
-) -> tuple[bool, list[dict]]:
-    """
-    Returns:
-        should_download: True if a newer model (by version) is available and a majority
-                         agree on the model_hash among those newer entries.
-        download_meta:   list of dicts with fields: uid, ip, port, model_hash, model_version
-                         filtered to entries that (a) are newer and (b) match the majority hash.
-    """
-    commits: tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(config, subtensor)
+# def scan_chain_for_new_model(
+#     current_model_meta: ModelCheckpoint | None,
+#     config: WorkerConfig,
+#     subtensor: bittensor.Subtensor,
+# ) -> tuple[bool, list[dict]]:
+#     commits: tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(config, subtensor)
+#     chain_checkpoints = build_chain_checkpoints(current_model_meta=current_model_meta, commits=commits)
 
-    max_model_meta = ModelMeta(
-        global_ver=max(
-            (c.global_ver for c, n in commits if c is not None and getattr(c, "global_ver", None) is not None),
-            default=0,
-        )
-    )
+#     download_meta = []
+#     for ckpt in chain_checkpoints.checkpoints:
+#         download_meta.append(
+#             {
+#                 "uid": ckpt._extra("uid"),
+#                 "ip": ckpt._extra("ip"),
+#                 "port": ckpt._extra("port"),
+#                 "model_hash": ckpt.model_hash,
+#                 "global_ver": ckpt.global_ver,
+#                 "target_hotkey_ss58": ckpt._extra("target_hotkey_ss58"),
+#             }
+#         )
 
-    if current_model_meta is not None:
-        logger.info(
-            "Scan chain - Max model version on chain",
-            max_model_version_on_chain=max_model_meta,
-        )
-        logger.info(
-            "Scan chain - Local model version",
-            current_model_version=current_model_meta,
-        )
-        max_model_meta = max(max_model_meta, current_model_meta)
-
-    logger.info(
-        "Scan chain - Max model meta",
-        max_model_meta=max_model_meta,
-    )
-    # 0) Download only from validator
-    # commits = [(c, n) for c, n in commits if n.validator_permit]
-    commits = [(c, n) for c, n in commits if getattr(c, "miner_seed", False)]
-    commits = [(c, n) for c, n in commits if getattr(c, "model_hash", False)]
-
-    # 1) collect candidates that are newer than the current version
-    most_updated_commits = []  # type: ignore
-    for c, n in commits:
-        raw_ver = getattr(c, "global_ver", 0)
-        c.global_ver = raw_ver if isinstance(raw_ver, int) else 0
-        if ModelMeta(global_ver=c.global_ver) >= max_model_meta:
-            most_updated_commits.append((c, n))
-
-    if len(most_updated_commits) == 0:
-        return False, []
-
-    # 2) majority filter by model_hash among the newer candidates
-    hash_counts = Counter([c.model_hash for c, n in most_updated_commits if getattr(c, "model_hash", False)])
-    majority_hash, _count = hash_counts.most_common(1)[0]
-
-    filtered_commits = [(c, n) for c, n in most_updated_commits if getattr(c, "model_hash", False) == majority_hash]
-    if not filtered_commits:
-        return False, []
-
-    # 3) prepare download_meta for each entry (uid, ip, port, model_hash, model_version)
-    download_meta = []
-    for commit, neuron in filtered_commits:
-        # Only include entries with reachable metadata
-        try:
-            download_meta.append(
-                {
-                    "uid": neuron.uid,
-                    "ip": neuron.axon_info.ip,
-                    "port": neuron.axon_info.port,
-                    "model_hash": commit.model_hash,
-                    "global_ver": commit.global_ver,
-                    "target_hotkey_ss58": neuron.hotkey,
-                }
-            )
-
-        except Exception:
-            logger.info("Cannot append commit", commit=commit)
-
-    # should_download if there is at least one newer entry agreeing on a majority hash
-    should_download = len(download_meta) > 0
-
-    return should_download, download_meta
+#     should_download = len(download_meta) > 0
+#     return should_download, download_meta
 
 
 def fetch_model_from_chain(
-    current_model_meta: ModelMeta | None,
+    current_model_meta: ModelCheckpoint | None,
     config: WorkerConfig,
     subtensor: bittensor.Subtensor,
     wallet: bittensor.Wallet,
     expert_group_ids: list[int | str],
 ) -> dict | None:
-    should_download, download_metas = scan_chain_for_new_model(current_model_meta, config, subtensor)
+    
+    chain_checkpoints = build_chain_checkpoints(commits=get_chain_commits(config, subtensor))
+    chain_checkpoints = ChainCheckpoints(checkpoints=[ckpt for ckpt in chain_checkpoints.checkpoints if ckpt > current_model_meta])
+    should_download = len(chain_checkpoints.checkpoints) > 0
 
-    logger.info("Fetching model from chain", should_download=should_download, download_metas=download_metas)
+    logger.info("Fetching model from chain", should_download=should_download, chain_checkpoints=chain_checkpoints)
 
-    if should_download and download_metas:
+    if should_download and chain_checkpoints:
         download_success = False
         retries = 0
         max_retries = 3
         base_delay_s = 5  # backoff base
 
         while (not download_success) and (retries < max_retries):
-            for download_meta in download_metas:
-                logger.info(f"Downloading from chain: uid = {download_meta['uid']}", download_meta=download_meta)
+            for chain_checkpoint in chain_checkpoints:
+                logger.info(f"Downloading from chain: uid = {chain_checkpoint.uid}", chain_checkpoint=chain_checkpoint)
 
                 # Resolve URL if not provided; fall back to ip/port + default route
-                url = download_meta.get("url")
-                if not url:
-                    ip = download_meta.get("ip")
-                    port = download_meta.get("port")
-                    # Best-effort defaults; customize if your API differs
-                    protocol = getattr(getattr(config, "miner", object()), "protocol", "http")
-                    if ip and port:
-                        url = f"{protocol}://{ip}:{port}/get-checkpoint"
-                    else:
-                        logger.warning("Skipping meta without URL or ip:port: %s", download_meta)
-                        continue
+                # Best-effort defaults; customize if your API differs
+                protocol = getattr(getattr(config, "miner", object()), "protocol", "http")
+                if chain_checkpoint.ip and chain_checkpoint.port:
+                    url = f"{protocol}://{chain_checkpoint.ip}:{chain_checkpoint.port}/get-checkpoint"
+                else:
+                    logger.warning("Skipping meta without URL or ip:port: %s", chain_checkpoint)
+                    continue
 
                 out_folder = Path(config.ckpt.validator_checkpoint_path) / (
-                    f"uid_{download_meta.get('uid')}_hotkey_{download_meta.get('target_hotkey_ss58')}_globalver_{download_meta.get('global_ver')}"
+                    f"uid_{chain_checkpoint.uid}_hotkey_{chain_checkpoint.hotkey}_globalver_{chain_checkpoint.global_ver}"
                 )
 
                 out_folder.mkdir(parents=True, exist_ok=True)
 
                 for expert_group_id in expert_group_ids:
-                                            
                     if isinstance(expert_group_id, int):
                         out_file = f"model_expgroup_{expert_group_id}.pt"
                     elif expert_group_id == "shared":
@@ -282,13 +224,13 @@ def fetch_model_from_chain(
                     else:
                         logger.warning("Invalid expert_group_id, skipping:", expert_group_id=expert_group_id)
                         continue
-                    
+
                     out_path = out_folder / out_file
                     try:
                         download_model(
                             url=url,
                             my_hotkey=wallet.hotkey,  # type: ignore
-                            target_hotkey_ss58=download_meta["target_hotkey_ss58"],
+                            target_hotkey_ss58=chain_checkpoint.hotkey,
                             block=subtensor.block,
                             expert_group_id=expert_group_id,
                             token=getattr(config.cycle, "token", ""),
@@ -296,8 +238,8 @@ def fetch_model_from_chain(
                         )
                         # If download_model doesn't raise, consider it a success
                         download_success = True
-                        current_model_version = download_meta["global_ver"]
-                        current_model_hash = download_meta["model_hash"]
+                        current_model_version = chain_checkpoint.global_ver
+                        current_model_hash = chain_checkpoint.model_hash
                         logger.info(
                             "✅ Downloaded checkpoint",
                             out_path=out_path,
@@ -310,7 +252,7 @@ def fetch_model_from_chain(
                             topk=config.ckpt.checkpoint_topk,
                         )
 
-                        return download_meta
+                        return chain_checkpoint
                     except Exception as e:
                         logger.warning("Download failed", url, e)
                         traceback.print_exc()

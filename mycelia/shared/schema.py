@@ -4,7 +4,7 @@ from pathlib import Path
 import bittensor as bt
 from substrateinterface import Keypair
 
-from mycelia.shared.checkpoint import compile_full_state_dict_from_path
+from mycelia.shared.checkpoint_helper import compile_full_state_dict_from_path
 from mycelia.shared.helper import get_model_hash
 
 
