@@ -156,7 +156,7 @@ def commit_worker(
     while True:
         job = commit_queue.get()
         try:
-            latest_checkpoint = select_best_checkpoint(primary_dir=config.ckpt.miner_checkpoint_path, resume=config.ckpt.resume)
+            latest_checkpoint = select_best_checkpoint(primary_dir=config.ckpt.checkpoint_path, resume=config.ckpt.resume_from_ckpt)
 
             with shared_state.lock:
                 shared_state.latest_checkpoint_path = latest_checkpoint.path

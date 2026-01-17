@@ -168,7 +168,7 @@ def setup_training(
     resume = False
 
     if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
-        latest_checkpoint = select_best_checkpoint(config.ckpt.checkpoint_path, resume=config.ckpt.resume)
+        latest_checkpoint = select_best_checkpoint(config.ckpt.checkpoint_path, resume=config.ckpt.resume_from_ckpt)
 
     if get_nested_attr(config, "resume_from_ckpt", False) and resume and latest_checkpoint.path is not None:
         _ = load_checkpoint(

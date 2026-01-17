@@ -1,4 +1,5 @@
 from __future__ import annotations
+from collections import Counter
 from functools import total_ordering
 import os
 import time
@@ -40,18 +41,20 @@ class ModelCheckpoint(BaseModel):
 
     signed_model_hash: str | None = Field(default=None, alias="h")
     model_hash: str | None = None
-    global_ver: int = 0
+    global_ver: int | None= None
     expert_group: int | None = None
 
-    inner_opt: int = 0
+    inner_opt: int | None = None
     path: Path | None = None  # path to folder or file
     role: str | None = None  # [miner, validator]
     place: str = "local"  # [local / onchain]
 
     signature_required: bool = False
     signature_verified: bool = False
+    
     hash_required: bool = False
     hash_verified: bool = False
+    
     expert_group_check_required: bool = False
     expert_group_verified: bool = False
 
@@ -257,7 +260,12 @@ class ModelCheckpoint(BaseModel):
         return True
 
 
-class ValidatorChainCheckpoint(ModelCheckpoint):
+class ChainCheckpoint(ModelCheckpoint):
+    uid: int | None = Field(default=None, alias="h")
+    ip: str | None = None
+    port: int | None= None
+    hotkey: str | None = None
+
     def __init__(self, **data: Any):
         data.setdefault("place", "onchain")
         super().__init__(**data)
@@ -282,10 +290,44 @@ class ValidatorChainCheckpoint(ModelCheckpoint):
         )
 
 
-class ValidatorChainCheckpoints(BaseModel):
+class ChainCheckpoints(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    checkpoints: list[ValidatorChainCheckpoint]
+    checkpoints: list[ChainCheckpoint]
+
+    def __len__(self) -> int:
+        return len(self.checkpoints)
+
+    def filter_checkpoints(self) -> ChainCheckpoints:
+        # filter out incomplete checkpoints
+        filtered = []
+        for ckpt in self.checkpoints:
+            if not ckpt.model_hash or not ckpt.global_ver or not ckpt.miner_seed or not ckpt.expert_group or not ckpt.uid or not ckpt.ip or not ckpt.port or not ckpt.hotkey:
+                continue
+            
+            filtered.append(ckpt)
+        
+        if not filtered:
+            return ChainCheckpoints(checkpoints=[])
+        
+        # keep only checkpoints with the highest global_ver
+        version_filtered = []
+        max_model_checkpoint = max(filtered) if filtered else None
+        for ckpt in filtered:
+            
+            if max_model_checkpoint and ckpt >= max_model_checkpoint:
+                version_filtered.append(ckpt)
+
+        if not version_filtered:
+            return ChainCheckpoints(checkpoints=[])
+
+        # select majority model_hash
+        hash_counts = Counter([ckpt.model_hash for ckpt in filtered if ckpt.model_hash])
+        if not hash_counts:
+            return ChainCheckpoints(checkpoints=[])
+
+        majority_hash, _count = hash_counts.most_common(1)[0]
+        return ChainCheckpoints(checkpoints=[ckpt for ckpt in filtered if ckpt.model_hash == majority_hash])
 
     def renew(self) -> None:
         before = len(self.checkpoints)
@@ -328,7 +370,7 @@ class Checkpoints(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="allow")
 
     local: ModelCheckpoints
-    chain: ValidatorChainCheckpoints
+    chain: ChainCheckpoints
 
     def ordered(self) -> list[ModelCheckpoint]:
         return sorted(
@@ -412,6 +454,43 @@ def build_local_checkpoints(ckpt_dir: Path, role: str = "miner") -> ModelCheckpo
 
     return ModelCheckpoints(checkpoints=checkpoints)
 
+
+def build_chain_checkpoints(
+    commits: list[tuple[Any, Any]],
+) -> ChainCheckpoints:
+    """
+    Build chain checkpoints from on-chain commits.
+    """
+    checkpoints: list[ChainCheckpoint] = []
+    for commit, neuron in commits:
+        try:
+            checkpoints.append(
+                ChainCheckpoint(
+                    model_hash=getattr(commit, "model_hash", None),
+                    global_ver=getattr(commit, "global_ver", None),
+                    expert_group=getattr(commit, "expert_group", None),
+                    miner_seed=getattr(commit, "miner_seed", None),
+                    
+                    uid=getattr(neuron, "uid", None),
+                    ip=getattr(neuron.axon_info, "ip", None),
+                    port=getattr(neuron.axon_info, "port", None),
+                    target_hotkey_ss58=getattr(neuron, "hotkey", None),
+
+                    signature_required = True,
+                    hash_required = True,
+                    expert_group_check_required = True,
+                )
+            )
+        except Exception:
+            logger.info("Cannot append commit", commit=commit)
+
+    filtered_checkpoints = ChainCheckpoints(checkpoints=checkpoints).filter_checkpoints()
+
+    if len(filtered_checkpoints) == 0:
+        return ChainCheckpoints(checkpoints=[])
+    else:
+        return filtered_checkpoints
+
 def delete_old_checkpoints(checkpoint_path: str | Path, topk: int) -> list[str]:
     """
     Deletes old checkpoints, keeping only the top 'k' most recent ones.
@@ -477,7 +556,7 @@ def select_best_checkpoint(
     if secondary_dir is None:
         combined = Checkpoints(
             local=primary,
-            chain=ValidatorChainCheckpoints(checkpoints=[]),
+            chain=ChainCheckpoints(checkpoints=[]),
         )
         ordered = combined.ordered()
         return ordered[0] if ordered else None
@@ -487,7 +566,7 @@ def select_best_checkpoint(
 
     combined = Checkpoints(
         local=combined_local,
-        chain=ValidatorChainCheckpoints(checkpoints=[]),
+        chain=ChainCheckpoints(checkpoints=[]),
     )
 
     for ckpt in combined.ordered():
