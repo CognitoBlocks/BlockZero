@@ -1,11 +1,7 @@
 from __future__ import annotations
 
-import base64
 import hashlib
-import json
-import threading
 import time
-import traceback
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -13,7 +9,7 @@ from typing import Any
 
 import bittensor
 import requests
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel
 
 from mycelia.shared.app_logging import configure_logging, structlog
 from mycelia.shared.chain import (
@@ -23,13 +19,6 @@ from mycelia.shared.chain import (
     get_chain_commits,
     serve_axon,
 )
-from mycelia.shared.checkpoints import (
-    ChainCheckpoints,
-    ModelCheckpoint,
-    build_chain_checkpoints,
-    delete_old_checkpoints,
-)
-from mycelia.shared.client import download_model
 from mycelia.shared.config import MinerConfig, ValidatorConfig, WorkerConfig
 from mycelia.shared.cycle import PhaseNames, get_blocks_from_previous_phase_from_api
 from mycelia.shared.helper import h256_int, parse_dynamic_filename

@@ -1,11 +1,8 @@
 import contextlib
-import glob
 import hashlib
 import mimetypes
 import os
 import re
-import tempfile
-import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,8 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from mycelia.shared.app_logging import configure_logging, structlog
-from mycelia.shared.chain import _subtensor_lock
-from mycelia.shared.checkpoints import select_best_checkpoint, delete_old_checkpoints_by_hotkey
+from mycelia.shared.checkpoints import delete_old_checkpoints_by_hotkey, select_best_checkpoint
 from mycelia.shared.config import ValidatorConfig, parse_args
 from mycelia.shared.schema import (
     construct_block_message,

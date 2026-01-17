@@ -1,7 +1,7 @@
+import base64
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-import base64
 import bittensor as bt
 from substrateinterface import Keypair
 

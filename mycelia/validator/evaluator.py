@@ -6,7 +6,6 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
-from torch import nn
 
 from mycelia.shared.app_logging import structlog
 from mycelia.shared.dataloader import get_dataloader
@@ -150,7 +149,7 @@ async def evaluator_worker(
             torch.cuda.empty_cache()
             torch.cuda.memory._dump_snapshot("cuda_snapshot.pickle")
 
-        except torch.cuda.OutOfMemoryError as e:
+        except torch.cuda.OutOfMemoryError:
             logger.error(f"{name}: OOM for uid={job.uid}")
             gc.collect()
             torch.cuda.empty_cache()

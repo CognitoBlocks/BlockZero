@@ -4,7 +4,6 @@ import hashlib
 import os
 import sys
 import time
-import zipfile
 from pathlib import Path
 from typing import Any
 

@@ -2,23 +2,20 @@ import errno
 import os
 import shutil
 from copy import deepcopy
-from dataclasses import dataclass
-from functools import total_ordering
 from pathlib import Path
 
 import fsspec
 import torch
-from fsspec.generic import GenericFileSystem
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from mycelia.shared.app_logging import structlog
-from mycelia.shared.config import MinerConfig, ValidatorConfig
+from mycelia.shared.config import MinerConfig
 from mycelia.shared.expert_manager import (
     ExpertAssignments,
     ExpertManager,
     get_layer_expert_id,
 )
-from mycelia.shared.helper import get_model_hash, parse_dynamic_filename
+from mycelia.shared.helper import get_model_hash
 
 logger = structlog.getLogger(__name__)
 
@@ -305,7 +302,7 @@ def compile_full_state_dict_from_path(checkpoint_path, expert_groups: list[int |
             state_dict = torch.load(fh, map_location=torch.device("cpu"))
             full_state_dict = full_state_dict | state_dict["model_state_dict"]
             logger.info(
-                f"loaded checkpoint file", path=f, loss=round(state_dict["loss"] if "loss" in state_dict else -1, 5)
+                "loaded checkpoint file", path=f, loss=round(state_dict["loss"] if "loss" in state_dict else -1, 5)
             )
 
     return full_state_dict

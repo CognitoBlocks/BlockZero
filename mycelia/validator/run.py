@@ -14,13 +14,12 @@ from transformers import PreTrainedTokenizerBase
 
 from mycelia.miner.train_helper import get_status
 from mycelia.shared.app_logging import configure_logging, structlog
-from mycelia.shared.chain import ValidatorChainCommit, commit_status, setup_chain_worker, SignedModelHashChainCommit
+from mycelia.shared.chain import SignedModelHashChainCommit, ValidatorChainCommit, commit_status, setup_chain_worker
 from mycelia.shared.checkpoint_helper import (
-    compile_full_state_dict_from_path,
     load_checkpoint,
     save_checkpoint,
 )
-from mycelia.shared.checkpoints import build_local_checkpoint, ModelCheckpoint, delete_old_checkpoints
+from mycelia.shared.checkpoints import ModelCheckpoint, build_local_checkpoint, delete_old_checkpoints
 from mycelia.shared.config import ValidatorConfig, parse_args
 from mycelia.shared.cycle import gather_validation_job, get_combined_validator_seed, wait_till
 from mycelia.shared.dataloader import get_dataloader
@@ -127,14 +126,14 @@ def setup_training(
     latest_checkpoint_path = None
 
     # === model & Experts manager ===
-    logger.info(f"setup training - load model and expert manager")
+    logger.info("setup training - load model and expert manager")
     expert_manager = ExpertManager(config)
     base_model, model_meta = load_model(rank, config, expert_manager, subtensor, wallet, current_model_meta)
     base_model = base_model.cpu()
     global_model = copy.deepcopy(base_model)
 
     # === optimizers ===
-    logger.info(f"setup training - load optimizer")
+    logger.info("setup training - load optimizer")
     outer_optimizer = torch.optim.SGD(
         global_model.named_parameters(),
         lr=config.opt.outer_lr,
@@ -143,20 +142,20 @@ def setup_training(
     )
 
     # === scaler ===
-    logger.info(f"setup training - load scaler")
+    logger.info("setup training - load scaler")
     outer_scaler = torch.amp.GradScaler(
         "cuda", enabled=(get_nested_attr(config, "model.precision", "") == "fp16-mixed")
     )
 
     # === dataloader ===
-    logger.info(f"setup training - load dataloader")
+    logger.info("setup training - load dataloader")
     train_dataloader = get_dataloader(
         config, rank=rank, world_size=config.task.exp.data.world_size, tokenizer=tokenizer
     )
 
     # === load checkpoint (if any) ===
     logger.info(
-        f"setup training - load past checkpoint"
+        "setup training - load past checkpoint"
     )  # outer_optimizer is static, so dont really need to load checkpoint
     if get_nested_attr(config, "resume_from_ckpt", False) and resume and latest_checkpoint_path:
         _ = load_checkpoint(
@@ -169,7 +168,7 @@ def setup_training(
             data_loader=train_dataloader,
         )
 
-    logger.info(f"setup_training - completed successfully!")
+    logger.info("setup_training - completed successfully!")
     return (
         base_model,
         global_model,

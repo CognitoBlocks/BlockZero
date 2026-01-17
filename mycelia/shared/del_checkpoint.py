@@ -408,7 +408,7 @@ def compile_full_state_dict_from_path(checkpoint_path, expert_groups: list[int |
             state_dict = torch.load(fh, map_location=torch.device("cpu"))
             full_state_dict = full_state_dict | state_dict["model_state_dict"]
             logger.info(
-                f"loaded checkpoint file", path=f, loss=round(state_dict["loss"] if "loss" in state_dict else -1, 5)
+                "loaded checkpoint file", path=f, loss=round(state_dict["loss"] if "loss" in state_dict else -1, 5)
             )
 
     return full_state_dict

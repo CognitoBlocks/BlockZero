@@ -1,26 +1,13 @@
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
 import threading
-import time
-import traceback
-from pathlib import Path
 
 import bittensor
 from pydantic import BaseModel, ConfigDict, Field
 
 from mycelia.shared.app_logging import structlog
-from mycelia.shared.checkpoints import (
-    ModelCheckpoint,
-    ChainCheckpoints,
-    build_chain_checkpoints,
-    delete_old_checkpoints,
-)
-from mycelia.shared.client import download_model
 from mycelia.shared.config import WorkerConfig
-from mycelia.shared.schema import verify_message
 
 logger = structlog.get_logger(__name__)
 
@@ -138,7 +125,7 @@ def get_chain_commits(
                     else MinerChainCommit.model_validate(status_dict)
                 )
 
-        except Exception as e:
+        except Exception:
             chain_commit = None
 
         parsed.append((chain_commit, metagraph.neurons[uid]))

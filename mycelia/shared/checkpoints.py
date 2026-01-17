@@ -1,11 +1,13 @@
 from __future__ import annotations
-import bittensor
-from collections import Counter
-from functools import total_ordering
+
 import os
 import time
+from collections import Counter
+from functools import total_ordering
 from pathlib import Path
 from typing import Any
+
+import bittensor
 import fsspec
 from fsspec.generic import GenericFileSystem
 from pydantic import BaseModel, ConfigDict, Field
@@ -13,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from mycelia.shared.app_logging import structlog
 from mycelia.shared.checkpoint_helper import compile_full_state_dict_from_path
 from mycelia.shared.helper import get_model_hash, parse_dynamic_filename
-from mycelia.shared.schema import construct_block_message, construct_model_message, sign_message, verify_message
+from mycelia.shared.schema import sign_message, verify_message
 
 logger = structlog.get_logger(__name__)
 
@@ -73,7 +75,7 @@ class ModelCheckpoint(BaseModel):
             and self.model_hash == other_model_hash
         )
 
-    def __lt__(self, other: "ModelCheckpoint") -> bool:
+    def __lt__(self, other: ModelCheckpoint) -> bool:
         try:
             other_global_ver = other.global_ver  # type: ignore[attr-defined]
             other_inner_opt = other.inner_opt  # type: ignore[attr-defined]

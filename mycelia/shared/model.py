@@ -1,61 +1,36 @@
 from __future__ import annotations
 
-from typing import Callable
+import time
+import traceback
+from pathlib import Path
 
 import bittensor
 import torch
 from torch import nn
 
 from mycelia.shared.app_logging import structlog
-from mycelia.shared.checkpoint_helper import load_checkpoint
-from mycelia.shared.checkpoints import ModelCheckpoint
-from mycelia.shared.checkpoints import select_best_checkpoint
-from mycelia.shared.config import MinerConfig, ValidatorConfig
-from mycelia.shared.expert_manager import (
-    ExpertAssignments,
-    ExpertManager,
-    get_layer_expert_id,
-)
-from mycelia.shared.helper import get_nested_attr
-from mycelia.shared.modeling.mycelia import get_base_model
-from __future__ import annotations
-
-import base64
-import hashlib
-import json
-import threading
-import time
-import traceback
-from dataclasses import dataclass
-from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Any
-
-import bittensor
-import requests
-from pydantic import BaseModel, ConfigDict, Field
-
-from mycelia.shared.app_logging import configure_logging, structlog
 from mycelia.shared.chain import (
-    MinerChainCommit,
-    ValidatorChainCommit,
     SignedModelHashChainCommit,
     WorkerChainCommit,
     get_chain_commits,
-    serve_axon,
 )
+from mycelia.shared.checkpoint_helper import load_checkpoint
 from mycelia.shared.checkpoints import (
     ChainCheckpoints,
     ModelCheckpoint,
     build_chain_checkpoints,
     delete_old_checkpoints,
+    select_best_checkpoint,
 )
 from mycelia.shared.client import download_model
 from mycelia.shared.config import MinerConfig, ValidatorConfig, WorkerConfig
 from mycelia.shared.cycle import PhaseNames, get_blocks_from_previous_phase_from_api
-from mycelia.shared.helper import h256_int, parse_dynamic_filename
-from mycelia.validator.evaluator import MinerEvalJob
-
+from mycelia.shared.expert_manager import (
+    ExpertManager,
+    get_layer_expert_id,
+)
+from mycelia.shared.helper import get_nested_attr
+from mycelia.shared.modeling.mycelia import get_base_model
 
 logger = structlog.get_logger(__name__)
 

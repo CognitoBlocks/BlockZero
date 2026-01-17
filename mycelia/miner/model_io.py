@@ -7,7 +7,7 @@ from threading import Lock, Thread
 import bittensor
 
 from mycelia.shared.app_logging import configure_logging, structlog
-from mycelia.shared.chain import MinerChainCommit, _subtensor_lock, commit_status, SignedModelHashChainCommit
+from mycelia.shared.chain import MinerChainCommit, SignedModelHashChainCommit, commit_status
 from mycelia.shared.checkpoint_helper import (
     compile_full_state_dict_from_path,
 )
@@ -19,7 +19,6 @@ from mycelia.shared.config import MinerConfig, parse_args
 from mycelia.shared.cycle import search_model_submission_destination, setup_chain_worker, wait_till
 from mycelia.shared.helper import get_model_hash
 from mycelia.shared.model import fetch_model_from_chain_validator
-from mycelia.shared.schema import sign_message
 from mycelia.sn_owner.cycle import PhaseNames
 
 configure_logging()
