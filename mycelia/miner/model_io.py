@@ -7,7 +7,7 @@ from threading import Lock, Thread
 import bittensor
 
 from mycelia.shared.app_logging import configure_logging, structlog
-from mycelia.shared.chain import MinerChainCommit, _subtensor_lock, commit_status
+from mycelia.shared.chain import MinerChainCommit, _subtensor_lock, commit_status, SignedModelHashChainCommit
 from mycelia.shared.checkpoint_helper import (
     compile_full_state_dict_from_path,
 )
@@ -177,7 +177,7 @@ def commit_worker(
                 config,
                 wallet,
                 subtensor,
-                MinerChainCommit(
+                SignedModelHashChainCommit(
                     signed_model_hash=latest_checkpoint.signed_model_hash,
                 ),
             )

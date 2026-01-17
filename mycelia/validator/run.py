@@ -14,7 +14,7 @@ from transformers import PreTrainedTokenizerBase
 
 from mycelia.miner.train_helper import get_status
 from mycelia.shared.app_logging import configure_logging, structlog
-from mycelia.shared.chain import ValidatorChainCommit, commit_status, setup_chain_worker
+from mycelia.shared.chain import ValidatorChainCommit, commit_status, setup_chain_worker, SignedModelHashChainCommit
 from mycelia.shared.checkpoint_helper import (
     compile_full_state_dict_from_path,
     load_checkpoint,
@@ -490,7 +490,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                 config,
                 wallet,
                 subtensor,
-                ValidatorChainCommit(
+                SignedModelHashChainCommit(
                     signed_model_hash=model_ckpt.signed_model_hash,
                 ),
             )
@@ -502,7 +502,6 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                 wallet,
                 subtensor,
                 ValidatorChainCommit(
-                    signed_model_hash=model_ckpt.signed_model_hash,
                     model_hash=model_ckpt.model_hash,
                     global_ver=model_ckpt.global_ver,
                     expert_group=config.task.exp.group_id,

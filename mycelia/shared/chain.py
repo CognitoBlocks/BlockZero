@@ -45,6 +45,11 @@ class WorkerChainCommit(BaseModel):
     stake: float
     validator_permit: bool
 
+class SignedModelHashChainCommit(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    signed_model_hash: str | None = Field(default=None, alias="m")
+
 
 class ValidatorChainCommit(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -58,7 +63,7 @@ class ValidatorChainCommit(BaseModel):
 
 class MinerChainCommit(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
-    block: int = Field(alias="b")
+    block: int | None = Field(default=None, alias="b")
     expert_group: int | None = Field(default=None, alias="e")
     signed_model_hash: str | None = Field(default=None, alias="m")
     model_hash: str | None = Field(default=None, alias="h")
@@ -70,7 +75,7 @@ def commit_status(
     config: WorkerConfig,
     wallet: bittensor.Wallet,
     subtensor: bittensor.Subtensor,
-    status: ValidatorChainCommit | MinerChainCommit,
+    status: ValidatorChainCommit | MinerChainCommit | SignedModelHashChainCommit,
 ) -> None:
     """
     Commit the worker status to chain.
