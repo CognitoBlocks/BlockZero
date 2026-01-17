@@ -71,7 +71,7 @@ def scheduler_service(
         download_queue.put(Job(job_type=JobType.DOWNLOAD))
 
         # --------- COMISSION SCHEDULING ---------
-        _, phase_end_block = wait_till(config, phase_name=PhaseNames.commit, poll_fallback_block=poll_fallback_block)
+        _, phase_end_block = wait_till(config, phase_name=PhaseNames.miner_commit_1, poll_fallback_block=poll_fallback_block)
         commit_queue.put(Job(job_type=JobType.COMMIT, phase_end_block=phase_end_block))
 
         # --------- SUBMISSION SCHEDULING ---------
@@ -169,7 +169,7 @@ def commit_worker(
             )
 
             logger.info(
-                f"<{PhaseNames.commit}> committing",
+                f"<{PhaseNames.miner_commit_1}> committing",
                 model_version=latest_checkpoint.global_ver,
                 hash=model_hash,
                 path=latest_checkpoint.path,
@@ -189,15 +189,15 @@ def commit_worker(
             )
 
         except FileNotReadyError as e:
-            logger.warning(f"<{PhaseNames.commit}> File not ready error: {e}")
+            logger.warning(f"<{PhaseNames.miner_commit_1}> File not ready error: {e}")
 
         except Exception as e:
-            logger.error(f"<{PhaseNames.commit}> Error while handling job: {e}")
+            logger.error(f"<{PhaseNames.miner_commit_1}> Error while handling job: {e}")
             traceback.print_exc()
 
         finally:
             commit_queue.task_done()
-            logger.info(f"<{PhaseNames.commit}> task completed.")
+            logger.info(f"<{PhaseNames.miner_commit_1}> task completed.")
 
 
 def submit_worker(

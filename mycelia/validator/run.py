@@ -20,7 +20,7 @@ from mycelia.shared.checkpoint_helper import (
     load_checkpoint,
     save_checkpoint,
 )
-from mycelia.shared.checkpoints import ModelCheckpoint, delete_old_checkpoints
+from mycelia.shared.checkpoints import build_local_checkpoint, ModelCheckpoint, delete_old_checkpoints
 from mycelia.shared.config import ValidatorConfig, parse_args
 from mycelia.shared.cycle import gather_validation_job, get_combined_validator_seed, wait_till
 from mycelia.shared.dataloader import get_dataloader
@@ -370,7 +370,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             # for each global_opt_interval number of inner_opt_step, we synchronise weight from different ddp worker, and then run global optimization
 
             # === Wait till commit phase to submit random seed ===
-            wait_till(config, PhaseNames.commit)
+            wait_till(config, PhaseNames.miner_commit_1)
             logger.info("(0) Commit new seed for next validation")
 
             commit_status(
@@ -481,14 +481,34 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             )
 
             # === Comit to chain for new model ===
-            current_model_hash = get_model_hash(compile_full_state_dict_from_path(ckpt_path), hex = True)
+            model_ckpt = build_local_checkpoint(ckpt_path)
+            model_ckpt.sign_hash()
+            wait_till(config, PhaseNames.validator_commit_1)
+            logger.info("(8) Commit new signed_model_hash for next validation")
+            # current_model_hash = get_model_hash(compile_full_state_dict_from_path(ckpt_path), hex = True)
             commit_status(
                 config,
                 wallet,
                 subtensor,
                 ValidatorChainCommit(
-                    model_hash=current_model_hash,
-                    global_ver=global_opt_step,
+                    signed_model_hash=model_ckpt.signed_model_hash,
+                    global_ver=model_ckpt.global_ver,
+                    expert_group=config.task.exp.group_id,
+                    miner_seed=0,
+                    block=subtensor.block,
+                ),
+            )
+
+            wait_till(config, PhaseNames.validator_commit_2)
+            logger.info("(9) Commit new signed_model_hash and model_hash for next validation")
+            commit_status(
+                config,
+                wallet,
+                subtensor,
+                ValidatorChainCommit(
+                    signed_model_hash=model_ckpt.signed_model_hash,
+                    model_hash=model_ckpt.model_hash,
+                    global_ver=model_ckpt.global_ver,
                     expert_group=config.task.exp.group_id,
                     miner_seed=0,
                     block=subtensor.block,
