@@ -33,7 +33,7 @@ class SignedModelSubmitMessage(SignedMessage):
     pass
 
 
-def construct_model_message(model_path: str | Path, target_hotkey_ss58: str, block: int):
+def construct_model_message(model_path: str | Path):
     """
     Sign:
         model_hash(32 bytes) || construct_block_message(...)
@@ -41,13 +41,7 @@ def construct_model_message(model_path: str | Path, target_hotkey_ss58: str, blo
     # 1. Get model hash
     model_hash = get_model_hash(compile_full_state_dict_from_path(model_path))
 
-    # 2. Create pubkey || block message
-    block_msg = construct_block_message(target_hotkey_ss58, block)
-
-    # 3. Final message to sign
-    full_message = model_hash + block_msg
-
-    return full_message
+    return model_hash
 
 
 def construct_block_message(target_hotkey_ss58: str, block: int) -> bytes:

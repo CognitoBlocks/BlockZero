@@ -482,7 +482,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
 
             # === Comit to chain for new model ===
             model_ckpt = build_local_checkpoint(ckpt_path)
-            model_ckpt.sign_hash()
+            model_ckpt.sign_hash(wallet=wallet)
             wait_till(config, PhaseNames.validator_commit_1)
             logger.info("(8) Commit new signed_model_hash for next validation")
             # current_model_hash = get_model_hash(compile_full_state_dict_from_path(ckpt_path), hex = True)
@@ -492,10 +492,6 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                 subtensor,
                 ValidatorChainCommit(
                     signed_model_hash=model_ckpt.signed_model_hash,
-                    global_ver=model_ckpt.global_ver,
-                    expert_group=config.task.exp.group_id,
-                    miner_seed=0,
-                    block=subtensor.block,
                 ),
             )
 

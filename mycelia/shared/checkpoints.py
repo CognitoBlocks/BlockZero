@@ -1,4 +1,5 @@
 from __future__ import annotations
+import bittensor 
 from collections import Counter
 from functools import total_ordering
 import os
@@ -58,8 +59,6 @@ class ModelCheckpoint(BaseModel):
     expert_group_check_required: bool = False
     expert_group_verified: bool = False
 
-    validated: bool = False  # for validator only
-
     def __eq__(self, other: object) -> bool:
         try:
             other_global_ver = other.global_ver  # type: ignore[attr-defined]
@@ -81,11 +80,15 @@ class ModelCheckpoint(BaseModel):
             return NotImplemented
 
         # Compare by global_ver first
-        if self.global_ver != other_global_ver:
-            return self.global_ver < other_global_ver
+        self_global_ver = self.global_ver if isinstance(self.global_ver, int) else -1
+        other_global_ver = other_global_ver if isinstance(other_global_ver, int) else -1
+        if self_global_ver != other_global_ver:
+            return self_global_ver < other_global_ver
 
         # Then compare by inner_opt
-        return self.inner_opt < other_inner_opt
+        self_inner_opt = self.inner_opt if isinstance(self.inner_opt, int) else -1
+        other_inner_opt = other_inner_opt if isinstance(other_inner_opt, int) else -1
+        return self_inner_opt < other_inner_opt
 
     def _extra(self, key: str, default: Any | None = None) -> Any | None:
         if self.model_extra and key in self.model_extra:
@@ -114,28 +117,6 @@ class ModelCheckpoint(BaseModel):
                 return None
         return None
 
-    def _build_signature_message(self) -> bytes:
-        explicit_msg = self._extra("message")
-        if isinstance(explicit_msg, (bytes, bytearray)):
-            return bytes(explicit_msg)
-
-        target_hotkey_ss58 = self._extra("target_hotkey_ss58")
-        block = self._extra("block")
-
-        if self.path is not None and target_hotkey_ss58 is not None and block is not None:
-            return construct_model_message(self.path, target_hotkey_ss58, block)
-
-        if self.model_hash is None and self.path is not None:
-            self.hash_model()
-
-        if self.model_hash is None:
-            raise ValueError("model_hash is required to build a signature message")
-
-        message = _hash_bytes(self.model_hash)
-        if target_hotkey_ss58 is not None and block is not None:
-            message += construct_block_message(target_hotkey_ss58, block)
-        return message
-
     def expired(self) -> bool:
         if self.place == "local" and self.path is not None and not self.path.exists():
             return True
@@ -155,77 +136,48 @@ class ModelCheckpoint(BaseModel):
         if self.path is None:
             raise ValueError("path is required to hash a model")
 
-        state = compile_full_state_dict_from_path(self.path)
+        state = compile_full_state_dict_from_path(self.path / f"model_expgroup_{self.expert_group}.pt")
         self.model_hash = get_model_hash(state, hex=True)
         self.hash_verified = True
         return self.model_hash
 
-    def sign_hash(self) -> str:
-        signer = self._extra("signer")
-        if signer is None:
-            raise ValueError("signer is required to sign the hash")
-
-        message = self._build_signature_message()
-        self.signed_model_hash = sign_message(signer, message)
-        self.signature_verified = True
-        return self.signed_model_hash
-
-    def commit_signature(self) -> dict[str, Any]:
-        if self.signed_model_hash is None:
-            self.sign_hash()
-
-        return {
-            "h": self.signed_model_hash,
-            "v": self.global_ver,
-            "e": self.expert_group,
-            "i": self.inner_opt,
-        }
-
-    def commit_hash(self) -> dict[str, Any]:
+    def sign_hash(self, wallet:bittensor.Wallet) -> str:
         if self.model_hash is None:
             self.hash_model()
 
-        return {
-            "h": self.model_hash,
-            "v": self.global_ver,
-            "e": self.expert_group,
-            "i": self.inner_opt,
-        }
+        self.signed_model_hash = sign_message(
+            wallet.hotkey,
+            self.model_hash,
+        )
+        self.signature_verified = True
+        return self.signed_model_hash
 
-    def verify_hash(self, hash: str | bytes | None) -> bool:
-        expected = _normalize_hash(hash or self.model_hash)
-        if expected is None:
-            self.hash_verified = False
-            return False
-
+    def verify_hash(self) -> bool:
         if self.path is None:
             self.hash_verified = False
             return False
+        
+        state = compile_full_state_dict_from_path(self.path / f"model_expgroup_{self.expert_group}.pt")
+        expected_hash = get_model_hash(state, hex=True)
+    
+        if expected_hash is None:
+            self.hash_verified = False
+            return False
 
-        actual = _normalize_hash(get_model_hash(compile_full_state_dict_from_path(self.path), hex=True))
-        self.hash_verified = actual == expected
-        if self.hash_verified:
-            self.model_hash = expected
+        self.hash_verified = self.model_hash == expected_hash
+        
         return self.hash_verified
 
-    def verify_signature(self, signature: str | None) -> bool:
-        sig = signature or self.signed_model_hash
-        origin_hotkey_ss58 = self._extra("origin_hotkey_ss58")
-        if sig is None or origin_hotkey_ss58 is None:
+    def verify_signature(self) -> bool:
+        if self.signed_model_hash is None or self.model_hash is None or self.hotkey is None:
             self.signature_verified = False
             return False
 
-        try:
-            message = self._build_signature_message()
-        except Exception as exc:
-            logger.warning("failed to build signature message", error=str(exc))
-            self.signature_verified = False
-            return False
+        self.signature_verified = verify_message(self.hotkey, message = self.model_hash, signature_hex = self.signed_model_hash)
 
-        self.signature_verified = verify_message(origin_hotkey_ss58, message, sig)
         return self.signature_verified
 
-    def verify_expert_group(self, signature: str | None = None) -> bool:
+    def verify_expert_group(self) -> bool:
         if not self.expert_group_check_required:
             self.expert_group_verified = True
             return True
@@ -244,6 +196,18 @@ class ModelCheckpoint(BaseModel):
             self.expert_group_verified = self.expert_group == expected
         return self.expert_group_verified
 
+    def validated(self) -> bool:
+        if self.expired():
+            return False
+        if self.signature_required and not self.signature_verified:
+            return False
+        if self.hash_required and not self.hash_verified:
+            return False
+        if self.expert_group_check_required and not self.expert_group_verified:
+            return False
+
+        return True
+    
     def active(self) -> bool:
         if self.expired():
             return False
@@ -258,7 +222,6 @@ class ModelCheckpoint(BaseModel):
             return False
 
         return True
-
 
 class ChainCheckpoint(ModelCheckpoint):
     uid: int | None = Field(default=None, alias="h")
@@ -306,7 +269,15 @@ class ChainCheckpoints(BaseModel):
         # filter out incomplete checkpoints
         filtered = []
         for ckpt in self.checkpoints:
-            if not ckpt.model_hash or not ckpt.global_ver or not ckpt.miner_seed or not ckpt.expert_group or not ckpt.uid or not ckpt.ip or not ckpt.port or not ckpt.hotkey:
+            if (ckpt.model_hash is None or \
+                ckpt.global_ver is None or \
+                ckpt.expert_group is None or \
+                ckpt.miner_seed is None or \
+                ckpt.uid is None or \
+                ckpt.ip is None or \
+                ckpt.port is None or \
+                ckpt.hotkey is None
+                ):
                 continue
             
             filtered.append(ckpt)
@@ -443,6 +414,22 @@ class Checkpoints(BaseModel):
 
         return None
 
+def build_local_checkpoint(path: Path, role: str = "miner") -> ModelCheckpoint | None:
+    if path.name.startswith(".tmp_") or "yaml" in path.name.lower():
+        return None
+
+    meta = parse_dynamic_filename(str(path))
+    if meta is None:
+        return None
+
+    return ModelCheckpoint(
+        global_ver=int(meta.get("globalver", 0)),
+        inner_opt=int(meta.get("inneropt", 0)),
+        path=path,
+        role=role,
+        place="local",
+    )
+
 def build_local_checkpoints(ckpt_dir: Path, role: str = "miner") -> ModelCheckpoints:
     fs, root = fsspec.core.url_to_fs(str(ckpt_dir))
     checkpoints: list[ModelCheckpoint] = []
@@ -469,6 +456,9 @@ def build_local_checkpoints(ckpt_dir: Path, role: str = "miner") -> ModelCheckpo
         )
 
     return ModelCheckpoints(checkpoints=checkpoints)
+
+
+
 
 
 def build_chain_checkpoints(

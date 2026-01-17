@@ -48,6 +48,7 @@ class WorkerChainCommit(BaseModel):
 
 class ValidatorChainCommit(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
+    signed_model_hash: str | None = Field(default=None, alias="m")
     model_hash: str | None = Field(default=None, alias="h")
     global_ver: int | None = Field(default=None, alias="v")
     expert_group: int | None = Field(default=None, alias="e")
@@ -59,6 +60,7 @@ class MinerChainCommit(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     block: int = Field(alias="b")
     expert_group: int | None = Field(default=None, alias="e")
+    signed_model_hash: str | None = Field(default=None, alias="m")
     model_hash: str | None = Field(default=None, alias="h")
     global_ver: int | None = Field(default=0, alias="v")
     inner_opt: int | None = Field(default=0, alias="i")
@@ -189,7 +191,7 @@ def fetch_model_from_chain(
     chain_checkpoints = ChainCheckpoints(checkpoints=[ckpt for ckpt in chain_checkpoints.checkpoints if ckpt > current_model_meta])
     should_download = len(chain_checkpoints.checkpoints) > 0
 
-    logger.info("Fetching model from chain", should_download=should_download, chain_checkpoints=chain_checkpoints)
+    logger.info("Fetching model from chain", should_download=should_download, chain_checkpoints=chain_checkpoints, current_model_meta=current_model_meta)
 
     if should_download and chain_checkpoints:
         download_success = False

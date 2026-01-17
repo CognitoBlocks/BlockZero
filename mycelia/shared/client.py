@@ -98,7 +98,7 @@ def submit_model(
         block=block,
         signature=sign_message(
             my_hotkey,
-            construct_model_message(target_hotkey_ss58=target_hotkey_ss58, block=block, model_path=model_path),
+            construct_model_message(model_path=model_path) + construct_block_message(target_hotkey_ss58, block=block),
         ),
     ).to_dict()
 

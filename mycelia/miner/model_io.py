@@ -157,6 +157,8 @@ def commit_worker(
         job = commit_queue.get()
         try:
             latest_checkpoint = select_best_checkpoint(primary_dir=config.ckpt.checkpoint_path, resume=config.ckpt.resume_from_ckpt)
+            latest_checkpoint.sign_hash(wallet=wallet)
+
 
             with shared_state.lock:
                 shared_state.latest_checkpoint_path = latest_checkpoint.path
@@ -164,14 +166,28 @@ def commit_worker(
             if latest_checkpoint is None or latest_checkpoint.path is None:
                 raise FileNotReadyError("Not checkpoint found, skip commit.")
 
-            model_hash = get_model_hash(
-                compile_full_state_dict_from_path(latest_checkpoint.path, expert_groups=[config.task.exp.group_id]), hex = True
-            )
-
             logger.info(
                 f"<{PhaseNames.miner_commit_1}> committing",
                 model_version=latest_checkpoint.global_ver,
-                hash=model_hash,
+                hash=latest_checkpoint.model_hash,
+                path=latest_checkpoint.path,
+            )
+
+            commit_status(
+                config,
+                wallet,
+                subtensor,
+                MinerChainCommit(
+                    signed_model_hash=latest_checkpoint.signed_model_hash,
+                ),
+            )
+
+            wait_till(config, PhaseNames.miner_commit_2)
+
+            logger.info(
+                f"<{PhaseNames.miner_commit_2}> committing",
+                model_version=latest_checkpoint.global_ver,
+                hash=latest_checkpoint.model_hash,
                 path=latest_checkpoint.path,
             )
 
@@ -181,12 +197,13 @@ def commit_worker(
                 subtensor,
                 MinerChainCommit(
                     expert_group=config.task.exp.group_id,
-                    model_hash=model_hash,
+                    model_hash=latest_checkpoint.model_hash,
                     block=subtensor.block,
                     global_ver=latest_checkpoint.global_ver,
                     inner_opt=latest_checkpoint.inner_opt,
                 ),
             )
+
 
         except FileNotReadyError as e:
             logger.warning(f"<{PhaseNames.miner_commit_1}> File not ready error: {e}")

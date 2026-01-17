@@ -248,7 +248,7 @@ async def submit_checkpoint(
 
     verify_message(
         origin_hotkey_ss58=origin_hotkey_ss58,
-        message=construct_model_message(model_path=dest_path, target_hotkey_ss58=target_hotkey_ss58, block=block),
+        message=construct_model_message(model_path=dest_path) + construct_block_message(target_hotkey_ss58, block=block),
         signature_hex=signature,
     )
 
