@@ -30,7 +30,7 @@ async def prev_phase():
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.get("/blocks_until_next_phase", response_model=dict[str, int])
+@app.get("/blocks_until_next_phase", response_model=dict[str, tuple[int, int, int]])
 async def next_phase():
     """
     Returns which phase we're in for the given block height.

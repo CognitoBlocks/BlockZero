@@ -84,7 +84,7 @@ def should_act(config: MinerConfig, phase_name: PhaseNames, retry_blocks: int) -
     if blocks_till_next_phase is None:
         blocks_till = retry_blocks
     else:
-        blocks_till = blocks_till_next_phase[phase_name]
+        blocks_till = blocks_till_next_phase[phase_name][2]
 
     return should_submit, blocks_till, phase_response
 
@@ -249,7 +249,7 @@ def get_phase_from_api(config: WorkerConfig) -> PhaseResponse | None:
         return None
 
 
-def get_blocks_until_next_phase_from_api(config: WorkerConfig) -> PhaseResponse | None:
+def get_blocks_until_next_phase_from_api(config: WorkerConfig) -> dict[str, tuple[int, int, int]] | None:
     """
     Determine current phase based on block schedule.
 

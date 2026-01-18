@@ -72,32 +72,37 @@ class PhaseManager:
         # Should never happen if PHASES and self.cycle_length are consistent
         raise RuntimeError("Failed to determine phase")
 
-    def blocks_until_next_phase(self) -> dict[str, int]:
+    def blocks_until_next_phase(self) -> dict[str, tuple[int, int, int]]:
         """
         Returns a mapping:
-            { phase_name: blocks_until_phase_starts_next }
+            { phase_name: (start_block, end_block, blocks_until) }
 
-        The value is how many blocks from `block` until
-        the *start* of that phase (in this or the next cycle).
+        Each tuple corresponds to the next occurrence of that phase (in this
+        cycle if upcoming, otherwise the next cycle).
         """
         block = self.subtensor.block
+        cycle_len = self.cycle_length
+        cycle_block_index = block % cycle_len  # 0..cycle_len-1
+        cycle_start_block = block - cycle_block_index
 
-        cycle_block_index = block % self.cycle_length  # 0..self.cycle_length-1
-
-        result: dict[str, int] = {}
+        result: dict[str, tuple[int, int, int]] = {}
 
         start = 0
         for phase in self.phases:
-            phase_start = start  # phase start within the cycle [0..self.cycle_length)
+            phase_start = start  # phase start within the cycle [0..cycle_len)
+            phase_end = start + phase["length"] - 1
 
             if phase_start >= cycle_block_index:
                 # Phase still ahead in *this* cycle
-                blocks_until = phase_start - cycle_block_index
+                start_block = cycle_start_block + phase_start
             else:
                 # Phase has already passed in this cycle -> wait for next cycle
-                blocks_until = (self.cycle_length - cycle_block_index) + phase_start
+                start_block = cycle_start_block + cycle_len + phase_start
 
-            result[phase["name"]] = blocks_until
+            end_block = start_block + phase["length"] - 1
+            blocks_until = start_block - block
+
+            result[phase["name"]] = (start_block, end_block, blocks_until)
             start += phase["length"]
 
         return result
