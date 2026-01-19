@@ -19,6 +19,7 @@ from mycelia.shared.checkpoints import (
     ChainCheckpoints,
     ModelCheckpoint,
     build_chain_checkpoints,
+    build_chain_checkpoints_from_previous_phase,
     delete_old_checkpoints,
     select_best_checkpoint,
 )
@@ -44,7 +45,6 @@ def grad_hook(name):
         return grad
 
     return h
-
 
 def freeze_parameters(
     model: nn.Module,
@@ -166,23 +166,7 @@ def fetch_model_from_chain_validator(
     """
     Fetches a model from the chain validator if it's has the right commit format from the previous phase commits (validator_commit_1 & validator_commit_2) and newer than the current model.
     """
-    # --- Get block ranges for previous phases ---
-    previous_phase_range = get_blocks_from_previous_phase_from_api(config)
-    validator_commit_1_end_block = previous_phase_range[PhaseNames.validator_commit_1][1] + 1
-    validator_commit_2_end_block = previous_phase_range[PhaseNames.validator_commit_2][1] + 1
-
-    # --- Get commits from chain at the right blocks ---
-    signed_hash_chain_commits: tuple[SignedModelHashChainCommit, bittensor.Neuron] = get_chain_commits(
-        config, subtensor, block=validator_commit_1_end_block
-    )
-    hash_chain_commits: tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(
-        config, subtensor, block=validator_commit_2_end_block
-    )
-
-    # --- Build chain checkpoints ---
-    chain_checkpoints = build_chain_checkpoints(
-        signed_hash_chain_commits=signed_hash_chain_commits, hash_chain_commits=hash_chain_commits
-    )
+    chain_checkpoints = build_chain_checkpoints_from_previous_phase(config=config, subtensor=subtensor, type ="validator")
 
     # --- Filter to only newer than current model ---
     chain_checkpoints = ChainCheckpoints(

@@ -17,6 +17,15 @@ from mycelia.shared.checkpoint_helper import compile_full_state_dict_from_path
 from mycelia.shared.helper import get_model_hash, parse_dynamic_filename
 from mycelia.shared.schema import sign_message, verify_message
 
+from mycelia.shared.cycle import PhaseNames, get_blocks_from_previous_phase_from_api
+from mycelia.shared.config import MinerConfig, ValidatorConfig, WorkerConfig
+from mycelia.shared.chain import (
+    SignedModelHashChainCommit,
+    WorkerChainCommit,
+    get_chain_commits,
+)
+from mycelia.shared.cycle import PhaseNames, get_blocks_from_previous_phase_from_api
+
 logger = structlog.get_logger(__name__)
 
 
@@ -273,6 +282,13 @@ class ChainCheckpoints(BaseModel):
     def __len__(self) -> int:
         return len(self.checkpoints)
 
+    def get(self, hotkey: str) -> ChainCheckpoint | None:
+        for ckpt in self.checkpoints:
+            if ckpt.hotkey == hotkey:
+                return ckpt  
+            
+        return None
+
     def filter_checkpoints(self) -> ChainCheckpoints:
         for ckpt in self.checkpoints:
             logger.info("chain checkpoint A", ckpt=ckpt)
@@ -521,6 +537,40 @@ def build_chain_checkpoints(
         return ChainCheckpoints(checkpoints=[])
     return filtered_checkpoints
 
+def build_chain_checkpoints_from_previous_phase(
+    config: WorkerConfig,
+    subtensor: bittensor.Subtensor,
+    type: str = "validator",
+) -> ChainCheckpoints:
+    # --- Validate type ---
+    if type == "miner":
+        phase_name_1 = PhaseNames.miner_commit_1
+        phase_name_2 = PhaseNames.miner_commit_2
+    elif type == "validator":
+        phase_name_1 = PhaseNames.validator_commit_1
+        phase_name_2 = PhaseNames.validator_commit_2
+
+    else:
+        raise ValueError(f"Invalid type: {type}. Must be 'miner' or 'validator'.")
+
+    # --- Get block ranges for previous phases ---
+    previous_phase_range = get_blocks_from_previous_phase_from_api(config)
+    commit_1_end_block = previous_phase_range[phase_name_1][1] + 1
+    commit_2_end_block = previous_phase_range[phase_name_2][1] + 1
+
+    # --- Get commits from chain at the right blocks ---
+    signed_hash_chain_commits: tuple[SignedModelHashChainCommit, bittensor.Neuron] = get_chain_commits(
+        config, subtensor, block=commit_1_end_block
+    )
+    hash_chain_commits: tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(
+        config, subtensor, block=commit_2_end_block
+    )
+
+    # --- Build chain checkpoints ---
+    return build_chain_checkpoints(
+        signed_hash_chain_commits=signed_hash_chain_commits,
+        hash_chain_commits=hash_chain_commits,
+    )
 
 def delete_old_checkpoints(checkpoint_path: str | Path, topk: int) -> list[str]:
     """
