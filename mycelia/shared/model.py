@@ -166,7 +166,7 @@ def fetch_model_from_chain_validator(
     """
     Fetches a model from the chain validator if it's has the right commit format from the previous phase commits (validator_commit_1 & validator_commit_2) and newer than the current model.
     """
-    chain_checkpoints = build_chain_checkpoints_from_previous_phase(config=config, subtensor=subtensor, type ="validator")
+    chain_checkpoints = build_chain_checkpoints_from_previous_phase(config=config, subtensor=subtensor, for_role ="validator")
 
     # --- Filter to only newer than current model ---
     chain_checkpoints = ChainCheckpoints(

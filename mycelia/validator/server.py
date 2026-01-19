@@ -30,6 +30,9 @@ from mycelia.shared.schema import (
     construct_model_message,
     verify_message,
 )
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import HTTPException
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 configure_logging()
@@ -201,7 +204,7 @@ class ValidatorStateCache:
             self._chain_checkpoints_cache = build_chain_checkpoints_from_previous_phase(
                 config=self._config,
                 subtensor=self._subtensor,
-                type="miner",
+                for_role="miner",
             )
             self._chain_checkpoints_cache_block = current_phase.phase_start_block
 
@@ -220,6 +223,16 @@ async def _startup():
     configure_logging()  # <— configure ONCE
     structlog.get_logger(__name__).info("startup_ok")
 
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    logger.warning(
+        "HTTPException %s %s -> %s | detail=%r",
+        request.method,
+        request.url.path,
+        exc.status_code,
+        exc.detail,
+    )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 # ---- Routes ----
 @app.get("/")
@@ -276,7 +289,7 @@ async def get_checkpoint(
         origin_hotkey_ss58=origin_hotkey_ss58,
         message=construct_block_message(
             target_hotkey_ss58=target_hotkey_ss58,  # TODO: assert hotkey is valid within the metagraph
-            block=block,  # TODO: change to block hash and assert it is not too far from current
+            block=origin_block,  # TODO: change to block hash and assert it is not too far from current
         ),
         signature_hex=signature,
     )
@@ -289,7 +302,7 @@ async def get_checkpoint(
     logger.info(
         "<download> Received get checkpoint request",
         from_hk=origin_hotkey_ss58,
-        block=block,
+        block=origin_block,
         expert_group_id=expert_group_id,
     )
 
@@ -348,7 +361,7 @@ def validate_submission_phase_and_assignment(
         meta = parse_dynamic_filename(path.name)
         block = meta.get("block")
         if isinstance(block, int) and phase.phase_start_block <= block <= phase.phase_end_block:
-            raise HTTPException(status_code=409, detail="Miner already submitted during this phase")
+            raise HTTPException(status_code=409, detail=f"Miner already submitted during this phase, existing path {path}, existing range {phase.phase_start_block}-{phase.phase_end_block}")
 
 # miners submit checkpoint
 @app.post("/submit-checkpoint")
@@ -369,7 +382,7 @@ async def submit_checkpoint(
       - file (UploadFile, required)
     """
 
-    logger.info("<submit> Received checkpoint submission", from_hk=origin_hotkey_ss58, to_hk=target_hotkey_ss58, block=origin_block, signature=signature)
+    logger.info("<submit> Received checkpoint submission request", from_hk=origin_hotkey_ss58, to_hk=target_hotkey_ss58, block=origin_block, signature=signature)
     require_auth(authorization)
 
     validate_submission_phase_and_assignment(
@@ -426,6 +439,7 @@ async def submit_checkpoint(
 
     # get chain checkpoint for model hash, signature, and expert group verification
     chain_checkpoints = validator_state_cache.get_chain_checkpoints()
+    logger.info(f"<submit> Fetched {len(chain_checkpoints)} chain checkpoints for validation.", chain_checkpoints=chain_checkpoints.checkpoints, origin_hotkey_ss58=origin_hotkey_ss58)
     chain_checkpoint = chain_checkpoints.get(origin_hotkey_ss58)
     if chain_checkpoint is None:
         raise HTTPException(status_code=400, detail="No checkpoint found on chain for this miner")

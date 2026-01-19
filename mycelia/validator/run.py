@@ -484,9 +484,9 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             # === Comit to chain for new model ===
             model_ckpt = build_local_checkpoint(ckpt_path)
             model_ckpt.sign_hash(wallet=wallet)
+            current_model_hash = model_ckpt.model_hash
             wait_till(config, PhaseNames.validator_commit_1)
             logger.info("(8) Commit new signed_model_hash for next validation")
-            # current_model_hash = get_model_hash(compile_full_state_dict_from_path(ckpt_path), hex = True)
             commit_status(
                 config,
                 wallet,

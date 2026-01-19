@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from mycelia.shared.app_logging import structlog
 from mycelia.shared.checkpoint_helper import compile_full_state_dict_from_path
+from mycelia.shared.expert_manager import get_layer_expert_id
 from mycelia.shared.helper import get_model_hash, parse_dynamic_filename
 from mycelia.shared.schema import sign_message, verify_message
 
@@ -107,28 +108,6 @@ class ModelCheckpoint(BaseModel):
             return self.model_extra[key]
         return default
 
-    def _infer_expert_group_from_path(self) -> int | None:
-        if self.path is None:
-            return None
-
-        if self.path.is_file():
-            name = self.path.name
-            if name.startswith("model_expgroup_") and name.endswith(".pt"):
-                try:
-                    return int(name[len("model_expgroup_") : -len(".pt")])
-                except ValueError:
-                    return None
-            return None
-
-        candidates = list(self.path.glob("model_expgroup_*.pt"))
-        if len(candidates) == 1:
-            name = candidates[0].name
-            try:
-                return int(name[len("model_expgroup_") : -len(".pt")])
-            except ValueError:
-                return None
-        return None
-
     def expired(self) -> bool:
         if self.place == "local" and self.path is not None and not self.path.exists():
             return True
@@ -196,18 +175,45 @@ class ModelCheckpoint(BaseModel):
             self.expert_group_verified = True
             return True
 
-        inferred = self._infer_expert_group_from_path()
-        if inferred is not None and self.expert_group is None:
-            self.expert_group = inferred
-
         expected = self._extra("expected_expert_group")
         if expected is None:
             expected = self.expert_group
 
         if expected is None:
             self.expert_group_verified = False
-        else:
-            self.expert_group_verified = self.expert_group == expected
+            return self.expert_group_verified
+
+        if self.expert_group != expected:
+            self.expert_group_verified = False
+            return self.expert_group_verified
+
+        expert_group_assignment = self._extra("expert_group_assignment")
+        if expert_group_assignment is None:
+            self.expert_group_verified = True
+            return self.expert_group_verified
+
+        if self.path is None:
+            self.expert_group_verified = False
+            return self.expert_group_verified
+
+        state_dict = compile_full_state_dict_from_path(self.path)
+        if not state_dict:
+            self.expert_group_verified = False
+            return self.expert_group_verified
+
+        allowed_layers = expert_group_assignment.get(expected, {})
+        for name in state_dict.keys():
+            layer_id, expert_id = get_layer_expert_id(name)
+            if layer_id is None or expert_id is None:
+                continue
+
+            mappings = allowed_layers.get(layer_id, [])
+            allowed_expert_ids = {my_expert_id for my_expert_id, _ in mappings}
+            if expert_id not in allowed_expert_ids:
+                self.expert_group_verified = False
+                return self.expert_group_verified
+
+        self.expert_group_verified = True
         return self.expert_group_verified
 
     def validate(self) -> bool:
@@ -218,12 +224,16 @@ class ModelCheckpoint(BaseModel):
     
     def validated(self) -> bool:
         if self.expired():
+            logger.info("checkpoint expired", ckpt=self)
             return False
         if self.signature_required and not self.signature_verified:
+            logger.info("checkpoint signature not verified", ckpt=self)
             return False
         if self.hash_required and not self.hash_verified:
+            logger.info("checkpoint hash not verified", ckpt=self)
             return False
         if self.expert_group_check_required and not self.expert_group_verified:
+            logger.info("checkpoint expert group not verified", ckpt=self)
             return False
 
         return True
@@ -232,13 +242,7 @@ class ModelCheckpoint(BaseModel):
         if self.expired():
             return False
 
-        if self.signature_required and not self.signature_verified:
-            return False
-        if self.hash_required and not self.hash_verified:
-            return False
-        if self.expert_group_check_required and not self.expert_group_verified:
-            return False
-        if self.role == "validator" and not self.validated:
+        if self.role == "validator" and not self.validated():
             return False
 
         return True
@@ -289,7 +293,7 @@ class ChainCheckpoints(BaseModel):
             
         return None
 
-    def filter_checkpoints(self) -> ChainCheckpoints:
+    def filter_checkpoints(self, for_role: str = "validator") -> ChainCheckpoints:
         for ckpt in self.checkpoints:
             logger.info("chain checkpoint A", ckpt=ckpt)
 
@@ -301,7 +305,7 @@ class ChainCheckpoints(BaseModel):
                 or ckpt.model_hash is None
                 or ckpt.global_ver is None
                 or ckpt.expert_group is None
-                or ckpt.miner_seed is None
+                or (ckpt.miner_seed is None and for_role == "validator")
                 or ckpt.uid is None
                 or ckpt.ip is None
                 or ckpt.port is None
@@ -493,6 +497,7 @@ def build_local_checkpoints(ckpt_dir: Path, role: str = "miner") -> ModelCheckpo
 def build_chain_checkpoints(
     signed_hash_chain_commits: list[tuple[Any, Any]],
     hash_chain_commits: list[tuple[Any, Any]],
+    for_role: str = "validator",
 ) -> ChainCheckpoints:
     """
     Build chain checkpoints by joining signed-hash commits with hash commits.
@@ -531,7 +536,7 @@ def build_chain_checkpoints(
         except Exception:
             logger.info("Cannot append commit", commit=commit)
 
-    filtered_checkpoints = ChainCheckpoints(checkpoints=checkpoints).filter_checkpoints()
+    filtered_checkpoints = ChainCheckpoints(checkpoints=checkpoints).filter_checkpoints(for_role=for_role)
 
     if len(filtered_checkpoints) == 0:
         return ChainCheckpoints(checkpoints=[])
@@ -540,18 +545,18 @@ def build_chain_checkpoints(
 def build_chain_checkpoints_from_previous_phase(
     config: WorkerConfig,
     subtensor: bittensor.Subtensor,
-    type: str = "validator",
+    for_role: str = "validator",
 ) -> ChainCheckpoints:
     # --- Validate type ---
-    if type == "miner":
+    if for_role == "miner":
         phase_name_1 = PhaseNames.miner_commit_1
         phase_name_2 = PhaseNames.miner_commit_2
-    elif type == "validator":
+    elif for_role == "validator":
         phase_name_1 = PhaseNames.validator_commit_1
         phase_name_2 = PhaseNames.validator_commit_2
 
     else:
-        raise ValueError(f"Invalid type: {type}. Must be 'miner' or 'validator'.")
+        raise ValueError(f"Invalid type: {for_role}. Must be 'miner' or 'validator'.")
 
     # --- Get block ranges for previous phases ---
     previous_phase_range = get_blocks_from_previous_phase_from_api(config)
@@ -570,6 +575,7 @@ def build_chain_checkpoints_from_previous_phase(
     return build_chain_checkpoints(
         signed_hash_chain_commits=signed_hash_chain_commits,
         hash_chain_commits=hash_chain_commits,
+        for_role=for_role,
     )
 
 def delete_old_checkpoints(checkpoint_path: str | Path, topk: int) -> list[str]:
