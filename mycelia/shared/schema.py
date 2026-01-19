@@ -13,7 +13,7 @@ from mycelia.shared.helper import get_model_hash
 class SignedMessage:
     target_hotkey_ss58: str
     origin_hotkey_ss58: str
-    block: int
+    origin_block: int
     signature: str  # hex string or raw bytes
 
     def to_dict(self) -> dict:
@@ -26,10 +26,10 @@ class SignedMessage:
 
 @dataclass
 class SignedDownloadRequestMessage(SignedMessage):
-    expert_group_id: int | str | None
+    expert_group_id: int | str | None = None
 
 
-@dataclass
+@dataclass(init=False)
 class SignedModelSubmitMessage(SignedMessage):
     pass
 

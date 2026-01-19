@@ -206,10 +206,6 @@ class ValidatorStateCache:
             self._chain_checkpoints_cache_block = current_phase.phase_start_block
 
         return self._chain_checkpoints_cache
-    
-
-
-_validator_state_cache: ValidatorStateCache | None = None
 
 # ---- Schemas ----
 class SendBody(BaseModel):
@@ -268,15 +264,14 @@ async def get_checkpoint(
     authorization: str | None = Header(default=None),
     target_hotkey_ss58: str = Form(None, description="Receiver's hotkey"),
     origin_hotkey_ss58: str = Form(None, description="Sender's hotkey"),
-    block: int = Form(
-        None, description="The block that the message was sent."
-    ),  # insecure, do not use this field for validation, TODO: change it to block hash?
+    origin_block: int = Form(None, description="The block that the message was sent."),  # insecure, do not use this field for validation, TODO: change it to block hash?
     signature: str = Form(None, description="Signed message"),
     expert_group_id: int | str | None = Form(None, description="List of expert groups to fetch"),
 ):
     """GET to download the configured checkpoint immediately."""
     require_auth(authorization)
 
+    logger.info("<download> Received get checkpoint request - verifying signature", from_hk=origin_hotkey_ss58, to_hk=target_hotkey_ss58, origin_block=origin_block, signature=signature)
     verify_message(
         origin_hotkey_ss58=origin_hotkey_ss58,
         message=construct_block_message(
@@ -334,7 +329,7 @@ def validate_submission_phase_and_assignment(
         raise HTTPException(status_code=403, detail="Submission target hotkey does not match this validator")
 
     # check if it is now the submission phase
-    phase = _validator_state_cache.get_phase()
+    phase = validator_state_cache.get_phase()
     if phase is None or phase.phase_name != PhaseNames.submission:
         raise HTTPException(status_code=409, detail="Submissions are only accepted during submission phase")
 
@@ -343,7 +338,7 @@ def validate_submission_phase_and_assignment(
         raise HTTPException(status_code=400, detail="Origin block is not within the submission phase")
 
     # check if miner is assigned to this validator
-    assignment = _validator_state_cache.get_assignment()
+    assignment = validator_state_cache.get_assignment()
     assigned_miners = assignment.get(config.chain.hotkey_ss58, [])
     if origin_hotkey_ss58 not in assigned_miners:
         raise HTTPException(status_code=403, detail="Miner is not assigned to this validator")
@@ -373,6 +368,8 @@ async def submit_checkpoint(
       - checksum_sha256 (str, optional)
       - file (UploadFile, required)
     """
+
+    logger.info("<submit> Received checkpoint submission", from_hk=origin_hotkey_ss58, to_hk=target_hotkey_ss58, block=origin_block, signature=signature)
     require_auth(authorization)
 
     validate_submission_phase_and_assignment(
@@ -428,7 +425,7 @@ async def submit_checkpoint(
     logger.info(f"<submit> Stored checkpoint at {dest_path} ({bytes_written} bytes) sha256={computed}")
 
     # get chain checkpoint for model hash, signature, and expert group verification
-    chain_checkpoints = _validator_state_cache.get_chain_checkpoints()
+    chain_checkpoints = validator_state_cache.get_chain_checkpoints()
     chain_checkpoint = chain_checkpoints.get(origin_hotkey_ss58)
     if chain_checkpoint is None:
         raise HTTPException(status_code=400, detail="No checkpoint found on chain for this miner")
@@ -463,7 +460,7 @@ if __name__ == "__main__":
 
     global config
     global subtensor
-    global _validator_state_cache
+    global validator_state_cache
 
     if args.path:
         config = ValidatorConfig.from_path(args.path)
@@ -474,8 +471,9 @@ if __name__ == "__main__":
 
     subtensor = bittensor.Subtensor(network=config.chain.network)
 
+    validator_state_cache = ValidatorStateCache(config=config, subtensor=subtensor)
         
-    if _validator_state_cache is None:
-        _validator_state_cache = ValidatorStateCache(config=config, subtensor=subtensor)
+    if validator_state_cache is None:
+        validator_state_cache = ValidatorStateCache(config=config, subtensor=subtensor)
 
     uvicorn.run(app, host=config.chain.ip, port=config.chain.port)

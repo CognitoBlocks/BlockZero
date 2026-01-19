@@ -94,12 +94,14 @@ def submit_model(
     data = SignedModelSubmitMessage(
         target_hotkey_ss58=target_hotkey_ss58,
         origin_hotkey_ss58=my_hotkey.ss58_address,
-        block=block,
+        origin_block=block,
         signature=sign_message(
             my_hotkey,
             construct_model_message(model_path=model_path) + construct_block_message(target_hotkey_ss58, block=block),
         ),
     ).to_dict()
+
+    logger.info("Constructed signed submission message", data=data)
 
     if extra_form:
         # stringify non-bytes for safety in form data
@@ -229,7 +231,7 @@ def download_model(
         target_hotkey_ss58=target_hotkey_ss58,
         origin_hotkey_ss58=my_hotkey.ss58_address,
         expert_group_id=expert_group_id,
-        block=block,
+        origin_block=block,
         signature=sign_message(my_hotkey, construct_block_message(target_hotkey_ss58, block=block)),
     ).to_dict()
 
