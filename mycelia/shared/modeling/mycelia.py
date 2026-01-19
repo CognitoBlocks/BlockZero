@@ -10,12 +10,79 @@ from mycelia.shared.app_logging import structlog
 from mycelia.shared.config import MinerConfig, ValidatorConfig
 from mycelia.shared.expert_manager import ExpertManager
 from mycelia.shared.helper import *
-from mycelia.shared.modeling.custom_qwen3_next import (
-    CustomQwen3NextForCausalLM,
+from mycelia.shared.modeling.custom_qwen3_vl_moe import (
+    CustomQwen3VLMoeForConditionalGeneration,
     get_moe_model_config,
 )
 
 logger = structlog.get_logger(__name__)
+
+
+def _replace_experts_for_training(model, moe_config, group_ids, expert_manager):
+    """
+    Replace quantized expert layers with trainable bfloat16 versions.
+
+    This allows training experts while keeping the base model in 4-bit quantized form.
+    Weights are stored in bfloat16 for better numerical stability with Qwen3-VL models
+    (which were pre-trained in bf16). BF16 prevents overflow when dequantizing 4-bit weights.
+    """
+    from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeTextMLP
+
+    if group_ids is None:
+        group_ids = list(expert_manager.expert_group_assignment.keys())
+
+    replaced_count = 0
+
+    for layer_idx, layer in enumerate(model.language_model.layers):
+        if hasattr(layer, 'mlp') and hasattr(layer.mlp, 'experts'):
+            moe_block = layer.mlp
+
+            allowed_expert_ids = []
+            for gid in group_ids:
+                if layer_idx in expert_manager.expert_group_assignment.get(gid, {}):
+                    allowed_expert_ids.extend([
+                        eid for eid, _ in expert_manager.expert_group_assignment[gid][layer_idx]
+                    ])
+
+            if not allowed_expert_ids:
+                continue
+
+            new_experts = nn.ModuleDict()
+            for expert_id in allowed_expert_ids:
+                # USE BFLOAT16: Better numerical stability for Qwen3-VL models
+                # Prevents overflow when dequantizing 4-bit weights (bf16 has same range as fp32)
+                new_expert = Qwen3VLMoeTextMLP(
+                    moe_config.text_config,
+                    intermediate_size=moe_config.text_config.moe_intermediate_size
+                ).to(dtype=torch.bfloat16, device=model.device)
+
+                old_expert_key = str(expert_id)
+                if old_expert_key in moe_block.experts:
+                    old_expert = moe_block.experts[old_expert_key]
+
+                    with torch.no_grad():
+                        for (name, new_param), (_, old_param) in zip(
+                            new_expert.named_parameters(),
+                            old_expert.named_parameters()
+                        ):
+                            # DEQUANTIZE TO BFLOAT16: Prevents range overflow issues
+                            if hasattr(old_param, 'dequantize'):
+                                new_param.copy_(old_param.dequantize().to(torch.bfloat16))
+                            else:
+                                new_param.copy_(old_param.to(torch.bfloat16))
+
+                new_expert.requires_grad_(True)
+                new_experts[old_expert_key] = new_expert
+                replaced_count += 1
+
+            moe_block.experts = new_experts
+
+    for name, param in model.named_parameters():
+        if 'experts' not in name:
+            param.requires_grad_(False)
+
+    logger.info(f"Replaced {replaced_count} experts with trainable bfloat16 versions (no GradScaler needed)")
+    return model
 
 
 # ---------------------------------------------------------------------
@@ -40,15 +107,16 @@ def get_base_model(
     moe_config = get_moe_model_config(config, topk, group_ids, expert_manager)
 
     is_validator = config.role == "validator"
-    use_quantization = get_nested_attr(config, "model.use_quantization", False) and is_validator
+    use_quantization = get_nested_attr(config, "model.use_quantization", False)
     use_unsloth = get_nested_attr(config, "model.use_unsloth", False) and is_validator
 
-    # === QUANTIZED PATH (Validators only) ===
+    # === QUANTIZED PATH ===
     if use_quantization:
-        logger.info("Loading with 4-bit quantization for validator")
+        is_miner = config.role == "miner"
+        logger.info(f"Loading with 4-bit quantization for {'miner (trainable experts)' if is_miner else 'validator'}")
 
-        # Try Unsloth first (fastest)
-        if use_unsloth:
+        # Try Unsloth first for validators (fastest, inference-only)
+        if use_unsloth and not is_miner:
             try:
                 from unsloth import FastLanguageModel
 
@@ -65,7 +133,7 @@ def get_base_model(
             except Exception as e:
                 logger.warning(f"Unsloth failed, falling back to BitsAndBytes: {e}")
 
-        # Fallback to BitsAndBytes
+        # BitsAndBytes quantization
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_compute_dtype=torch.float16,
@@ -77,25 +145,81 @@ def get_base_model(
         if max_memory is None:
             max_memory = {0: "46GB", "cpu": "100GB"}
 
-        model = AutoModelForCausalLM.from_pretrained(
+        # Load pretrained model with quantization - use Qwen3VLMoeForConditionalGeneration for VL models
+        from transformers.models.qwen3_vl_moe.modeling_qwen3_vl_moe import Qwen3VLMoeForConditionalGeneration
+
+        # Set device_map to single GPU to avoid memory spikes
+        device_map_setting = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+        logger.info("Downloading and quantizing model (this may take a while for large models)...")
+        # Use single device mapping to avoid memory spikes during loading
+        device_map_dict = {"": device_map_setting} if device_map_setting != "auto" else "auto"
+
+        model = Qwen3VLMoeForConditionalGeneration.from_pretrained(
             config.model.model_path,
-            config=moe_config,
             quantization_config=bnb_config,
-            device_map="auto",
+            device_map=device_map_dict,  # Single device to reduce memory spikes
             max_memory=max_memory,
-            low_cpu_mem_usage=True,
+            low_cpu_mem_usage=True,  # Critical for large models - prevents full state_dict materialization
             torch_dtype=torch.float16,
         )
-        logger.info("✓ Loaded with BitsAndBytes quantization")
+        logger.info("✓ Model downloaded and quantized to 4-bit")
+
+        # For miners: replace expert layers with trainable bfloat16 versions
+        if is_miner:
+            logger.info("Replacing experts with trainable bfloat16 versions...")
+            model = _replace_experts_for_training(model, moe_config, group_ids, expert_manager)
+            logger.info("✓ Experts replaced - base model frozen (4-bit), experts trainable (bfloat16, no GradScaler needed)")
+        else:
+            logger.info("✓ Loaded with BitsAndBytes quantization (inference)")
+
         return model
 
     # === STANDARD PATH (Miners) ===
-    model = CustomQwen3NextForCausalLM(moe_config)
+    # Check if we should use CPU offloading (for memory-constrained systems)
+    use_cpu_offload = get_nested_attr(config, "model.cpu_offload", False)
+
+    # Check GPU support for bfloat16 (Ampere+ GPUs: 30xx, 40xx, A-series)
+    use_bf16 = False
+    if torch.cuda.is_available():
+        device_capability = torch.cuda.get_device_capability(0)
+        # Ampere (8.0) or newer supports bfloat16
+        use_bf16 = device_capability[0] >= 8
+
+    if use_bf16:
+        logger.info("Loading model in BF16 (standard path, no quantization)")
+    else:
+        logger.info("Loading model in FP16 (standard path, no quantization)")
+
+    if use_cpu_offload:
+        # Initialize on CPU first to avoid GPU OOM during model creation
+        logger.info("Loading with CPU offloading enabled - model will be on CPU")
+        with torch.device("cpu"):
+            model = CustomQwen3VLMoeForConditionalGeneration(moe_config)
+
+        # Keep on CPU - will be slow but won't OOM
+        # Convert to bfloat16 if supported, otherwise float16
+        if use_bf16:
+            model = model.to(dtype=torch.bfloat16)
+        else:
+            model = model.half()
+    else:
+        model = CustomQwen3VLMoeForConditionalGeneration(moe_config)
+        # Convert to bfloat16 if supported (matches expert dtype), otherwise float16
+        if use_bf16:
+            model = model.to(dtype=torch.bfloat16)
+        else:
+            model = model.half()
 
     if len(state_dicts) > 0:
         merged_stated_dict, missing = merge_state_dicts_with_priority(state_dicts, model)
         assert len(missing) == 0
         model.load_state_dict(merged_stated_dict, strict=True)
+        # Ensure model stays in correct dtype after loading checkpoint
+        if use_bf16:
+            model = model.to(dtype=torch.bfloat16)
+        else:
+            model = model.to(dtype=torch.float16)
 
     if model is not None and get_nested_attr(config, "model.torch_compile", False):
         model = torch.compile(model)
