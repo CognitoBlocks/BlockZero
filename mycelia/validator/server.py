@@ -16,6 +16,15 @@ from pydantic import BaseModel
 from mycelia.shared.app_logging import configure_logging, structlog
 from mycelia.shared.checkpoints import delete_old_checkpoints_by_hotkey, select_best_checkpoint
 from mycelia.shared.config import ValidatorConfig, parse_args
+from mycelia.shared.cycle import (
+    PhaseNames,
+    PhaseResponseLite,
+    get_blocks_from_previous_phase_from_api,
+    get_blocks_until_next_phase_from_api,
+    get_phase_from_api,
+    get_validator_miner_assignment,
+)
+from mycelia.shared.helper import parse_dynamic_filename
 from mycelia.shared.schema import (
     construct_block_message,
     construct_model_message,
@@ -75,6 +84,115 @@ def get_upload_root() -> Path:
     p.mkdir(parents=True, exist_ok=True)
     return p
 
+class ValidatorStateCache:
+    def __init__(
+        self,
+        config: ValidatorConfig,
+        subtensor: bittensor.Subtensor,
+        phase_block_interval: int = 1,
+    ) -> None:
+        self._config = config
+        self._subtensor = subtensor
+        self._blocks_until_cache = None
+        self._previous_phase_cache = None
+        self._assignment_cache = None
+        self._phase_cache = None
+        self._phase_cache_block = None
+        self._assignment_last_submission_start_block = None
+
+    def _refresh_blocks_until(self) -> None:
+        blocks_until = get_blocks_until_next_phase_from_api(self._config)
+        if blocks_until is not None:
+            self._blocks_until_cache = blocks_until
+
+    def _refresh_assignment(self) -> None:
+        self._assignment_cache = get_validator_miner_assignment(self._config, self._subtensor)
+
+    def _refresh_phase(self) -> None:
+        phase = get_phase_from_api(self._config)
+        self._phase_cache = phase
+        self._phase_cache_block = self._subtensor.block
+
+    def get_phase(self):
+        block = self._subtensor.block
+        if (
+            self._phase_cache is None
+            or self._phase_cache_block is None
+            or block > self._phase_cache.phase_end_block
+        ):
+            current_phase = self.get_current_phase_locally()
+            if current_phase is None:
+                self._refresh_phase()
+                self._phase_cache_block = block
+            else:
+                self._phase_cache = current_phase
+
+        return self._phase_cache
+
+    def get_blocks_until_next_phase(self):
+        block = self._subtensor.block
+
+        max_end_block = None
+        if self._blocks_until_cache:
+            max_end_block = max(end for _, end, _ in self._blocks_until_cache.values())
+
+        if self._blocks_until_cache is None or (max_end_block is not None and block > max_end_block):
+            self._refresh_blocks_until()
+
+        return self._blocks_until_cache
+
+    def _get_cycle_length_from_blocks_until_cache(self):
+        blocks_until = self.get_blocks_until_next_phase()
+        if not blocks_until:
+            return None
+
+        return sum((end - start + 1) for start, end, _ in blocks_until.values())
+
+    def get_current_phase_locally(self):
+        blocks_until = self.get_blocks_until_next_phase()
+        if blocks_until is None:
+            return None
+
+        block = self._subtensor.block
+        for phase_name, (start, end, _) in blocks_until.items():
+            if start <= block <= end:
+                return PhaseResponseLite(
+                    phase_name=phase_name,
+                    phase_start_block=start,
+                    phase_end_block=end,
+                )
+
+        return None
+
+    def get_assignment(self):
+        current_phase = self.get_phase()
+        if current_phase is None:
+            return self._assignment_cache
+
+        should_refresh = False
+        if current_phase.phase_name != PhaseNames.submission:
+            cycle_length = self._get_cycle_length_from_blocks_until_cache()
+            if (
+                self._assignment_cache is not None
+                and self._assignment_last_submission_start_block is not None
+                and cycle_length is not None
+                and self._assignment_last_submission_start_block + cycle_length < self._subtensor.block
+            ):
+                # the assignment cache is stale cause it is more than a cycle ago
+                should_refresh = True
+
+        elif self._assignment_last_submission_start_block != current_phase.phase_start_block:
+            # it is not the submission phase
+            should_refresh = True
+
+        if should_refresh:
+            self._refresh_assignment()
+            self._assignment_last_submission_start_block = current_phase.phase_start_block
+
+        return self._assignment_cache
+
+
+_validator_state_cache: ValidatorStateCache | None = None
 
 # ---- Schemas ----
 class SendBody(BaseModel):
@@ -124,6 +242,7 @@ async def ping():
 async def status():
     # respond to what is the current status of validator, the newest model id
     pass
+
 
 
 # miners / client get model from validator
@@ -182,6 +301,37 @@ async def get_checkpoint(
 
     return result
 
+# miners submit checkpoint
+@app.post("/submit-checkpoint-permit")
+def validate_submission_phase_and_assignment(
+    config: ValidatorConfig,
+    subtensor: bittensor.Subtensor,
+    target_hotkey_ss58: str | None,
+    origin_hotkey_ss58: str | None,
+    authorization: str | None = Header(default=None),
+) -> None:
+    
+    # check if the submission is to this validator
+    if target_hotkey_ss58 != config.chain.hotkey_ss58:
+        raise HTTPException(status_code=403, detail="Submission target hotkey does not match this validator")
+
+    # check if it is now the submission phase
+    phase = _validator_state_cache.get_phase()
+    if phase is None or phase.phase_name != PhaseNames.submission:
+        raise HTTPException(status_code=409, detail="Submissions are only accepted during submission phase")
+
+    # check if miner is assigned to this validator
+    assignment = _validator_state_cache.get_assignment()
+    assigned_miners = assignment.get(config.chain.hotkey_ss58, [])
+    if origin_hotkey_ss58 not in assigned_miners:
+        raise HTTPException(status_code=403, detail="Miner is not assigned to this validator")
+
+    # check if the miner has already submitted during this phase
+    for path in Path(config.ckpt.miner_submission_path).glob(f"hotkey_{origin_hotkey_ss58}_block_*.pt"):
+        meta = parse_dynamic_filename(path.name)
+        block = meta.get("block")
+        if isinstance(block, int) and phase.phase_start_block <= block <= phase.phase_end_block:
+            raise HTTPException(status_code=409, detail="Miner already submitted during this phase")
 
 # miners submit checkpoint
 @app.post("/submit-checkpoint")
@@ -201,6 +351,13 @@ async def submit_checkpoint(
       - file (UploadFile, required)
     """
     require_auth(authorization)
+
+    validate_submission_phase_and_assignment(
+        config=config,
+        subtensor=subtensor,
+        target_hotkey_ss58=target_hotkey_ss58,
+        origin_hotkey_ss58=origin_hotkey_ss58,
+    )
 
     # Basic filename safety (avoid path tricks). We'll still rename it server-side.
     original_name = file.filename or ""
@@ -270,6 +427,7 @@ if __name__ == "__main__":
 
     global config
     global subtensor
+    global _validator_state_cache
 
     if args.path:
         config = ValidatorConfig.from_path(args.path)
@@ -279,5 +437,9 @@ if __name__ == "__main__":
     config.write()
 
     subtensor = bittensor.Subtensor(network=config.chain.network)
+
+        
+    if _validator_state_cache is None:
+        _validator_state_cache = ValidatorStateCache(config=config, subtensor=subtensor)
 
     uvicorn.run(app, host=config.chain.ip, port=config.chain.port)

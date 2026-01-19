@@ -26,7 +26,10 @@ from mycelia.validator.evaluator import MinerEvalJob
 configure_logging()
 logger = structlog.get_logger(__name__)
 
-
+class PhaseResponseLite(BaseModel):
+    phase_name: str
+    phase_start_block: int
+    phase_end_block: int
 class PhaseResponse(BaseModel):
     block: int
     cycle_length: int  # how long is one cycle
