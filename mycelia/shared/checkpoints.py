@@ -127,7 +127,10 @@ class ModelCheckpoint(BaseModel):
         if self.path is None:
             raise ValueError("path is required to hash a model")
 
-        state = compile_full_state_dict_from_path(self.path / f"model_expgroup_{self.expert_group}.pt")
+        if self.expert_group is None:
+            raise ValueError("expert_group is required to hash a model")
+        
+        state = compile_full_state_dict_from_path(self.path, expert_groups=[self.expert_group])
         self.model_hash = get_model_hash(state, hex=True)
         self.hash_verified = True
         return self.model_hash
@@ -148,7 +151,7 @@ class ModelCheckpoint(BaseModel):
             self.hash_verified = False
             return False
 
-        state = compile_full_state_dict_from_path(self.path / f"model_expgroup_{self.expert_group}.pt")
+        state = compile_full_state_dict_from_path(self.path, expert_groups=[self.expert_group])
         expected_hash = get_model_hash(state, hex=True)
 
         if expected_hash is None:
@@ -196,7 +199,7 @@ class ModelCheckpoint(BaseModel):
             self.expert_group_verified = False
             return self.expert_group_verified
 
-        state_dict = compile_full_state_dict_from_path(self.path)
+        state_dict = compile_full_state_dict_from_path(self.path, expert_groups=[self.expert_group])
         if not state_dict:
             self.expert_group_verified = False
             return self.expert_group_verified

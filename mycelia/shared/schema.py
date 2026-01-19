@@ -23,18 +23,18 @@ class SignedMessage:
     def from_dict(cls, d: dict):
         return cls(**d)
 
-
 @dataclass
 class SignedDownloadRequestMessage(SignedMessage):
     expert_group_id: int | str | None = None
 
 
-@dataclass(init=False)
+@dataclass()
 class SignedModelSubmitMessage(SignedMessage):
-    pass
+    model_byte: bytes
+    block_byte: bytes
 
 
-def construct_model_message(model_path: str | Path):
+def construct_model_message(model_path: str | Path, expert_groups: list[int | str] | None = None) -> bytes:
     """
     Sign:
         model_hash(32 bytes) || construct_block_message(...)

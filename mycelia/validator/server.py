@@ -370,6 +370,8 @@ async def submit_checkpoint(
     origin_block: int = Form(None, description="The block that the message was sent."),
     target_hotkey_ss58: str = Form(None, description="Receiver's hotkey"),
     origin_hotkey_ss58: str = Form(None, description="Sender's hotkey"),
+    model_byte: bytes = Form(None, description="The model bytes"),
+    block_byte: bytes = Form(None, description="The block bytes"),
     signature: str = Form(None, description="Signed message"),
     file: UploadFile = File(..., description="The checkpoint file, e.g. model.pt"),
 ):
@@ -392,6 +394,9 @@ async def submit_checkpoint(
         target_hotkey_ss58=target_hotkey_ss58,
         origin_hotkey_ss58=origin_hotkey_ss58,
     )
+
+    assert model_byte is not None, "model_byte is required"
+    assert block_byte is not None, "block_byte is required"
 
     # Basic filename safety (avoid path tricks). We'll still rename it server-side.
     original_name = file.filename or ""
@@ -444,10 +449,11 @@ async def submit_checkpoint(
     if chain_checkpoint is None:
         raise HTTPException(status_code=400, detail="No checkpoint found on chain for this miner")
     chain_checkpoint.path = dest_path
+
+    logger.info(f"<submit> Validating submitted checkpoint at {dest_path}.", chain_checkpoint_model_hash=chain_checkpoint.model_hash, chain_model_byte = bytes.fromhex(chain_checkpoint.model_hash), wired_model_byte = model_byte)
     validated = chain_checkpoint.validate() and verify_message(
         origin_hotkey_ss58=origin_hotkey_ss58,
-        message=chain_checkpoint.model_hash
-        + construct_block_message(target_hotkey_ss58, block=origin_block),
+        message=model_byte + block_byte,
         signature_hex=signature,
     ) # checkpoint validation and package signature validation
     
@@ -455,7 +461,7 @@ async def submit_checkpoint(
         # delete the invalid checkpoint
         with contextlib.suppress(Exception):
             dest_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail="Submitted checkpoint does not match chain checkpoint")
+        raise HTTPException(status_code=400, detail="Submitted checkpoint failed validation.")
 
     logger.info(f"<submit> Verified submission at {dest_path}.")
 

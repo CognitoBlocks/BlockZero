@@ -160,6 +160,7 @@ def commit_worker(
             latest_checkpoint = select_best_checkpoint(
                 primary_dir=config.ckpt.checkpoint_path, resume=config.ckpt.resume_from_ckpt
             )
+            latest_checkpoint.expert_group = config.task.exp.group_id
             latest_checkpoint.sign_hash(wallet=wallet)
 
             with shared_state.lock:
@@ -252,6 +253,7 @@ def submit_worker(
                 target_hotkey_ss58=destination_axon.hotkey,
                 block=block,
                 model_path=f"{latest_checkpoint_path}/model_expgroup_{config.task.exp.group_id}.pt",
+                expert_groups=[config.task.exp.group_id],
             )
 
             model_hash = get_model_hash(

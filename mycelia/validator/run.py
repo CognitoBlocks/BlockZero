@@ -483,6 +483,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
 
             # === Comit to chain for new model ===
             model_ckpt = build_local_checkpoint(ckpt_path)
+            model_ckpt.expert_group = config.task.exp.group_id
             model_ckpt.sign_hash(wallet=wallet)
             current_model_hash = model_ckpt.model_hash
             wait_till(config, PhaseNames.validator_commit_1)

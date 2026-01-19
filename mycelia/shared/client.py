@@ -62,6 +62,7 @@ def submit_model(
     timeout_s: int = 300,
     retries: int = 3,
     backoff: float = 1.8,
+    expert_groups: list[int | str] | None = None,
     extra_form: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
@@ -91,13 +92,17 @@ def submit_model(
 
     logger.info("Model file validated", file_size=file_size, human_size=human(file_size))
 
+    model_byte = construct_model_message(model_path=model_path, expert_groups=expert_groups)
+    block_byte = construct_block_message(target_hotkey_ss58, block=block)
     data = SignedModelSubmitMessage(
         target_hotkey_ss58=target_hotkey_ss58,
         origin_hotkey_ss58=my_hotkey.ss58_address,
         origin_block=block,
+        model_byte=model_byte,
+        block_byte=block_byte,
         signature=sign_message(
             my_hotkey,
-            construct_model_message(model_path=model_path) + construct_block_message(target_hotkey_ss58, block=block),
+            model_byte + block_byte,
         ),
     ).to_dict()
 
