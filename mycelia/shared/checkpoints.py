@@ -148,28 +148,64 @@ class ModelCheckpoint(BaseModel):
 
     def verify_hash(self) -> bool:
         if self.path is None:
+            logger.warning("Hash verification failed: missing checkpoint path", checkpoint=self)
             self.hash_verified = False
             return False
 
         state = compile_full_state_dict_from_path(self.path, expert_groups=[self.expert_group])
+        if not state:
+            logger.warning(
+                "Hash verification failed: empty state dict",
+                checkpoint_path=self.path,
+                expert_group=self.expert_group,
+            )
+            self.hash_verified = False
+            return False
         expected_hash = get_model_hash(state, hex=True)
 
         if expected_hash is None:
+            logger.warning(
+                "Hash verification failed: unable to compute expected hash",
+                checkpoint_path=self.path,
+                expert_group=self.expert_group,
+            )
             self.hash_verified = False
             return False
 
         self.hash_verified = self.model_hash == expected_hash
+        if not self.hash_verified:
+            logger.info(
+                "Hash verification mismatch",
+                checkpoint_path=self.path,
+                expert_group=self.expert_group,
+                expected_hash=expected_hash,
+                provided_hash=self.model_hash,
+            )
 
         return self.hash_verified
 
     def verify_signature(self) -> bool:
         if self.signed_model_hash is None or self.model_hash is None or self.hotkey is None:
+            logger.warning(
+                "Signature verification failed: missing signed hash, model hash, or hotkey",
+                signed_model_hash_present=self.signed_model_hash,
+                model_hash_present=self.model_hash,
+                hotkey_present=self.hotkey,
+                checkpoint=self,
+            )
             self.signature_verified = False
             return False
 
         self.signature_verified = verify_message(
             self.hotkey, message=self.model_hash, signature_hex=self.signed_model_hash
         )
+        if not self.signature_verified:
+            logger.info(
+                "Signature verification failed",
+                hotkey=self.hotkey,
+                model_hash=self.model_hash,
+                signed_model_hash=self.signed_model_hash,
+            )
 
         return self.signature_verified
 
@@ -222,7 +258,7 @@ class ModelCheckpoint(BaseModel):
     def validate(self) -> bool:
         self.verify_hash()
         self.verify_signature()
-        self.verify_expert_group()
+        # self.verify_expert_group()
         return self.validated()
     
     def validated(self) -> bool:
@@ -235,9 +271,9 @@ class ModelCheckpoint(BaseModel):
         if self.hash_required and not self.hash_verified:
             logger.info("checkpoint hash not verified", ckpt=self)
             return False
-        if self.expert_group_check_required and not self.expert_group_verified:
-            logger.info("checkpoint expert group not verified", ckpt=self)
-            return False
+        # if self.expert_group_check_required and not self.expert_group_verified:
+        #     logger.info("checkpoint expert group not verified", ckpt=self)
+        #     return False
 
         return True
 

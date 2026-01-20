@@ -292,18 +292,26 @@ def compile_full_state_dict_from_path(checkpoint_path, expert_groups: list[int |
         return filename == f"model_expgroup_{groups}.pt"
 
     full_state_dict = {}
-    model_files = get_model_files(checkpoint_path)
-    for f in model_files:
-        if expert_groups is not None and not _matches_expert_group(f.path, expert_groups):
-            logger.info("skipping checkpoint file", path=f, expert_groups=expert_groups)
-            continue
+    checkpoint_path = Path(checkpoint_path)
+    if checkpoint_path.is_file() and checkpoint_path.suffix == ".pt":
+        with checkpoint_path.open("rb") as fh:
+            full_state_dict = torch.load(fh, map_location=torch.device("cpu"))["model_state_dict"]
+            logger.info("loaded checkpoint file", path=fh)
 
-        with f as fh:
-            state_dict = torch.load(fh, map_location=torch.device("cpu"))
-            full_state_dict = full_state_dict | state_dict["model_state_dict"]
-            logger.info(
-                "loaded checkpoint file", path=f, loss=round(state_dict["loss"] if "loss" in state_dict else -1, 5)
-            )
+    else:
+        model_files = get_model_files(checkpoint_path)
+    
+        for f in model_files:
+            if expert_groups is not None and not _matches_expert_group(f.path, expert_groups):
+                logger.info("skipping checkpoint file", path=f, expert_groups=expert_groups)
+                continue
+
+            with f as fh:
+                state_dict = torch.load(fh, map_location=torch.device("cpu"))
+                full_state_dict = full_state_dict | state_dict["model_state_dict"]
+                logger.info(
+                    "loaded checkpoint file", path=f, loss=round(state_dict["loss"] if "loss" in state_dict else -1, 5)
+                )
 
     return full_state_dict
 

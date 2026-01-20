@@ -94,6 +94,7 @@ def submit_model(
 
     model_byte = construct_model_message(model_path=model_path, expert_groups=expert_groups)
     block_byte = construct_block_message(target_hotkey_ss58, block=block)
+    
     data = SignedModelSubmitMessage(
         target_hotkey_ss58=target_hotkey_ss58,
         origin_hotkey_ss58=my_hotkey.ss58_address,
@@ -106,7 +107,7 @@ def submit_model(
         ),
     ).to_dict()
 
-    logger.info("Constructed signed submission message", data=data)
+    logger.info("Constructed signed submission message", data=data, model_hash=model_byte.hex())
 
     if extra_form:
         # stringify non-bytes for safety in form data
