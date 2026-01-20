@@ -30,8 +30,8 @@ class SignedDownloadRequestMessage(SignedMessage):
 
 @dataclass()
 class SignedModelSubmitMessage(SignedMessage):
-    model_byte: bytes
-    block_byte: bytes
+    model_hex: str
+    block_hex: str
 
 
 def construct_model_message(model_path: str | Path, expert_groups: list[int | str] | None = None) -> bytes:

@@ -24,7 +24,7 @@ from mycelia.shared.cycle import (
     get_phase_from_api,
     get_validator_miner_assignment,
 )
-from mycelia.shared.helper import parse_dynamic_filename
+from mycelia.shared.helper import parse_dynamic_filename, hex_to_byte
 from mycelia.shared.schema import (
     construct_block_message,
     construct_model_message,
@@ -294,6 +294,15 @@ async def get_checkpoint(
         signature_hex=signature,
     )
 
+    validate_get_checkpoint_request(
+        config=config,
+        subtensor=subtensor,
+        origin_block=origin_block,
+        target_hotkey_ss58=target_hotkey_ss58,
+        origin_hotkey_ss58=origin_hotkey_ss58,
+        authorization=authorization,
+    )
+    
     latest_checkpoint = select_best_checkpoint(primary_dir=config.ckpt.checkpoint_path)
 
     if not latest_checkpoint or not latest_checkpoint.path:
@@ -325,6 +334,28 @@ async def get_checkpoint(
     result = file_response_for(Path(ckpt_path), f"step{latest_checkpoint.global_ver}")
 
     return result
+
+def validate_get_checkpoint_request(
+    config: ValidatorConfig,
+    subtensor: bittensor.Subtensor,
+    origin_block: int,
+    target_hotkey_ss58: str | None,
+    origin_hotkey_ss58: str | None,
+    authorization: str | None = Header(default=None),
+) -> None:
+    
+    # check if the submission is to this validator
+    if target_hotkey_ss58 != config.chain.hotkey_ss58:
+        raise HTTPException(status_code=403, detail="Submission target hotkey does not match this validator")
+
+    # check if it is now the submission phase
+    phase = validator_state_cache.get_phase()
+    if phase is None or phase.phase_name != PhaseNames.submission:
+        raise HTTPException(status_code=409, detail="Submissions are only accepted during submission phase")
+
+    # check of the origin block is within the submission phase
+    if not (phase.phase_start_block <= origin_block <= phase.phase_end_block):
+        raise HTTPException(status_code=400, detail="Origin block is not within the submission phase")
 
 # miners submit checkpoint
 # @app.post("/submit-checkpoint-permit")
@@ -370,8 +401,8 @@ async def submit_checkpoint(
     origin_block: int = Form(None, description="The block that the message was sent."),
     target_hotkey_ss58: str = Form(None, description="Receiver's hotkey"),
     origin_hotkey_ss58: str = Form(None, description="Sender's hotkey"),
-    model_byte: bytes = Form(None, description="The model bytes"),
-    block_byte: bytes = Form(None, description="The block bytes"),
+    model_hex: str = Form(None, description="The model bytes"),
+    block_hex: str = Form(None, description="The block bytes"),
     signature: str = Form(None, description="Signed message"),
     file: UploadFile = File(..., description="The checkpoint file, e.g. model.pt"),
 ):
@@ -384,7 +415,7 @@ async def submit_checkpoint(
       - file (UploadFile, required)
     """
 
-    logger.info("<submit> Received checkpoint submission request", from_hk=origin_hotkey_ss58, to_hk=target_hotkey_ss58, block=origin_block, signature=signature)
+    logger.info("<submit> Received checkpoint submission request", from_hk=origin_hotkey_ss58, to_hk=target_hotkey_ss58, block=origin_block, signature=signature, model_hex=model_hex, block_hex=block_hex)
     require_auth(authorization)
 
     validate_submission_phase_and_assignment(
@@ -395,8 +426,8 @@ async def submit_checkpoint(
         origin_hotkey_ss58=origin_hotkey_ss58,
     )
 
-    assert model_byte is not None, "model_byte is required"
-    assert block_byte is not None, "block_byte is required"
+    assert model_hex is not None, "model_hex is required"
+    assert block_hex is not None, "block_hex is required"
 
     # Basic filename safety (avoid path tricks). We'll still rename it server-side.
     original_name = file.filename or ""
@@ -450,10 +481,10 @@ async def submit_checkpoint(
         raise HTTPException(status_code=400, detail="No checkpoint found on chain for this miner")
     chain_checkpoint.path = dest_path
 
-    logger.info(f"<submit> Validating submitted checkpoint at {dest_path}.", chain_checkpoint_model_hash=chain_checkpoint.model_hash, chain_model_byte = bytes.fromhex(chain_checkpoint.model_hash), wired_model_byte = model_byte)
+    logger.info(f"<submit> Validating submitted checkpoint at {dest_path}.", chain_checkpoint_model_hash=chain_checkpoint.model_hash, chain_model_byte = bytes.fromhex(chain_checkpoint.model_hash), wired_model_hex = model_hex)
     validated = chain_checkpoint.validate() and verify_message(
         origin_hotkey_ss58=origin_hotkey_ss58,
-        message=model_byte + block_byte,
+        message=hex_to_byte(model_hex) + hex_to_byte(block_hex),
         signature_hex=signature,
     ) # checkpoint validation and package signature validation
     

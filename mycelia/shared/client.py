@@ -99,8 +99,8 @@ def submit_model(
         target_hotkey_ss58=target_hotkey_ss58,
         origin_hotkey_ss58=my_hotkey.ss58_address,
         origin_block=block,
-        model_byte=model_byte,
-        block_byte=block_byte,
+        model_hex=model_byte.hex(),
+        block_hex=block_byte.hex(),
         signature=sign_message(
             my_hotkey,
             model_byte + block_byte,
