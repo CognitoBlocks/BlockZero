@@ -1,4 +1,9 @@
 # -----------------------------
+# PyTorch (must be installed first for flash-attn build)
+# -----------------------------
+torch>=2.3.0       # install specific CUDA/CPU wheel from PyTorch website if needed
+
+# -----------------------------
 # Core
 # -----------------------------
 pydantic-settings==2.2.1
@@ -11,14 +16,12 @@ fsspec==2024.6.1
 # -----------------------------
 # ML stack
 # -----------------------------
-torch>=2.3.0       # install specific CUDA/CPU wheel from PyTorch website if needed
 transformers>=4.56.2
 accelerate==1.0.0
 datasets==3.0.0
-bitsandbytes>=0.43.1; platform_system == "Linux"
+bitsandbytes>=0.45.5; platform_system == "Linux"
 
-# Unsloth for optimized 4-bit inference (CUDA 12.x for A6000)
-unsloth @ git+https://github.com/unslothai/unsloth.git; platform_system == "Linux"
+# Unsloth moved to requirements-unsloth.txt (install after torch)
 
 # TRL for potential GRPO/RLHF support
 trl>=0.11.0
@@ -67,20 +70,14 @@ types-PyYAML==6.0.12.20240808
 # -----------------------------
 # Others
 # -----------------------------
-requests
-torch
 torchdata
 wandb
-fastapi
-uvicorn
 aiofiles
 python-multipart
-hivemind @ git+https://github.com/learning-at-home/hivemind.git@master
+git+https://github.com/learning-at-home/hivemind.git@master
 matplotlib
-transformers==4.57.1
 pandas
-# substrate-interface
-matplotlib
+substrate-interface
 bittensor==9.12.2 
 plotly
-structlog
+unsloth @ git+https://github.com/unslothai/unsloth.git; platform_system == "Linux"
