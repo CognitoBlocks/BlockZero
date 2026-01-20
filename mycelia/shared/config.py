@@ -438,6 +438,8 @@ class WorkerConfig(BaseConfig):
 
         logger.info(f"Wrote config to {target}")
 
+        return 
+
 
 class MinerConfig(WorkerConfig):
     role: str = "miner"
