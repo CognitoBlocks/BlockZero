@@ -174,7 +174,7 @@ def setup_training(
         global_model,
         outer_optimizer,
         outer_scaler,
-        model_meta.global_ver,
+        model_meta.global_ver if model_meta else 0,
         expert_manager,
         train_dataloader,
     )

@@ -153,6 +153,7 @@ def load_model(
         wallet=wallet,
         expert_group_ids=[config.task.exp.group_id],
     )
+    
     return get_model_from_checkpoint(rank=rank, config=config, expert_manager=expert_manager)
 
 
