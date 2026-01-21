@@ -15,7 +15,7 @@ logger = structlog.get_logger(__name__)
 
 
 def get_init_peer_id(config: ValidatorConfig):
-    return [f"/ip4/{config.cycle.owner_ip}/tcp/41001/p2p/{config.cycle.owner_peer_id}"]
+    return [f"/ip4/{config.cycle.owner_ip}/tcp/{config.cycle.owner_dht_peer_port}/p2p/{config.cycle.owner_dht_peer_id}"]
 
 
 def connect_with_peers(config: ValidatorConfig):

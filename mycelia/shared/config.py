@@ -87,7 +87,8 @@ class CycleCfg(BaseConfig):
     merge_period: int = 10
     owner_ip: str = "149.137.225.62"
     owner_port: int = 7000
-    owner_peer_id: str = '12D3KooWJbtD23NdFUF7wFCFx6Jz2QTW7C6jM9LmGFgpe4cW4s4Y'
+    owner_dht_peer_port: int = 34297 
+    owner_dht_peer_id: str = '12D3KooWFbpKosDU633xu3b2RvZ6FwqfkDY1dk8pWhFgJhksCKpB'
 
 
 class RunCfg(BaseConfig):
