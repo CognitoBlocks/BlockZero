@@ -16,7 +16,8 @@ from mycelia.shared.checkpoints import (
 )
 from mycelia.shared.client import submit_model
 from mycelia.shared.config import MinerConfig, parse_args
-from mycelia.shared.chain import search_model_submission_destination, setup_chain_worker, wait_till
+from mycelia.shared.chain import setup_chain_worker
+from mycelia.shared.cycle import PhaseResponse, check_phase_expired, wait_till, search_model_submission_destination
 from mycelia.shared.helper import get_model_hash
 from mycelia.shared.model import fetch_model_from_chain_validator
 from mycelia.sn_owner.cycle import PhaseNames
@@ -38,7 +39,7 @@ class JobType(Enum):
 class Job:
     job_type: JobType
     payload: dict | None = None
-    phase_end_block: int | None = None
+    phase_response: PhaseResponse | None = None
 
 
 @dataclass
@@ -66,18 +67,24 @@ def scheduler_service(
     """
     while True:
         # --------- DOWNLOAD SCHEDULING ---------
-        wait_till(config, phase_name=PhaseNames.distribute, poll_fallback_block=poll_fallback_block)
-        download_queue.put(Job(job_type=JobType.DOWNLOAD))
+        phase_response = wait_till(config, phase_name=PhaseNames.distribute, poll_fallback_block=poll_fallback_block)
+        download_queue.put(Job(job_type=JobType.DOWNLOAD, phase_response=phase_response))
 
         # --------- COMISSION SCHEDULING ---------
-        _, phase_end_block = wait_till(
+        phase_response = wait_till(
             config, phase_name=PhaseNames.miner_commit_1, poll_fallback_block=poll_fallback_block
         )
-        commit_queue.put(Job(job_type=JobType.COMMIT, phase_end_block=phase_end_block))
+        commit_queue.put(
+            Job(
+                job_type=JobType.COMMIT,
+                phase_end_block=phase_response.phase_end_block,
+                phase_response=phase_response,
+            )
+        )
 
         # --------- SUBMISSION SCHEDULING ---------
-        wait_till(config, phase_name=PhaseNames.submission, poll_fallback_block=poll_fallback_block)
-        submit_queue.put(Job(job_type=JobType.SUBMIT))
+        phase_response = wait_till(config, phase_name=PhaseNames.submission, poll_fallback_block=poll_fallback_block)
+        submit_queue.put(Job(job_type=JobType.SUBMIT, phase_response=phase_response))
 
 
 # --- Workers ---
@@ -140,6 +147,8 @@ def download_worker(
             traceback.print_exc()
 
         finally:
+            if job.phase_response is not None:
+                check_phase_expired(subtensor, job.phase_response)
             download_queue.task_done()
             logger.info(f"<{PhaseNames.distribute}> task completed.")
 
@@ -185,7 +194,7 @@ def commit_worker(
                 ),
             )
 
-            wait_till(config, PhaseNames.miner_commit_2)
+            phase_response = wait_till(config, PhaseNames.miner_commit_2)
 
             logger.info(
                 f"<{PhaseNames.miner_commit_2}> committing",
@@ -206,6 +215,7 @@ def commit_worker(
                     inner_opt=latest_checkpoint.inner_opt,
                 ),
             )
+            check_phase_expired(subtensor, phase_response)
 
         except FileNotReadyError as e:
             logger.warning(f"<{PhaseNames.miner_commit_1}> File not ready error: {e}")
@@ -215,6 +225,8 @@ def commit_worker(
             traceback.print_exc()
 
         finally:
+            if job.phase_response is not None:
+                check_phase_expired(subtensor, job.phase_response)
             commit_queue.task_done()
             logger.info(f"<{PhaseNames.miner_commit_1}> task completed.")
 
@@ -276,6 +288,8 @@ def submit_worker(
             traceback.print_exc()
 
         finally:
+            if job.phase_response is not None:
+                check_phase_expired(subtensor, job.phase_response)
             submit_queue.task_done()
             logger.info(f"<{PhaseNames.submission}> task completed.")
 

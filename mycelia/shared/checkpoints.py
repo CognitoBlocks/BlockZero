@@ -599,16 +599,22 @@ def build_chain_checkpoints_from_previous_phase(
 
     # --- Get block ranges for previous phases ---
     previous_phase_range = get_blocks_from_previous_phase_from_api(config)
-    commit_1_end_block = previous_phase_range[phase_name_1][1] + 1
-    commit_2_end_block = previous_phase_range[phase_name_2][1] + 1
 
-    # --- Get commits from chain at the right blocks ---
-    signed_hash_chain_commits: tuple[SignedModelHashChainCommit, bittensor.Neuron] = get_chain_commits(
-        config, subtensor, block=commit_1_end_block
-    )
-    hash_chain_commits: tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(
-        config, subtensor, block=commit_2_end_block
-    )
+    if previous_phase_range is not None: 
+        commit_1_end_block = previous_phase_range[phase_name_1][1] + 1
+        commit_2_end_block = previous_phase_range[phase_name_2][1] + 1
+
+        # --- Get commits from chain at the right blocks ---
+        signed_hash_chain_commits: tuple[SignedModelHashChainCommit, bittensor.Neuron] = get_chain_commits(
+            config, subtensor, block=commit_1_end_block
+        )
+        hash_chain_commits: tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(
+            config, subtensor, block=commit_2_end_block
+        )
+
+    else:
+        signed_hash_chain_commits = []
+        hash_chain_commits = []
 
     # --- Build chain checkpoints ---
     return build_chain_checkpoints(

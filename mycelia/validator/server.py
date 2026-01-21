@@ -348,15 +348,6 @@ def validate_get_checkpoint_request(
     if target_hotkey_ss58 != config.chain.hotkey_ss58:
         raise HTTPException(status_code=403, detail="Submission target hotkey does not match this validator")
 
-    # check if it is now the submission phase
-    phase = validator_state_cache.get_phase()
-    if phase is None or phase.phase_name != PhaseNames.submission:
-        raise HTTPException(status_code=409, detail="Submissions are only accepted during submission phase")
-
-    # check of the origin block is within the submission phase
-    if not (phase.phase_start_block <= origin_block <= phase.phase_end_block):
-        raise HTTPException(status_code=400, detail="Origin block is not within the submission phase")
-
 # miners submit checkpoint
 # @app.post("/submit-checkpoint-permit")
 def validate_submission_phase_and_assignment(

@@ -81,10 +81,10 @@ class CycleCfg(BaseConfig):
     cycle_length: int = 45  # validators run a validation round everytime when sub.block % cycle_length == 0
     distribute_period: int = 2
     train_period: int = 10
-    commit_period: int = 3
+    commit_period: int = 6
     submission_period: int = 10
-    validate_period: int = 10
-    merge_period: int = 10
+    validate_period: int = 18
+    merge_period: int = 25
     owner_ip: str = "149.137.225.62"
     owner_port: int = 7000
     owner_dht_peer_port: int = 34297 

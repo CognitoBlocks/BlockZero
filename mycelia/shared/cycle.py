@@ -57,11 +57,12 @@ class PhaseNames:
 
 
 def wait_till(config: MinerConfig, phase_name: PhaseNames, poll_fallback_block: int = 3):
-    should_submit = False
+    ready = False
+    
     logger.info(f"<{phase_name}> waiting to begin...")
-    while not should_submit:
-        should_submit, blocks_till, phase_response = should_act(config, phase_name, retry_blocks=poll_fallback_block)
-        if should_submit is False and blocks_till > 0:
+    while not ready:
+        ready, blocks_till, phase_response = should_act(config, phase_name, retry_blocks=poll_fallback_block)
+        if ready is False and blocks_till > 0:
             sleep_sec = min(blocks_till, max(poll_fallback_block, blocks_till * 0.9)) * 12
 
             check_time = datetime.now() + timedelta(seconds=sleep_sec)
@@ -71,7 +72,30 @@ def wait_till(config: MinerConfig, phase_name: PhaseNames, poll_fallback_block: 
             time.sleep(sleep_sec)
 
     logger.info(f"<{phase_name}> has started, {phase_response.blocks_remaining_in_phase} blocks left in phase.")
-    return should_submit, phase_response.phase_end_block
+    return phase_response
+
+
+def check_phase_expired(subtensor: bittensor.Subtensor, phase_response: PhaseResponse) -> bool:
+    current_block = subtensor.block
+    blocks_remaining = phase_response.phase_end_block - current_block
+    if current_block > phase_response.phase_end_block:
+        logger.warning(
+            f"<{phase_response.phase_name}> phase already ended by the time of check",
+            current_block=current_block,
+            phase_end_block=phase_response.phase_end_block,
+            diff=blocks_remaining,
+        )
+        return True
+    
+    if blocks_remaining >= 10:
+        logger.warning(
+            f"<{phase_response.phase_name}> phase check completed well before end",
+            current_block=current_block,
+            phase_end_block=phase_response.phase_end_block,
+            blocks_remaining=blocks_remaining,
+        )
+    
+    return False
 
 
 def should_act(config: MinerConfig, phase_name: PhaseNames, retry_blocks: int) -> tuple[bool, int, int]:
