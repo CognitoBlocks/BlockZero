@@ -111,17 +111,6 @@ def search_model_submission_destination(
     return metagraph.axons[uid]
 
 
-def setup_chain_worker(config):
-    wallet = bittensor.Wallet(name=config.chain.coldkey_name, hotkey=config.chain.hotkey_name)
-    subtensor = bittensor.Subtensor(network=config.chain.network)
-    serve_axon(
-        config=config,
-        wallet=wallet,
-        subtensor=subtensor,
-    )
-    return wallet, subtensor
-
-
 def assign_miners_to_validators(
     validators: dict[str, Any],  # {validator_id: seed}
     miners: list[str],

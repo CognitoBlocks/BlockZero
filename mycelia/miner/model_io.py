@@ -16,7 +16,7 @@ from mycelia.shared.checkpoints import (
 )
 from mycelia.shared.client import submit_model
 from mycelia.shared.config import MinerConfig, parse_args
-from mycelia.shared.cycle import search_model_submission_destination, setup_chain_worker, wait_till
+from mycelia.shared.chain import search_model_submission_destination, setup_chain_worker, wait_till
 from mycelia.shared.helper import get_model_hash
 from mycelia.shared.model import fetch_model_from_chain_validator
 from mycelia.sn_owner.cycle import PhaseNames
