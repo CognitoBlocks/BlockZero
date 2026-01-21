@@ -59,7 +59,7 @@ class PhaseNames:
 def wait_till(config: MinerConfig, phase_name: PhaseNames, poll_fallback_block: int = 3):
     ready = False
     
-    logger.info(f"<{phase_name}> waiting to begin...")
+    first_print = True
     while not ready:
         ready, blocks_till, phase_response = should_act(config, phase_name, retry_blocks=poll_fallback_block)
         if ready is False and blocks_till > 0:
@@ -68,10 +68,14 @@ def wait_till(config: MinerConfig, phase_name: PhaseNames, poll_fallback_block: 
             check_time = datetime.now() + timedelta(seconds=sleep_sec)
             check_time_str = check_time.strftime("%H:%M:%S")
 
-            logger.info(f"<{phase_name}> to begin in {blocks_till} blocks, check again at {check_time_str}")
+            expect_time = datetime.now() + timedelta(seconds=blocks_till * 12)
+            expect_time_str = expect_time.strftime("%H:%M:%S")
+
+            if first_print: logger.info(f"<{phase_name}> to begin in {blocks_till} blocks, at {expect_time_str}")
+            first_print = False
             time.sleep(sleep_sec)
 
-    logger.info(f"<{phase_name}> has started, {phase_response.blocks_remaining_in_phase} blocks left in phase.")
+    logger.info(f"<{phase_name}> has started, {phase_response.blocks_into_phase} blocks passed, {phase_response.blocks_remaining_in_phase} blocks left in phase.")
     return phase_response
 
 
@@ -80,16 +84,16 @@ def check_phase_expired(subtensor: bittensor.Subtensor, phase_response: PhaseRes
     blocks_remaining = phase_response.phase_end_block - current_block
     if current_block > phase_response.phase_end_block:
         logger.warning(
-            f"<{phase_response.phase_name}> phase already ended by the time of check",
+            f"<{phase_response.phase_name}> phase couldnt complete on time",
             current_block=current_block,
             phase_end_block=phase_response.phase_end_block,
             diff=blocks_remaining,
         )
         return True
     
-    if blocks_remaining >= 10:
-        logger.warning(
-            f"<{phase_response.phase_name}> phase check completed well before end",
+    if blocks_remaining >= 0:
+        logger.info(
+            f"<{phase_response.phase_name}> phase completed on time",
             current_block=current_block,
             phase_end_block=phase_response.phase_end_block,
             blocks_remaining=blocks_remaining,
@@ -119,6 +123,7 @@ def should_act(config: MinerConfig, phase_name: PhaseNames, retry_blocks: int) -
 def search_model_submission_destination(
     wallet: bittensor.Wallet, config: MinerConfig, subtensor: bittensor.Subtensor
 ) -> bittensor.Axon:
+    
     validator_miner_assignment = get_validator_miner_assignment(config, subtensor)
 
     assigned_validator_hotkey = None
@@ -132,6 +137,9 @@ def search_model_submission_destination(
 
     metagraph = subtensor.metagraph(netuid=config.chain.netuid)
     uid = metagraph.hotkeys.index(assigned_validator_hotkey)
+
+    logger.info('assigned_validator_hotkey', assigned_validator_hotkey = assigned_validator_hotkey, uid = uid)
+
     return metagraph.axons[uid]
 
 
@@ -210,7 +218,10 @@ def get_validator_miner_assignment(config: WorkerConfig, subtensor: bittensor.Su
     commits: tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(config, subtensor)
     validator_seeds = get_validator_seed_from_commit(config, commits)
     miners = get_miners_from_commit(config, commits)
-    return assign_miners_to_validators(validator_seeds, miners)  # type: ignore
+
+    validator_miner_assignment = assign_miners_to_validators(validator_seeds, miners)
+    logger.info("global validator_miner_assignment", validator_miner_assignment)
+    return validator_miner_assignment
 
 
 def get_validator_seed_from_commit(config, commits):
@@ -355,19 +366,24 @@ def load_submission_files(folder: str = "miner_submission"):
 
 def gather_validation_job(config: ValidatorConfig, subtensor: bittensor.Subtensor, step: int) -> list[MinerEvalJob]:
     validator_miner_assignment = get_validator_miner_assignment(config, subtensor)
+
     miner_assignment = validator_miner_assignment.get(config.chain.hotkey_ss58, [])
+
+    logger.info("assigned_miners", miner_assignment=miner_assignment)
+
     miner_submission_files = load_submission_files(str(config.ckpt.miner_submission_path))
     previous_phase_range = get_blocks_from_previous_phase_from_api(config)[PhaseNames.submission]
 
     hotkeys = subtensor.metagraph(netuid=config.chain.netuid).hotkeys
     miner_jobs = []
+    qualifying_hotkeys: set[str] = set()
+    unexpected_submissions = []
     for file_name, submission_meta in miner_submission_files.items():
-        logger.debug("Evaluating submission file", file_name=file_name, submission_meta=submission_meta)
-        if (
-            submission_meta["hotkey"] in miner_assignment
-            and submission_meta["block"] >= previous_phase_range[0]
-            and submission_meta["block"] <= previous_phase_range[1]
-        ):
+        is_assigned = submission_meta["hotkey"] in miner_assignment
+        in_previous_phase = previous_phase_range[0] <= submission_meta["block"] <= previous_phase_range[1]
+        if is_assigned and in_previous_phase:
+            logger.info("Found qualifying submission file", file_name=file_name, submission_meta=submission_meta)
+            qualifying_hotkeys.add(submission_meta["hotkey"])
             miner_jobs.append(
                 MinerEvalJob(
                     uid=hotkeys.index(submission_meta["hotkey"]),
@@ -376,5 +392,38 @@ def gather_validation_job(config: ValidatorConfig, subtensor: bittensor.Subtenso
                     step=step,
                 )
             )
+        else:
+            if not in_previous_phase:
+                reason = f"out_of_phase_range block {previous_phase_range[0]} - {previous_phase_range[1]}"
+            
+            elif not is_assigned:
+                reason = "in phase but unassigned miner"
+
+            else:
+                reason = "unknown"
+
+            unexpected_submissions.append(
+                {
+                    "file_name": file_name,
+                    "hotkey": submission_meta["hotkey"],
+                    "block": submission_meta["block"],
+                    "reason": reason,
+                }
+            )
+
+    missing_hotkeys = [hotkey for hotkey in miner_assignment if hotkey not in qualifying_hotkeys]
+    if missing_hotkeys:
+        logger.warning(
+            "Missing miner submissions",
+            missing_hotkeys=missing_hotkeys,
+            assigned_count=len(miner_assignment),
+            received_count=len(qualifying_hotkeys),
+        )
+    if unexpected_submissions:
+        logger.warning(
+            "Unexpected miner submissions",
+            unexpected_count=len(unexpected_submissions),
+            unexpected_submissions=unexpected_submissions,
+        )
 
     return miner_jobs

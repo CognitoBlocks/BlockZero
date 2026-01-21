@@ -77,7 +77,6 @@ def scheduler_service(
         commit_queue.put(
             Job(
                 job_type=JobType.COMMIT,
-                phase_end_block=phase_response.phase_end_block,
                 phase_response=phase_response,
             )
         )
@@ -111,7 +110,7 @@ def download_worker(
 
             current_model_meta.model_hash = current_model_hash
 
-            download_meta = fetch_model_from_chain_validator(
+            chain_checkpoint = fetch_model_from_chain_validator(
                 current_model_meta,
                 config,
                 subtensor,
@@ -120,13 +119,13 @@ def download_worker(
             )
 
             if (
-                not isinstance(download_meta, dict)
-                or "global_ver" not in download_meta
-                or "model_hash" not in download_meta
+                chain_checkpoint is None
+                or chain_checkpoint.global_ver is None
+                or chain_checkpoint.model_hash is None
             ):
-                raise FileNotReadyError(f"No qualifying download destination: {download_meta}")
+                raise FileNotReadyError(f"No qualifying download destination: {chain_checkpoint}")
 
-            logger.info(f"<{PhaseNames.distribute}> downloaded model metadata from chain: {download_meta}.")
+            logger.info(f"<{PhaseNames.distribute}> downloaded model metadata from chain: {chain_checkpoint}.")
 
             # Update shared state with new version/hash
             current_model_meta = select_best_checkpoint(
@@ -194,6 +193,8 @@ def commit_worker(
                 ),
             )
 
+            check_phase_expired(subtensor, job.phase_response)
+            
             phase_response = wait_till(config, PhaseNames.miner_commit_2)
 
             logger.info(
@@ -225,8 +226,6 @@ def commit_worker(
             traceback.print_exc()
 
         finally:
-            if job.phase_response is not None:
-                check_phase_expired(subtensor, job.phase_response)
             commit_queue.task_done()
             logger.info(f"<{PhaseNames.miner_commit_1}> task completed.")
 
