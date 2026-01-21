@@ -216,7 +216,8 @@ def get_phase_from_api(config: WorkerConfig) -> PhaseResponse | None:
     Returns:
         str: one of ["training", "submission", "waiting"]
     """
-    url = f"{config.cycle.owner_url}/get_phase"
+    base_url = f"http://{config.cycle.owner_ip}:{config.cycle.owner_port}"
+    url = f"{base_url}/get_phase"
 
     try:
         resp = requests.get(url, timeout=10)
@@ -248,7 +249,8 @@ def get_blocks_until_next_phase_from_api(config: WorkerConfig) -> dict[str, tupl
     Returns:
         str: one of ["training", "submission", "waiting"]
     """
-    url = f"{config.cycle.owner_url}/blocks_until_next_phase"
+    base_url = f"http://{config.cycle.owner_ip}:{config.cycle.owner_port}"
+    url = f"{base_url}/blocks_until_next_phase"
 
     try:
         resp = requests.get(url, timeout=10)
@@ -281,7 +283,8 @@ def get_blocks_from_previous_phase_from_api(config: WorkerConfig) -> PhaseRespon
     Returns:
         str: one of ["training", "submission", "waiting"]
     """
-    url = f"{config.cycle.owner_url}/previous_phase_blocks"
+    base_url = f"http://{config.cycle.owner_ip}:{config.cycle.owner_port}"
+    url = f"{base_url}/previous_phase_blocks"
 
     try:
         resp = requests.get(url, timeout=10)

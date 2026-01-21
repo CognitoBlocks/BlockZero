@@ -6,18 +6,20 @@ import torch
 import torch.nn as nn
 from hivemind.averaging import DecentralizedAverager
 
+
 from mycelia.shared.app_logging import structlog
+from mycelia.shared.config import ValidatorConfig
 from mycelia.shared.expert_manager import get_layer_expert_id
 
 logger = structlog.get_logger(__name__)
 
 
-def get_init_peer_id():
-    return ["/ip4/127.0.0.1/tcp/41001/p2p/12D3KooWJbtD23NdFUF7wFCFx6Jz2QTW7C6jM9LmGFgpe4cW4s4Y"]
+def get_init_peer_id(config: ValidatorConfig):
+    return [f"/ip4/{config.cycle.owner_ip}/tcp/41001/p2p/{config.cycle.owner_peer_id}"]
 
 
-def connect_with_peers():
-    initial_peer_ids: list[str] = get_init_peer_id()
+def connect_with_peers(config: ValidatorConfig):
+    initial_peer_ids: list[str] = get_init_peer_id(config)
     dht = hivemind.DHT(start=True, initial_peers=initial_peer_ids)
     return dht
 

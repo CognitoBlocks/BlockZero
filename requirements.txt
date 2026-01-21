@@ -81,3 +81,4 @@ substrate-interface
 bittensor 
 plotly
 unsloth @ git+https://github.com/unslothai/unsloth.git; platform_system == "Linux"
+prefetch-generator

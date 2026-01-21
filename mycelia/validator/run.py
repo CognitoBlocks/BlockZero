@@ -337,7 +337,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
         model=base_model, expert_group_assignment=expert_manager.expert_group_assignment
     )
 
-    dht = connect_with_peers()
+    dht = connect_with_peers(config)
 
     group_averagers = build_averagers_from_buff(group_buff_metas=group_grad_buff_meta, dht=dht)
 

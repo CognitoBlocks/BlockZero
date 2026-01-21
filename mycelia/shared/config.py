@@ -85,7 +85,9 @@ class CycleCfg(BaseConfig):
     submission_period: int = 10
     validate_period: int = 10
     merge_period: int = 10
-    owner_url: str = "http://149.137.225.62:7000"
+    owner_ip: str = "149.137.225.62"
+    owner_port: int = 7000
+    owner_peer_id: str = '12D3KooWJbtD23NdFUF7wFCFx6Jz2QTW7C6jM9LmGFgpe4cW4s4Y'
 
 
 class RunCfg(BaseConfig):
