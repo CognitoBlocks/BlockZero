@@ -65,7 +65,7 @@ class BaseConfig(BaseModel):
 # Sections
 # ---------------------------
 class ChainCfg(BaseConfig):
-    netuid: int = 348
+    netuid: int = 8
     uid: int = 1
     hotkey_ss58: str = ""
     coldkey_ss58: str = ""

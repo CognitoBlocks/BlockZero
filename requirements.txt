@@ -79,6 +79,6 @@ hivemind
 matplotlib
 pandas
 substrate-interface
-bittensor==9.12.2 
+bittensor 
 plotly
 unsloth @ git+https://github.com/unslothai/unsloth.git; platform_system == "Linux"
