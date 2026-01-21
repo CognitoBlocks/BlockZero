@@ -153,7 +153,7 @@ def load_model(
         wallet=wallet,
         expert_group_ids=[config.task.exp.group_id],
     )
-    
+
     return get_model_from_checkpoint(rank=rank, config=config, expert_manager=expert_manager)
 
 
@@ -170,9 +170,11 @@ def fetch_model_from_chain_validator(
     chain_checkpoints = build_chain_checkpoints_from_previous_phase(config=config, subtensor=subtensor, for_role ="validator")
 
     # --- Filter to only newer than current model ---
-    chain_checkpoints = ChainCheckpoints(
-        checkpoints=[ckpt for ckpt in chain_checkpoints.checkpoints if ckpt > current_model_meta]
-    )
+    if current_model_meta is not None: 
+        chain_checkpoints = ChainCheckpoints(
+            checkpoints=[ckpt for ckpt in chain_checkpoints.checkpoints if ckpt > current_model_meta]
+        )
+        
     should_download = len(chain_checkpoints.checkpoints) > 0
 
     logger.info(
