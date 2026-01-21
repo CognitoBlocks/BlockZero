@@ -74,7 +74,8 @@ torchdata
 wandb
 aiofiles
 python-multipart
-git+https://github.com/learning-at-home/hivemind.git@master
+hivemind
+# git+https://github.com/learning-at-home/hivemind.git@master
 matplotlib
 pandas
 substrate-interface
