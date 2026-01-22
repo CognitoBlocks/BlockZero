@@ -104,6 +104,86 @@ def search_model_submission_destination(
     return metagraph.axons[uid]
 
 
+def ping_validator(
+    axon: bittensor.Axon,
+    config: MinerConfig,
+    timeout: int = 10,
+) -> bool:
+    """
+    Ping a validator to check if it's online and accepting submissions.
+
+    This is a lightweight health check miners should call before submitting
+    to verify the validator is ready.
+
+    Args:
+        axon: Validator's Axon (from metagraph)
+        config: Miner config
+        timeout: Request timeout in seconds
+
+    Returns:
+        True if validator is online and ready, False otherwise
+    """
+    if axon is None:
+        logger.warning("Cannot ping validator: axon is None")
+        return False
+
+    if not axon.ip or not axon.port:
+        logger.warning("Cannot ping validator: missing ip/port", axon=axon)
+        return False
+
+    protocol = getattr(getattr(config, "miner", object()), "protocol", "http")
+    url = f"{protocol}://{axon.ip}:{axon.port}/health"
+
+    try:
+        resp = requests.get(url, timeout=timeout)
+        # Accept 200 OK or any 2xx as healthy
+        is_healthy = 200 <= resp.status_code < 300
+
+        if is_healthy:
+            logger.info(
+                "Validator is healthy and accepting submissions",
+                ip=axon.ip,
+                port=axon.port,
+                status_code=resp.status_code,
+            )
+        else:
+            logger.warning(
+                "Validator returned non-success status",
+                ip=axon.ip,
+                port=axon.port,
+                status_code=resp.status_code,
+            )
+
+        return is_healthy
+
+    except requests.exceptions.Timeout:
+        logger.warning(
+            "Validator ping timed out",
+            ip=axon.ip,
+            port=axon.port,
+            timeout=timeout,
+        )
+        return False
+
+    except requests.exceptions.ConnectionError as e:
+        logger.warning(
+            "Cannot connect to validator",
+            ip=axon.ip,
+            port=axon.port,
+            error=str(e),
+        )
+        return False
+
+    except requests.exceptions.RequestException as e:
+        logger.warning(
+            "Validator ping failed",
+            ip=axon.ip,
+            port=axon.port,
+            error=str(e),
+        )
+        return False
+
+
 def setup_chain_worker(config):
     wallet = bittensor.Wallet(name=config.chain.coldkey_name, hotkey=config.chain.hotkey_name)
     subtensor = bittensor.Subtensor(network=config.chain.network)
@@ -193,13 +273,69 @@ def get_validator_miner_assignment(config: WorkerConfig, subtensor: bittensor.Su
     return assign_miners_to_validators(validator_seeds, miners)  # type: ignore
 
 
-def get_validator_seed_from_commit(config, commits):
-    validator_seeds: dict[str, int] = {
-        neuron.hotkey: commit.miner_seed
-        for commit, neuron in commits
-        if isinstance(commit, ValidatorChainCommit)
-        and getattr(commit, "expert_group", None) == config.task.exp.group_id
-    }
+def get_validator_seed_from_commit(config, commits, filter_active: bool = True):
+    """
+    Extract validator seeds from chain commits.
+
+    Args:
+        config: Worker config
+        commits: List of (commit, neuron) tuples from chain
+        filter_active: If True, only include validators that are considered active:
+                       - Has miner_seed (committed to chain)
+                       - Has ip and port (can be reached for download/submission)
+                       - Has model_hash (has a model to distribute)
+
+    Returns:
+        Dict mapping validator hotkey -> miner_seed
+    """
+    validator_seeds: dict[str, int] = {}
+
+    for commit, neuron in commits:
+        # Must be a ValidatorChainCommit for the correct expert group
+        if not isinstance(commit, ValidatorChainCommit):
+            continue
+        if getattr(commit, "expert_group", None) != config.task.exp.group_id:
+            continue
+
+        # Must have a miner_seed (indicates validator committed)
+        miner_seed = getattr(commit, "miner_seed", None)
+        if miner_seed is None:
+            logger.debug(
+                "Skipping validator: no miner_seed",
+                hotkey=neuron.hotkey[:16] + "..." if neuron.hotkey else "unknown",
+            )
+            continue
+
+        if filter_active:
+            # Must have network info to be reachable
+            axon_info = getattr(neuron, "axon_info", None)
+            ip = getattr(axon_info, "ip", None) if axon_info else None
+            port = getattr(axon_info, "port", None) if axon_info else None
+
+            if not ip or not port:
+                logger.debug(
+                    "Skipping validator: missing ip/port",
+                    hotkey=neuron.hotkey[:16] + "..." if neuron.hotkey else "unknown",
+                )
+                continue
+
+            # Must have model_hash (indicates validator has model to distribute)
+            model_hash = getattr(commit, "model_hash", None)
+            if not model_hash:
+                logger.debug(
+                    "Skipping validator: no model_hash",
+                    hotkey=neuron.hotkey[:16] + "..." if neuron.hotkey else "unknown",
+                )
+                continue
+
+        validator_seeds[neuron.hotkey] = miner_seed
+
+    logger.info(
+        "Filtered active validators for assignment",
+        total_commits=len(commits),
+        active_validators=len(validator_seeds),
+    )
+
     return validator_seeds
 
 
