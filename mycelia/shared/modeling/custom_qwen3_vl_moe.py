@@ -34,6 +34,14 @@ from mycelia.shared.helper import *
 logger = structlog.get_logger(__name__)
 
 
+# Get activation function mapping from transformers
+try:
+    from transformers.activations import ACT2FN
+except ImportError:
+    # Fallback if ACT2FN not available
+    ACT2FN = {"silu": nn.SiLU()}
+
+
 class TopKRouter(nn.Module):
     """
     Top-k expert router with masking for expert group assignment.
@@ -56,27 +64,6 @@ class TopKRouter(nn.Module):
             self.register_buffer("allowed_ids", torch.as_tensor(available_experts).long())
         else:
             self.allowed_ids = None
-
-    def _mask_routing_weights(self, x: torch.Tensor, dim: int = 1) -> torch.Tensor:
-        """
-        Zero-out routing weights for experts not present in this group.
-        (Legacy method, kept for backward compatibility)
-        """
-        if self.available_experts is None:
-            return x
-
-        mask_1d = torch.zeros(x.size(dim), dtype=torch.bool, device=x.device)
-        mask_1d[self.available_experts.to(x.device)] = True
-
-        # Broadcast mask across all other dims
-        shape = [1] * x.ndim
-        shape[dim] = x.size(dim)
-        mask = mask_1d.view(shape).to(dtype=x.dtype)
-
-        mask_bool = mask.to(torch.bool)  # True = keep
-        fill = x.min() - 2  # scalar, computed BEFORE masking
-        x_masked = x.masked_fill(~mask_bool, fill)
-        return x_masked
 
     def forward(self, hidden_states):
         # 1. Raw logits from the gate weight
@@ -109,11 +96,124 @@ class TopKRouter(nn.Module):
         return router_logits, routing_weights.to(hidden_states.dtype), selected_experts
 
 
-@torch._dynamo.disable
-def _compute_overlap(expert_hit, available_experts):
-    expert_hit_set = set(expert_hit.detach().cpu().flatten().tolist())
-    available_experts_set = set(available_experts.tolist())
-    return torch.tensor(sorted(expert_hit_set.intersection(available_experts_set))).view(-1, 1)
+class PartialExperts(nn.Module):
+    """
+    Memory-efficient expert collection storing only assigned experts as compact 3D tensors.
+
+    Unlike Qwen3VLMoeTextExperts which allocates [num_experts, dim, dim] for ALL experts,
+    this class only allocates [num_local_experts, dim, dim] for the assigned subset.
+
+    Uses an ID remapping table to translate original expert IDs (e.g., [45, 46, 47])
+    to compact indices (e.g., [0, 1, 2]) for efficient tensor indexing.
+    """
+
+    def __init__(self, config, allowed_expert_ids: list[int]):
+        super().__init__()
+        self.num_local_experts = len(allowed_expert_ids)
+        self.hidden_dim = config.hidden_size
+        self.intermediate_dim = config.moe_intermediate_size
+        self.act_fn = ACT2FN[config.hidden_act]
+
+        # Store allowed expert IDs for reference
+        self.allowed_expert_ids = allowed_expert_ids
+
+        # Create ID remapping: original_id -> compact_index
+        # e.g., {45: 0, 46: 1, 47: 2} if allowed_expert_ids = [45, 46, 47]
+        self._id_to_idx = {eid: idx for idx, eid in enumerate(allowed_expert_ids)}
+
+        # Register buffer for fast GPU lookup: maps original expert ID -> compact index
+        # Size is max(allowed_expert_ids) + 1 to allow direct indexing
+        max_id = max(allowed_expert_ids) if allowed_expert_ids else 0
+        id_remap = torch.full((max_id + 1,), -1, dtype=torch.long)
+        for idx, eid in enumerate(allowed_expert_ids):
+            id_remap[eid] = idx
+        self.register_buffer("id_remap", id_remap)
+
+        # Compact 3D tensors - only allocate for num_local_experts
+        # Shape: (num_local_experts, 2 * intermediate_dim, hidden_dim)
+        self.gate_up_proj = nn.Parameter(
+            torch.empty(self.num_local_experts, 2 * self.intermediate_dim, self.hidden_dim)
+        )
+        # Shape: (num_local_experts, hidden_dim, intermediate_dim)
+        self.down_proj = nn.Parameter(
+            torch.empty(self.num_local_experts, self.hidden_dim, self.intermediate_dim)
+        )
+
+        # Initialize weights
+        self._init_weights()
+
+    def _init_weights(self):
+        """Initialize weights with small random values."""
+        nn.init.kaiming_uniform_(self.gate_up_proj, a=5**0.5)
+        nn.init.kaiming_uniform_(self.down_proj, a=5**0.5)
+
+    def remap_expert_id(self, original_id: int) -> int:
+        """Convert original expert ID to compact index."""
+        return self._id_to_idx.get(original_id, -1)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        selected_experts: torch.Tensor,
+        routing_weights: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Process tokens through selected experts.
+
+        Args:
+            hidden_states: (batch * seq_len, hidden_dim)
+            selected_experts: (batch * seq_len, top_k) - original expert IDs
+            routing_weights: (batch * seq_len, top_k)
+
+        Returns:
+            final_hidden_states: (batch * seq_len, hidden_dim)
+        """
+        final_hidden_states = torch.zeros_like(hidden_states)
+
+        # Create expert mask using original IDs
+        # expert_mask shape: (num_experts_total, top_k, batch*seq)
+        num_experts_total = self.id_remap.size(0)
+        expert_mask = F.one_hot(selected_experts, num_classes=num_experts_total).permute(2, 1, 0)
+
+        # Find which experts were actually selected
+        with torch.no_grad():
+            expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero().squeeze(-1)
+
+        for original_expert_id in expert_hit:
+            original_id = original_expert_id.item()
+
+            # Skip if this expert isn't in our assigned set
+            if original_id >= self.id_remap.size(0):
+                continue
+            compact_idx = self.id_remap[original_id].item()
+            if compact_idx < 0:
+                continue
+
+            # Find which tokens route to this expert
+            top_k_pos, token_idx = torch.where(expert_mask[original_id])
+
+            if token_idx.numel() == 0:
+                continue
+
+            # Get hidden states for these tokens
+            current_state = hidden_states[token_idx]  # (num_tokens, hidden_dim)
+
+            # Apply gate-up projection using compact index
+            # gate_up_proj[compact_idx] shape: (2 * intermediate_dim, hidden_dim)
+            gate_up = F.linear(current_state, self.gate_up_proj[compact_idx])  # (num_tokens, 2 * intermediate)
+            gate, up = gate_up.chunk(2, dim=-1)  # Each: (num_tokens, intermediate)
+
+            # Apply activation and compute output
+            current_hidden_states = self.act_fn(gate) * up  # (num_tokens, intermediate)
+            current_hidden_states = F.linear(current_hidden_states, self.down_proj[compact_idx])  # (num_tokens, hidden)
+
+            # Weight by routing scores
+            current_hidden_states = current_hidden_states * routing_weights[token_idx, top_k_pos, None]
+
+            # Accumulate results
+            final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))
+
+        return final_hidden_states
 
 
 class SparseMoeBlock(Qwen3VLMoeTextSparseMoeBlock):
@@ -122,6 +222,9 @@ class SparseMoeBlock(Qwen3VLMoeTextSparseMoeBlock):
 
     Replaces the standard Qwen3VLMoeTextSparseMoeBlock with our custom router
     that supports expert group assignment for distributed training.
+
+    Uses PartialExperts (compact 3D tensors) instead of ModuleDict for better
+    memory efficiency while maintaining the same compute pattern.
     """
 
     def __init__(
@@ -138,15 +241,15 @@ class SparseMoeBlock(Qwen3VLMoeTextSparseMoeBlock):
             else:
                 group_ids = config.group_ids
 
-            allowed_expert_id = []
+            allowed_expert_ids = []
             for group_id in group_ids:
-                allowed_expert_id += [
+                allowed_expert_ids += [
                     my_expert_id for my_expert_id, org_expert_id in config.expert_group_assignment[group_id][layer_id]
                 ]
         else:
-            allowed_expert_id = list(range(config.num_experts))
+            allowed_expert_ids = list(range(config.num_experts))
 
-        self.available_experts = torch.as_tensor([int(k) for k in allowed_expert_id])
+        self.available_experts = torch.as_tensor([int(k) for k in allowed_expert_ids])
 
         # DEBUG: Verify expert alignment for first layer
         if layer_id == 0:
@@ -159,47 +262,23 @@ class SparseMoeBlock(Qwen3VLMoeTextSparseMoeBlock):
         # Replace standard router with our TopKRouter
         self.gate = TopKRouter(config, self.available_experts)
 
-        # Only create experts for this group (memory efficiency)
-        # Ensure the keys are identical to available_experts (string versions)
-        self.experts = nn.ModuleDict(
-            {str(i): Qwen3VLMoeTextMLP(config, intermediate_size=config.moe_intermediate_size) for i in allowed_expert_id}
-        )
+        # Use PartialExperts with compact 3D tensors (memory efficient)
+        # Only allocates memory for assigned experts, not all 128
+        self.experts = PartialExperts(config, allowed_expert_ids)
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
+
         # router_logits: (batch * sequence_length, n_experts)
         router_logits, routing_weights, selected_experts = self.gate(hidden_states)
 
-        final_hidden_states = torch.zeros(
-            (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
-        )
+        # Process through experts using compact 3D tensor representation
+        final_hidden_states = self.experts(hidden_states, selected_experts, routing_weights)
 
-        # One hot encode the selected experts to create an expert mask
-        # this will be used to easily index which expert is going to be sollicitated
-        expert_mask = torch.nn.functional.one_hot(selected_experts, num_classes=self.num_experts).permute(2, 1, 0)
-
-        # Loop over all available experts in the model and perform the computation on each expert
-        expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
-
-        qualified_expert_set = _compute_overlap(expert_hit, self.available_experts)
-
-        for expert_idx in qualified_expert_set:
-            expert_layer = self.experts[str(expert_idx.item())]
-            idx, top_x = torch.where(expert_mask[expert_idx].squeeze(0))
-
-            # Index the correct hidden states and compute the expert hidden state for
-            # the current expert. We need to make sure to multiply the output hidden
-            # states by `routing_weights` on the corresponding tokens (top-1 and top-2)
-            current_state = hidden_states[None, top_x].reshape(-1, hidden_dim)
-            current_hidden_states = expert_layer(current_state) * routing_weights[top_x, idx, None]
-            # However `index_add_` only support torch tensors for indexing so we'll use
-            # the `top_x` tensor here.
-            final_hidden_states.index_add_(0, top_x, current_hidden_states.to(hidden_states.dtype))
-
+        # Add shared expert contribution
         shared_expert_output = self.shared_expert(hidden_states)
         shared_expert_output = F.sigmoid(self.shared_expert_gate(hidden_states)) * shared_expert_output
-
         final_hidden_states = final_hidden_states + shared_expert_output
 
         final_hidden_states = final_hidden_states.reshape(batch_size, sequence_length, hidden_dim)

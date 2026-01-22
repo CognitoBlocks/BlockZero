@@ -103,7 +103,8 @@ class ModelCfg(BaseConfig):
     precision: str = "fp16-mixed"
     device: str = "cuda"
     use_quantization: bool = False
-    cpu_offload: bool = False
+    use_unsloth: bool = False  # Use Unsloth optimizations for faster inference (validators only)
+    load_on_cpu: bool = False  # Load model on CPU instead of GPU (for memory-constrained systems)
 
 
 class DataCfg(BaseConfig):
@@ -124,8 +125,8 @@ class MoECfg(BaseConfig):
     interleave: bool = True
     noise: bool = False
     noise_std: float = 0.1
-    num_experts: PositiveInt = 128  # Qwen3-VL-MoE has 128 experts
-    num_experts_per_tok: PositiveInt = 8  # 8 experts active per token
+    num_experts: PositiveInt = 128  # Total experts in Qwen3-VL-MoE model (not per-miner, this is the full model size)
+    num_experts_per_tok: PositiveInt = 8  # Number of experts activated per token during inference
     partial_topk: PositiveInt = 1
     full_topk: PositiveInt = 8  # Match num_experts_per_tok for full model
     aux_load_balance: bool = True
@@ -204,11 +205,9 @@ class ExpertCfg(BaseConfig):
 
 class TaskCfg(BaseConfig):
     expert_group_name: str = "exp_math"
-    expert_group_id: int = 0  # Numeric ID for expert group
     base_path: Path = Path("expert_groups")
     path: Path | None = None
-    exp: ExpertCfg = ExpertCfg()
-    data: DataCfg = DataCfg()  # Direct access to data config for Qwen3-VL
+    exp: ExpertCfg = ExpertCfg()  # Contains group_id and data config
 
 # ---------------------------
 # Top-level config
