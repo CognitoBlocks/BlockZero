@@ -585,6 +585,7 @@ def build_chain_checkpoints_from_previous_phase(
     if for_role == "miner":
         phase_name_1 = PhaseNames.miner_commit_1
         phase_name_2 = PhaseNames.miner_commit_2
+        
     elif for_role == "validator":
         phase_name_1 = PhaseNames.validator_commit_1
         phase_name_2 = PhaseNames.validator_commit_2

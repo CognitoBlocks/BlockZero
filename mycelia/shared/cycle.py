@@ -429,12 +429,12 @@ def gather_validation_job(config: ValidatorConfig, subtensor: bittensor.Subtenso
             received_count=len(qualifying_hotkeys),
         )
     
-    if outdated_submissions:
-        logger.warning(
-            f"Rejected submission: out_of_phase_range block {previous_phase_range[0]} - {previous_phase_range[1]}",
-            unexpected_count=len(outdated_submissions),
-            unexpected_submissions=outdated_submissions,
-        )
+    # if outdated_submissions:
+    #     logger.warning(
+    #         f"Rejected submission: out_of_phase_range block {previous_phase_range[0]} - {previous_phase_range[1]}",
+    #         unexpected_count=len(outdated_submissions),
+    #         unexpected_submissions=outdated_submissions,
+    #     )
     
     if unexpected_submissions:
         logger.warning(
