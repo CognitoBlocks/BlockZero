@@ -84,9 +84,7 @@ def freeze_parameters(
 def get_model_from_checkpoint(
     rank: int, config: MinerConfig | ValidatorConfig, expert_manager: ExpertManager
 ) -> tuple[nn.Module, ModelCheckpoint]:
-    resume = False
-    latest_checkpoint_path = None
-
+    resume = get_nested_attr(config, "ckpt.resume_from_ckpt", False)
     logger.info(
         "Get base model for checkpoint",
         group_ids=[config.task.exp.group_id] if config.role == "miner" else None,
@@ -101,7 +99,7 @@ def get_model_from_checkpoint(
     ).to(config.model.device)
 
     # load from checkpoint
-    if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
+    if resume:
         latest_checkpoint = select_best_checkpoint(
             primary_dir=config.ckpt.validator_checkpoint_path,
             secondary_dir=config.ckpt.checkpoint_path,

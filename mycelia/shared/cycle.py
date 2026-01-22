@@ -84,7 +84,7 @@ def check_phase_expired(subtensor: bittensor.Subtensor, phase_response: PhaseRes
     blocks_remaining = phase_response.phase_end_block - current_block
     if current_block > phase_response.phase_end_block:
         logger.warning(
-            f"<{phase_response.phase_name}> phase couldnt complete on time",
+            f"<{phase_response.phase_name}> phase did not complete on time",
             current_block=current_block,
             phase_end_block=phase_response.phase_end_block,
             diff=blocks_remaining,
@@ -377,6 +377,7 @@ def gather_validation_job(config: ValidatorConfig, subtensor: bittensor.Subtenso
     hotkeys = subtensor.metagraph(netuid=config.chain.netuid).hotkeys
     miner_jobs = []
     qualifying_hotkeys: set[str] = set()
+    outdated_submissions = []
     unexpected_submissions = []
     for file_name, submission_meta in miner_submission_files.items():
         is_assigned = submission_meta["hotkey"] in miner_assignment
@@ -394,24 +395,32 @@ def gather_validation_job(config: ValidatorConfig, subtensor: bittensor.Subtenso
             )
         else:
             if not in_previous_phase:
-                reason = f"out_of_phase_range block {previous_phase_range[0]} - {previous_phase_range[1]}"
-            
+                outdated_submissions.append(
+                    {
+                        "file_name": file_name,
+                        "hotkey": submission_meta["hotkey"],
+                        "block": submission_meta["block"],
+                        # "reason": reason,
+                    }
+                )
+
             elif not is_assigned:
-                reason = "in phase but unassigned miner"
+                unexpected_submissions.append(
+                    {
+                        "file_name": file_name,
+                        "hotkey": submission_meta["hotkey"],
+                        "block": submission_meta["block"],
+                        # "reason": reason,
+                    }
+                )
+
 
             else:
                 reason = "unknown"
 
-            unexpected_submissions.append(
-                {
-                    "file_name": file_name,
-                    "hotkey": submission_meta["hotkey"],
-                    "block": submission_meta["block"],
-                    "reason": reason,
-                }
-            )
-
     missing_hotkeys = [hotkey for hotkey in miner_assignment if hotkey not in qualifying_hotkeys]
+
+
     if missing_hotkeys:
         logger.warning(
             "Missing miner submissions",
@@ -419,9 +428,17 @@ def gather_validation_job(config: ValidatorConfig, subtensor: bittensor.Subtenso
             assigned_count=len(miner_assignment),
             received_count=len(qualifying_hotkeys),
         )
+    
+    if outdated_submissions:
+        logger.warning(
+            f"Rejected submission: out_of_phase_range block {previous_phase_range[0]} - {previous_phase_range[1]}",
+            unexpected_count=len(outdated_submissions),
+            unexpected_submissions=outdated_submissions,
+        )
+    
     if unexpected_submissions:
         logger.warning(
-            "Unexpected miner submissions",
+            "Rejected submission: In phase but unassigned miner",
             unexpected_count=len(unexpected_submissions),
             unexpected_submissions=unexpected_submissions,
         )

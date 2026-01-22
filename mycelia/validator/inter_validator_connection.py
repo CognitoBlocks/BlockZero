@@ -21,6 +21,7 @@ def get_init_peer_id(config: ValidatorConfig):
 def connect_with_peers(config: ValidatorConfig):
     initial_peer_ids: list[str] = get_init_peer_id(config)
     dht = hivemind.DHT(start=True, initial_peers=initial_peer_ids)
+    logger.info('accessible multiaddrs', '\n'.join(str(addr) for addr in dht.get_visible_maddrs()))
     return dht
 
 

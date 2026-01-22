@@ -79,9 +79,9 @@ class ChainCfg(BaseConfig):
 
 class CycleCfg(BaseConfig):
     cycle_length: int = 45  # validators run a validation round everytime when sub.block % cycle_length == 0
-    distribute_period: int = 2
+    distribute_period: int = 5
     train_period: int = 10
-    commit_period: int = 6
+    commit_period: int = 5
     submission_period: int = 10
     validate_period: int = 18
     merge_period: int = 25

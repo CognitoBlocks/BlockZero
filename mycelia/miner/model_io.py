@@ -194,7 +194,7 @@ def commit_worker(
             )
 
             check_phase_expired(subtensor, job.phase_response)
-            
+
             phase_response = wait_till(config, PhaseNames.miner_commit_2)
 
             logger.info(
@@ -227,7 +227,6 @@ def commit_worker(
 
         finally:
             commit_queue.task_done()
-            logger.info(f"<{PhaseNames.miner_commit_1}> task completed.")
 
 
 def submit_worker(

@@ -387,6 +387,9 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
 
     try:
         while True:
+
+            global_opt_step += 1
+
             # for each step, we run 1 backward
             # for each inner_opt_step, we run local optimization; gradient_accumulation_steps = 1 real step
             # for each global_opt_interval number of inner_opt_step, we synchronise weight from different ddp worker, and then run global optimization
@@ -573,9 +576,6 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
 
             metric_logger.log(metrics)
             cleanup(global_model, base_model)
-
-            # === Clean up ===
-            global_opt_step += 1
 
     except KeyboardInterrupt:
         logger.warning("KeyboardInterrupt received, shutting down validator loop")

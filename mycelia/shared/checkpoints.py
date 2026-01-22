@@ -109,19 +109,20 @@ class ModelCheckpoint(BaseModel):
         return default
 
     def expired(self) -> bool:
-        if self.place == "local" and self.path is not None and not self.path.exists():
-            return True
-
-        expires_at = self._extra("expires_at")
-        if isinstance(expires_at, (int, float)):
-            return time.time() >= expires_at
-
-        expires_at_block = self._extra("expires_at_block")
-        current_block = self._extra("current_block")
-        if isinstance(expires_at_block, int) and isinstance(current_block, int):
-            return current_block >= expires_at_block
-
         return False
+        # if self.place == "local" and self.path is not None and not self.path.exists():
+        #     return True
+
+        # expires_at = self._extra("expires_at")
+        # if isinstance(expires_at, (int, float)):
+        #     return time.time() >= expires_at
+
+        # expires_at_block = self._extra("expires_at_block")
+        # current_block = self._extra("current_block")
+        # if isinstance(expires_at_block, int) and isinstance(current_block, int):
+        #     return current_block >= expires_at_block
+
+        # return False
 
     def hash_model(self) -> str:
         if self.path is None:
@@ -278,11 +279,11 @@ class ModelCheckpoint(BaseModel):
         return True
 
     def active(self) -> bool:
-        if self.expired():
-            return False
+        # if self.expired():
+        #     return False
 
-        if self.role == "validator" and not self.validated():
-            return False
+        # if self.role == "validator" and not self.validated():
+        #     return False
 
         return True
 
@@ -333,9 +334,6 @@ class ChainCheckpoints(BaseModel):
         return None
 
     def filter_checkpoints(self, for_role: str = "validator") -> ChainCheckpoints:
-        for ckpt in self.checkpoints:
-            logger.info("chain checkpoint A", ckpt=ckpt)
-
         # filter out incomplete checkpoints
         filtered = []
         for ckpt in self.checkpoints:
@@ -350,12 +348,10 @@ class ChainCheckpoints(BaseModel):
                 or ckpt.port is None
                 or ckpt.hotkey is None
             ):
+                logger.info("filtering out checkpoint due to missing field", ckpt=ckpt)
                 continue
 
             filtered.append(ckpt)
-
-        for ckpt in filtered:
-            logger.info("chain checkpoint B", ckpt=ckpt)
 
         if not filtered:
             return ChainCheckpoints(checkpoints=[])
@@ -366,28 +362,27 @@ class ChainCheckpoints(BaseModel):
         for ckpt in filtered:
             if max_model_checkpoint and ckpt >= max_model_checkpoint:
                 version_filtered.append(ckpt)
-
-        for ckpt in version_filtered:
-            logger.info("chain checkpoint C", ckpt=ckpt)
+            else:
+                logger.info("filtering out checkpoint due to outdated", ckpt_ver=ckpt.global_ver, max_global_ver = max_model_checkpoint.global_ver)
 
         if not version_filtered:
             return ChainCheckpoints(checkpoints=[])
 
         # select majority model_hash
-        hash_counts = Counter([ckpt.model_hash for ckpt in filtered if ckpt.model_hash])
+        hash_counts = Counter([ckpt.model_hash for ckpt in version_filtered if ckpt.model_hash])
         if not hash_counts:
             return ChainCheckpoints(checkpoints=[])
 
         majority_hash, _count = hash_counts.most_common(1)[0]
 
-        majority_filtered = ChainCheckpoints(
-            checkpoints=[ckpt for ckpt in filtered if ckpt.model_hash == majority_hash]
-        )
+        majority_filtered = []
+        for ckpt in version_filtered:
+            if ckpt.model_hash == majority_hash:
+                majority_filtered.append(ckpt)
+            else:
+                logger.info("filtering out checkpoint due to non-major hash", majority_hash=majority_hash, ckpt_model_hash = ckpt.model_hash)
 
-        for ckpt in majority_filtered.checkpoints:
-            logger.info("chain checkpoint D", ckpt=ckpt)
-
-        return majority_filtered
+        return ChainCheckpoints(checkpoints = majority_filtered)
 
     def renew(self) -> None:
         before = len(self.checkpoints)
