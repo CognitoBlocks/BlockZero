@@ -95,12 +95,16 @@ class RunCfg(BaseConfig):
 
 class ModelCfg(BaseConfig):
     # although we are calling a large model here, but we would only be training a partial of it for each miner
-    model_path: str = "Qwen/Qwen3-Next-80B-A3B-Thinking"
+    # For local Mac testing, use: "Qwen/Qwen2.5-0.5B" (but note: won't have MoE architecture)
+    model_path: str = "Qwen/Qwen3-VL-30B-A3B-Instruct"
     foundation: bool = True
     torch_compile: bool = False
     attn_implementation: str = "sdpa"
     precision: str = "fp16-mixed"
     device: str = "cuda"
+    use_quantization: bool = False
+    use_unsloth: bool = False  # Use Unsloth optimizations for faster inference (validators only)
+    load_on_cpu: bool = False  # Load model on CPU instead of GPU (for memory-constrained systems)
 
 
 class DataCfg(BaseConfig):
@@ -121,10 +125,10 @@ class MoECfg(BaseConfig):
     interleave: bool = True
     noise: bool = False
     noise_std: float = 0.1
-    num_experts: PositiveInt = 8
-    num_experts_per_tok: PositiveInt = 2
+    num_experts: PositiveInt = 128  # Total experts in Qwen3-VL-MoE model (not per-miner, this is the full model size)
+    num_experts_per_tok: PositiveInt = 8  # Number of experts activated per token during inference
     partial_topk: PositiveInt = 1
-    full_topk: PositiveInt = 2
+    full_topk: PositiveInt = 8  # Match num_experts_per_tok for full model
     aux_load_balance: bool = True
     router_aux_loss_coef: float = 1.0
     partial_moe: bool = True
@@ -197,11 +201,13 @@ class OwnerCfg(BaseConfig):
 class ExpertCfg(BaseConfig):
     data: DataCfg = DataCfg()
     group_id: int = 0
+
+
 class TaskCfg(BaseConfig):
     expert_group_name: str = "exp_math"
     base_path: Path = Path("expert_groups")
     path: Path | None = None
-    exp: ExpertCfg = ExpertCfg()
+    exp: ExpertCfg = ExpertCfg()  # Contains group_id and data config
 
 # ---------------------------
 # Top-level config
