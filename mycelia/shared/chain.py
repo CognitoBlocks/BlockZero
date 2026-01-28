@@ -91,7 +91,7 @@ def commit_status(
     if not success:
         logger.warning("Failed to commit status to chain", status=data_dict)
     else:
-        logger.info("Committed status to chain", status=data_dict)
+        logger.info("Committed status to chain", block = subtensor.block, status=data_dict)
 
     return data_dict
 

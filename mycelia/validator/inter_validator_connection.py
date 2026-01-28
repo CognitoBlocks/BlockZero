@@ -118,19 +118,33 @@ def build_grad_buff_from_model(
         layer_id, expert_id = get_layer_expert_id(name)
         if layer_id and expert_id is not None:
             for group_id, layer_to_expert_ids in expert_group_assignment.items():
-                if expert_id in layer_to_expert_ids[layer_id]:
+                if expert_id in [a for a, b in layer_to_expert_ids[layer_id]]:
                     expert_group_to_names[group_id].append(name)
 
     # 2) Build gradient buffer per expert group
     group_buff_metas: dict[str | int, Any] = {}
     for group_id in expert_group_to_names.keys():
         tensors_for_group = [name_to_tensor[name] for name in expert_group_to_names[group_id]]
+        if len(tensors_for_group) == 0:
+            logger.warning(
+                "No tensors found for expert group",
+                group_id=group_id,
+            )
         group_buff_metas[group_id] = build_buff_from_params(params=tensors_for_group)
+        logger.info(
+            f"Built expert group grad buffer - {group_id}",
+            tensor_count=len(tensors_for_group),
+        )
 
     expert_owned_names = [name for names in expert_group_to_names.values() for name in names]
     non_expert_names = [n for n, _t in all_named if n not in expert_owned_names]
     non_expert_tensors = [name_to_tensor[n] for n in non_expert_names]
     group_buff_metas["shared"] = build_buff_from_params(non_expert_tensors)
+    logger.info(
+        "Built shared grad buffer",
+        tensor_count=len(non_expert_tensors),
+        total_param_count=len(all_named),
+    )
 
     return group_buff_metas
 
@@ -166,10 +180,11 @@ def build_averagers_from_buff(
             client_mode=False,
         )
         logger.info(
-            "build hivemind averager - shared",
+            f"build hivemind averager - {group_id}",
             prefix=prefix,
             mode=group_averagers[group_id].mode,
             client_mode=group_averagers[group_id].client_mode,
+            total_size = group_averagers[group_id].total_size
         )
 
     return group_averagers

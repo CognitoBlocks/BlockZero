@@ -84,7 +84,7 @@ class CycleCfg(BaseConfig):
     commit_period: int = 5
     submission_period: int = 10
     validate_period: int = 18
-    merge_period: int = 25
+    merge_period: int = 35
     owner_ip: str = "149.137.225.62"
     owner_port: int = 7000
     owner_dht_peer_port: int = 34297 
