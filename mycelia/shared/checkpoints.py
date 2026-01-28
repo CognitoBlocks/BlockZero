@@ -18,7 +18,7 @@ from mycelia.shared.expert_manager import get_layer_expert_id
 from mycelia.shared.helper import get_model_hash, parse_dynamic_filename
 from mycelia.shared.schema import sign_message, verify_message
 
-from mycelia.shared.cycle import PhaseNames, get_blocks_from_previous_phase_from_api
+from mycelia.shared.cycle import PhaseNames, get_blocks_from_previous_phase_from_api, get_phase_from_api, wait_till
 from mycelia.shared.config import MinerConfig, ValidatorConfig, WorkerConfig
 from mycelia.shared.chain import (
     SignedModelHashChainCommit,
@@ -348,7 +348,6 @@ class ChainCheckpoints(BaseModel):
                 or ckpt.port is None
                 or ckpt.hotkey is None
             ):
-                logger.info("filtering out checkpoint due to missing field", ckpt=ckpt)
                 continue
 
             filtered.append(ckpt)
@@ -581,18 +580,28 @@ def build_chain_checkpoints_from_previous_phase(
     subtensor: bittensor.Subtensor,
     for_role: str = "validator",
 ) -> ChainCheckpoints:
+    logger.info("Building chain checkpoints from previous phase", for_role=for_role)
+    
     # --- Validate type ---
     if for_role == "miner":
         phase_name_1 = PhaseNames.miner_commit_1
         phase_name_2 = PhaseNames.miner_commit_2
+        next_phase = PhaseNames.submission
         
     elif for_role == "validator":
         phase_name_1 = PhaseNames.validator_commit_1
         phase_name_2 = PhaseNames.validator_commit_2
+        next_phase = PhaseNames.distribute
 
     else:
         raise ValueError(f"Invalid type: {for_role}. Must be 'miner' or 'validator'.")
 
+    # --- Make sure we are not inbetween commit 1 and 2---    
+    current_phase = get_phase_from_api(config)
+    if current_phase.phase_name == phase_name_1 or current_phase.phase_name == phase_name_2:
+        logger.info(f"In between hash commit phase, waiting till {next_phase}")
+        wait_till(config, next_phase)
+        
     # --- Get block ranges for previous phases ---
     previous_phase_range = get_blocks_from_previous_phase_from_api(config)
 
@@ -611,6 +620,10 @@ def build_chain_checkpoints_from_previous_phase(
     else:
         signed_hash_chain_commits = []
         hash_chain_commits = []
+        logger.warning(
+            "Previous phase range unavailable; no chain commits fetched",
+            for_role=for_role,
+        )
 
     # --- Build chain checkpoints ---
     return build_chain_checkpoints(
