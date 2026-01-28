@@ -222,7 +222,9 @@ def sync_grad_across_validators(
                 )
             )
         
-        info = avg.step(allow_retries=False)
+        avg_step = avg.step(allow_retries=False, gather={"grad_sum": before_sum})
+        peers = list(avg_step.keys())
+        logger.info("sync grad peers", group=group_id, mode=avg.mode, grad_sum = avg_step)
         
         with torch.no_grad():
             after_sum = float(
