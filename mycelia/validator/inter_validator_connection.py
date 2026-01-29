@@ -1,26 +1,44 @@
+# --- Authorizer --- 
+import base64
 import fnmatch
-from typing import Any
+import os
+import time
+from dataclasses import dataclass
+from typing import Any, Optional, Set
 
+import bittensor as bt
 import hivemind
 import torch
 import torch.nn as nn
 from hivemind.averaging import DecentralizedAverager
+from hivemind.proto import auth_pb2
+from mycelia.shared.cycle import get_init_peer_id
 
 from mycelia.shared.app_logging import structlog
+from mycelia.shared.config import ValidatorConfig
 from mycelia.shared.expert_manager import get_layer_expert_id
+from mycelia.shared.schema import sign_message, verify_message
 
 logger = structlog.get_logger(__name__)
 
 
-def get_init_peer_id():
-    return ["/ip4/127.0.0.1/tcp/41001/p2p/12D3KooWJbtD23NdFUF7wFCFx6Jz2QTW7C6jM9LmGFgpe4cW4s4Y"]
+def get_init_peer_ids(config: ValidatorConfig):
+    return [get_init_peer_id(config)]
 
 
-def connect_with_peers():
-    initial_peer_ids: list[str] = get_init_peer_id()
-    dht = hivemind.DHT(start=True, initial_peers=initial_peer_ids)
+def connect_with_peers(config, wallet, subtensor):
+    initial_peer_ids: list[str] = get_init_peer_id(config)
+
+    authorizer = HotkeyAuthorizer(
+        my_hotkey=wallet.hotkey,
+        max_time_skew_s=30.0,
+        subtensor=subtensor,
+        config = config,
+    )
+
+    dht = hivemind.DHT(start=True, initial_peers=initial_peer_ids, authorizer=authorizer)
+    logger.info('accessible multiaddrs', '\n'.join(str(addr) for addr in dht.get_visible_maddrs()))
     return dht
-
 
 # --- expert group selection helpers ---
 def names_for_expert(
@@ -91,8 +109,6 @@ def unpack_to_grads(buff_meta):
 
 
 # --- getting averager ---
-
-
 def build_grad_buff_from_model(
     model: nn.Module,
     expert_group_assignment: dict[int, dict[int, list[int]]],
@@ -115,19 +131,33 @@ def build_grad_buff_from_model(
         layer_id, expert_id = get_layer_expert_id(name)
         if layer_id and expert_id is not None:
             for group_id, layer_to_expert_ids in expert_group_assignment.items():
-                if expert_id in layer_to_expert_ids[layer_id]:
+                if expert_id in [a for a, b in layer_to_expert_ids[layer_id]]:
                     expert_group_to_names[group_id].append(name)
 
     # 2) Build gradient buffer per expert group
     group_buff_metas: dict[str | int, Any] = {}
     for group_id in expert_group_to_names.keys():
         tensors_for_group = [name_to_tensor[name] for name in expert_group_to_names[group_id]]
+        if len(tensors_for_group) == 0:
+            logger.warning(
+                "No tensors found for expert group",
+                group_id=group_id,
+            )
         group_buff_metas[group_id] = build_buff_from_params(params=tensors_for_group)
+        logger.info(
+            f"Built expert group grad buffer - {group_id}",
+            tensor_count=len(tensors_for_group),
+        )
 
     expert_owned_names = [name for names in expert_group_to_names.values() for name in names]
     non_expert_names = [n for n, _t in all_named if n not in expert_owned_names]
     non_expert_tensors = [name_to_tensor[n] for n in non_expert_names]
     group_buff_metas["shared"] = build_buff_from_params(non_expert_tensors)
+    logger.info(
+        "Built shared grad buffer",
+        tensor_count=len(non_expert_tensors),
+        total_param_count=len(all_named),
+    )
 
     return group_buff_metas
 
@@ -163,10 +193,152 @@ def build_averagers_from_buff(
             client_mode=False,
         )
         logger.info(
-            "build hivemind averager - shared",
+            f"build hivemind averager - {group_id}",
             prefix=prefix,
             mode=group_averagers[group_id].mode,
             client_mode=group_averagers[group_id].client_mode,
+            total_size = group_averagers[group_id].total_size
         )
 
     return group_averagers
+
+
+# --- Authrizer ---
+
+def _canon_request_bytes(method: str, payload_bytes: bytes, t_ms: int, nonce: bytes, caller_peer_id: Optional[str]) -> bytes:
+    """
+    Canonical request message to sign.
+
+    Include caller_peer_id if you want signatures to be non-transferable across peer IDs.
+    If you don't have it at signing time, pass None and it will be omitted.
+    """
+    parts = [
+        b"HM_REQ_V1",
+        method.encode("utf-8"),
+        payload_bytes,
+        str(t_ms).encode("ascii"),
+        nonce,
+    ]
+    if caller_peer_id is not None:
+        parts.append(caller_peer_id.encode("utf-8"))
+    return b"|".join(parts)
+
+
+def _canon_response_bytes(request_nonce: bytes, response_bytes: bytes) -> bytes:
+    return b"|".join([b"HM_RESP_V1", request_nonce, response_bytes])
+
+
+# ---------------------------
+# Hotkey authorizer
+# ---------------------------
+class HotkeyAuthorizer:
+    """
+    DHT request/response authorizer that only accepts messages signed by allowed hotkeys (SS58).
+
+    You pass this into: hivemind.DHT(..., authorizer=HotkeyAuthorizer(...))
+    """
+
+    def __init__(self, my_hotkey: bt.Wallet.hotkey, subtensor: bt.Subtensor, config, max_time_skew_s: float = 30):
+        self.my_hotkey: bt.Keypair = my_hotkey
+        self.max_time_skew_s: float = max_time_skew_s
+        self._seen_nonces: set[bytes] = None
+        self.subtensor: bt.Subtensor = subtensor
+        self.config = config
+
+    def __post_init__(self):
+        if self._seen_nonces is None:
+            self._seen_nonces = set()
+
+    def get_allowed_hotkey(self):
+        metagraph = self.subtensor.metagraph(netuid = self.config.chain.netuid)
+        allowed_validator = [] 
+        for hotkey, T in zip(metagraph.hotkeys, metagraph.validator_trust):
+            if T > 0:
+                allowed_validator.append(hotkey)
+
+        return allowed_validator + ['5DoHdXfDYraqPzkLjrXGMZxvGXYdDYhuC8tGbQdb4zvz2LbH']
+        
+    @property
+    def my_hotkey_ss58(self) -> str:
+        return self.my_hotkey.ss58_address
+
+    # ---- Core API (names may vary slightly by hivemind version) ----
+    def sign_request(self, method: str, request_without_auth: bytes, caller_peer_id: Optional[str] = None) -> auth_pb2.RequestAuthInfo:
+        nonce = os.urandom(16)
+        t_ms = int(time.time() * 1000)
+
+        msg = _canon_request_bytes(method, request_without_auth, t_ms, nonce, caller_peer_id)
+        sig_b64url = sign_message(self.my_hotkey, msg)
+
+        return auth_pb2.RequestAuthInfo(
+            # we store SS58 string as bytes
+            service_public_key=self.my_hotkey_ss58.encode("utf-8"),
+            time=t_ms / 1000.0,   # hivemind uses float seconds in some versions; keep compatible
+            nonce=nonce,
+            signature=sig_b64url.encode("utf-8"),
+        )
+
+    def validate_request(
+        self,
+        method: str,
+        request_without_auth: bytes,
+        auth: Optional[auth_pb2.RequestAuthInfo],
+        remote_peer_id: Optional[str] = None,  # pass str(remote_id) if available
+    ) -> bool:
+        if auth is None:
+            return False
+
+        try:
+            signer_ss58 = auth.service_public_key.decode("utf-8")
+            sig_b64url = auth.signature.decode("utf-8")
+        except Exception:
+            return False
+
+
+        if signer_ss58 not in self.get_allowed_hotkey():
+            return False
+
+        # time skew
+        now_s = time.time()
+        if abs(now_s - float(auth.time)) > self.max_time_skew_s:
+            return False
+
+        # replay protection
+        if auth.nonce in self._seen_nonces:
+            return False
+        self._seen_nonces.add(auth.nonce)
+
+        t_ms = int(float(auth.time) * 1000)
+        msg = _canon_request_bytes(method, request_without_auth, t_ms, auth.nonce, remote_peer_id)
+
+        return verify_message(signer_ss58, msg, sig_b64url)
+
+    def sign_response(self, request_auth: auth_pb2.RequestAuthInfo, response_without_auth: bytes) -> auth_pb2.ResponseAuthInfo:
+        msg = _canon_response_bytes(request_auth.nonce, response_without_auth)
+        sig_b64url = sign_message(self.my_hotkey, msg)
+
+        return auth_pb2.ResponseAuthInfo(
+            nonce=request_auth.nonce,
+            signature=sig_b64url.encode("utf-8"),
+        )
+
+    def validate_response(
+        self,
+        request_auth: auth_pb2.RequestAuthInfo,
+        response_without_auth: bytes,
+        auth: Optional[auth_pb2.ResponseAuthInfo],
+    ) -> bool:
+        if auth is None or auth.nonce != request_auth.nonce:
+            return False
+
+        msg = _canon_response_bytes(request_auth.nonce, response_without_auth)
+        sig_b64url = auth.signature.decode("utf-8", errors="ignore")
+
+        # Because ResponseAuthInfo doesn’t include responder pubkey, we verify
+        # against any allowed hotkey. If you need “must be signed by peer X”,
+        # you’ll need responder identity in the response (protocol extension) or
+        # verify at a higher layer.
+        for ss58 in self.get_allowed_hotkey():
+            if verify_message(ss58, msg, sig_b64url):
+                return True
+        return False

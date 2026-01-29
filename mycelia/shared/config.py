@@ -65,7 +65,7 @@ class BaseConfig(BaseModel):
 # Sections
 # ---------------------------
 class ChainCfg(BaseConfig):
-    netuid: int = 348
+    netuid: int = 8
     uid: int = 1
     hotkey_ss58: str = ""
     coldkey_ss58: str = ""
@@ -79,13 +79,14 @@ class ChainCfg(BaseConfig):
 
 class CycleCfg(BaseConfig):
     cycle_length: int = 45  # validators run a validation round everytime when sub.block % cycle_length == 0
-    distribute_period: int = 2
+    distribute_period: int = 6
     train_period: int = 10
-    commit_period: int = 3
+    commit_period: int = 5
     submission_period: int = 10
-    validate_period: int = 10
-    merge_period: int = 10
-    owner_url: str = "http://149.137.225.62:7000"
+    validate_period: int = 18
+    merge_period: int = 35
+    owner_ip: str = "149.137.225.62"
+    owner_port: int = 7000
 
 
 class RunCfg(BaseConfig):

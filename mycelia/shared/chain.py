@@ -91,7 +91,7 @@ def commit_status(
     if not success:
         logger.warning("Failed to commit status to chain", status=data_dict)
     else:
-        logger.info("Committed status to chain", status=data_dict)
+        logger.info("Committed status to chain", block = subtensor.block, status=data_dict)
 
     return data_dict
 
@@ -147,7 +147,7 @@ def setup_chain_worker(config):
 
 def serve_axon(config: WorkerConfig, wallet: bittensor.Wallet, subtensor: bittensor.Subtensor):
     axon = bittensor.Axon(wallet=wallet, external_port=config.chain.port, ip=config.chain.ip)
-    axon.serve(netuid=348, subtensor=subtensor)
+    axon.serve(netuid=config.chain.netuid, subtensor=subtensor)
 
 
 # --- Chain weight submission ---

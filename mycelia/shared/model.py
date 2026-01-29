@@ -84,9 +84,7 @@ def freeze_parameters(
 def get_model_from_checkpoint(
     rank: int, config: MinerConfig | ValidatorConfig, expert_manager: ExpertManager
 ) -> tuple[nn.Module, ModelCheckpoint]:
-    resume = False
-    latest_checkpoint_path = None
-
+    resume = get_nested_attr(config, "ckpt.resume_from_ckpt", False)
     logger.info(
         "Get base model for checkpoint",
         group_ids=[config.task.exp.group_id] if config.role == "miner" else None,
@@ -101,7 +99,7 @@ def get_model_from_checkpoint(
     ).to(config.model.device)
 
     # load from checkpoint
-    if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
+    if resume:
         latest_checkpoint = select_best_checkpoint(
             primary_dir=config.ckpt.validator_checkpoint_path,
             secondary_dir=config.ckpt.checkpoint_path,
@@ -153,6 +151,7 @@ def load_model(
         wallet=wallet,
         expert_group_ids=[config.task.exp.group_id],
     )
+
     return get_model_from_checkpoint(rank=rank, config=config, expert_manager=expert_manager)
 
 
@@ -169,9 +168,11 @@ def fetch_model_from_chain_validator(
     chain_checkpoints = build_chain_checkpoints_from_previous_phase(config=config, subtensor=subtensor, for_role ="validator")
 
     # --- Filter to only newer than current model ---
-    chain_checkpoints = ChainCheckpoints(
-        checkpoints=[ckpt for ckpt in chain_checkpoints.checkpoints if ckpt > current_model_meta]
-    )
+    if current_model_meta is not None: 
+        chain_checkpoints = ChainCheckpoints(
+            checkpoints=[ckpt for ckpt in chain_checkpoints.checkpoints if ckpt > current_model_meta]
+        )
+        
     should_download = len(chain_checkpoints.checkpoints) > 0
 
     logger.info(

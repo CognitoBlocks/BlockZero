@@ -21,7 +21,7 @@ from mycelia.shared.checkpoint_helper import (
 )
 from mycelia.shared.checkpoints import ModelCheckpoint, build_local_checkpoint, delete_old_checkpoints
 from mycelia.shared.config import ValidatorConfig, parse_args
-from mycelia.shared.cycle import gather_validation_job, get_combined_validator_seed, wait_till
+from mycelia.shared.cycle import check_phase_expired, gather_validation_job, get_combined_validator_seed, wait_till
 from mycelia.shared.dataloader import get_dataloader
 from mycelia.shared.evaluate import evaluate_model
 from mycelia.shared.expert_manager import (
@@ -174,7 +174,7 @@ def setup_training(
         global_model,
         outer_optimizer,
         outer_scaler,
-        model_meta.global_ver,
+        model_meta.global_ver if model_meta else 0,
         expert_manager,
         train_dataloader,
     )
@@ -212,7 +212,30 @@ def sync_grad_across_validators(
 
         logger.info("begin sync grad across validator", group=group_id, mode=avg.mode)
         pack_grads(group_grad_buff_meta[group_id])
-        info = avg.step(allow_retries=False)
+        
+        with torch.no_grad():
+            before_sum = float(
+                sum(
+                    p.sum().item()
+                    for p in group_grad_buff_meta[group_id]["params"]
+                    if p.grad is not None
+                )
+            )
+        
+        avg_step = avg.step(allow_retries=False, gather={"grad_sum": before_sum})
+        peers = list(avg_step.keys())
+        logger.info("sync grad peers", group=group_id, mode=avg.mode, grad_sum = avg_step)
+        
+        with torch.no_grad():
+            after_sum = float(
+                sum(
+                    p.sum().item()
+                    for p in group_grad_buff_meta[group_id]["params"]
+                    if p.grad is not None
+                )
+            )
+            logger.info("grad buff sum change", group=group_id, before_sum=before_sum, after_sum=after_sum)
+
         unpack_to_grads(group_grad_buff_meta[group_id])
 
         logger.info(
@@ -337,7 +360,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
         model=base_model, expert_group_assignment=expert_manager.expert_group_assignment
     )
 
-    dht = connect_with_peers()
+    dht = connect_with_peers(config)
 
     group_averagers = build_averagers_from_buff(group_buff_metas=group_grad_buff_meta, dht=dht)
 
@@ -366,12 +389,15 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
 
     try:
         while True:
+
+            global_opt_step += 1
+
             # for each step, we run 1 backward
             # for each inner_opt_step, we run local optimization; gradient_accumulation_steps = 1 real step
             # for each global_opt_interval number of inner_opt_step, we synchronise weight from different ddp worker, and then run global optimization
 
             # === Wait till commit phase to submit random seed ===
-            wait_till(config, PhaseNames.miner_commit_1)
+            phase_response = wait_till(config, PhaseNames.miner_commit_1)
             logger.info("(0) Commit new seed for next validation")
 
             commit_status(
@@ -387,8 +413,10 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                 ),
             )
 
+            check_phase_expired(subtensor, phase_response)
+
             # === Wait till validation phase to start the validation procedure ===
-            wait_till(config, PhaseNames.validate)
+            phase_response = wait_till(config, PhaseNames.validate)
             logger.info("(1) Start validation pahse")
 
             # === Get miner ===
@@ -420,7 +448,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             logger.info("eval result", scores=score_aggregator.uid_score_pairs())
 
             # === aggragate miner gradient change locally ===
-            logger.info("(4) Aggregating miner gradient change")
+            logger.info("(4) Aggregating miner gradient change locally")
             asyncio.run(
                 aggregate_miner_gradient_change(
                     base_model=base_model.to("cpu"),
@@ -435,8 +463,10 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
 
             cleanup(global_model, base_model)
 
+            check_phase_expired(subtensor, phase_response)
+
             # === wait till merging phase and aggragate miner gradient change ===
-            wait_till(config, PhaseNames.merge)
+            phase_response = wait_till(config, PhaseNames.merge)
             logger.info("(5) Syncing gradient across validators")
             sync_grad_across_validators(group_averagers=group_averagers, group_grad_buff_meta=group_grad_buff_meta)
 
@@ -481,12 +511,14 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                 save_model_by_expert_group=True,
             )
 
+            check_phase_expired(subtensor, phase_response)
+
             # === Comit to chain for new model ===
             model_ckpt = build_local_checkpoint(ckpt_path)
             model_ckpt.expert_group = config.task.exp.group_id
             model_ckpt.sign_hash(wallet=wallet)
             current_model_hash = model_ckpt.model_hash
-            wait_till(config, PhaseNames.validator_commit_1)
+            phase_response = wait_till(config, PhaseNames.validator_commit_1)
             logger.info("(8) Commit new signed_model_hash for next validation")
             commit_status(
                 config,
@@ -497,7 +529,9 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
                 ),
             )
 
-            wait_till(config, PhaseNames.validator_commit_2)
+            check_phase_expired(subtensor, phase_response)
+
+            phase_response = wait_till(config, PhaseNames.validator_commit_2)
             logger.info("(9) Commit new signed_model_hash and model_hash for next validation")
             commit_status(
                 config,
@@ -544,9 +578,6 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
 
             metric_logger.log(metrics)
             cleanup(global_model, base_model)
-
-            # === Clean up ===
-            global_opt_step += 1
 
     except KeyboardInterrupt:
         logger.warning("KeyboardInterrupt received, shutting down validator loop")

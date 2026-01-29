@@ -18,7 +18,7 @@ from mycelia.shared.expert_manager import get_layer_expert_id
 from mycelia.shared.helper import get_model_hash, parse_dynamic_filename
 from mycelia.shared.schema import sign_message, verify_message
 
-from mycelia.shared.cycle import PhaseNames, get_blocks_from_previous_phase_from_api
+from mycelia.shared.cycle import PhaseNames, get_blocks_from_previous_phase_from_api, get_phase_from_api, wait_till
 from mycelia.shared.config import MinerConfig, ValidatorConfig, WorkerConfig
 from mycelia.shared.chain import (
     SignedModelHashChainCommit,
@@ -109,19 +109,20 @@ class ModelCheckpoint(BaseModel):
         return default
 
     def expired(self) -> bool:
-        if self.place == "local" and self.path is not None and not self.path.exists():
-            return True
-
-        expires_at = self._extra("expires_at")
-        if isinstance(expires_at, (int, float)):
-            return time.time() >= expires_at
-
-        expires_at_block = self._extra("expires_at_block")
-        current_block = self._extra("current_block")
-        if isinstance(expires_at_block, int) and isinstance(current_block, int):
-            return current_block >= expires_at_block
-
         return False
+        # if self.place == "local" and self.path is not None and not self.path.exists():
+        #     return True
+
+        # expires_at = self._extra("expires_at")
+        # if isinstance(expires_at, (int, float)):
+        #     return time.time() >= expires_at
+
+        # expires_at_block = self._extra("expires_at_block")
+        # current_block = self._extra("current_block")
+        # if isinstance(expires_at_block, int) and isinstance(current_block, int):
+        #     return current_block >= expires_at_block
+
+        # return False
 
     def hash_model(self) -> str:
         if self.path is None:
@@ -278,11 +279,11 @@ class ModelCheckpoint(BaseModel):
         return True
 
     def active(self) -> bool:
-        if self.expired():
-            return False
+        # if self.expired():
+        #     return False
 
-        if self.role == "validator" and not self.validated():
-            return False
+        # if self.role == "validator" and not self.validated():
+        #     return False
 
         return True
 
@@ -333,9 +334,6 @@ class ChainCheckpoints(BaseModel):
         return None
 
     def filter_checkpoints(self, for_role: str = "validator") -> ChainCheckpoints:
-        for ckpt in self.checkpoints:
-            logger.info("chain checkpoint A", ckpt=ckpt)
-
         # filter out incomplete checkpoints
         filtered = []
         for ckpt in self.checkpoints:
@@ -354,9 +352,6 @@ class ChainCheckpoints(BaseModel):
 
             filtered.append(ckpt)
 
-        for ckpt in filtered:
-            logger.info("chain checkpoint B", ckpt=ckpt)
-
         if not filtered:
             return ChainCheckpoints(checkpoints=[])
 
@@ -366,28 +361,27 @@ class ChainCheckpoints(BaseModel):
         for ckpt in filtered:
             if max_model_checkpoint and ckpt >= max_model_checkpoint:
                 version_filtered.append(ckpt)
-
-        for ckpt in version_filtered:
-            logger.info("chain checkpoint C", ckpt=ckpt)
+            else:
+                logger.info("filtering out checkpoint due to outdated", ckpt_ver=ckpt.global_ver, max_global_ver = max_model_checkpoint.global_ver)
 
         if not version_filtered:
             return ChainCheckpoints(checkpoints=[])
 
         # select majority model_hash
-        hash_counts = Counter([ckpt.model_hash for ckpt in filtered if ckpt.model_hash])
+        hash_counts = Counter([ckpt.model_hash for ckpt in version_filtered if ckpt.model_hash])
         if not hash_counts:
             return ChainCheckpoints(checkpoints=[])
 
         majority_hash, _count = hash_counts.most_common(1)[0]
 
-        majority_filtered = ChainCheckpoints(
-            checkpoints=[ckpt for ckpt in filtered if ckpt.model_hash == majority_hash]
-        )
+        majority_filtered = []
+        for ckpt in version_filtered:
+            if ckpt.model_hash == majority_hash:
+                majority_filtered.append(ckpt)
+            else:
+                logger.info("filtering out checkpoint due to non-major hash", majority_hash=majority_hash, ckpt_model_hash = ckpt.model_hash)
 
-        for ckpt in majority_filtered.checkpoints:
-            logger.info("chain checkpoint D", ckpt=ckpt)
-
-        return majority_filtered
+        return ChainCheckpoints(checkpoints = majority_filtered)
 
     def renew(self) -> None:
         before = len(self.checkpoints)
@@ -586,29 +580,50 @@ def build_chain_checkpoints_from_previous_phase(
     subtensor: bittensor.Subtensor,
     for_role: str = "validator",
 ) -> ChainCheckpoints:
+    logger.info("Building chain checkpoints from previous phase", for_role=for_role)
+    
     # --- Validate type ---
     if for_role == "miner":
         phase_name_1 = PhaseNames.miner_commit_1
         phase_name_2 = PhaseNames.miner_commit_2
+        next_phase = PhaseNames.submission
+        
     elif for_role == "validator":
         phase_name_1 = PhaseNames.validator_commit_1
         phase_name_2 = PhaseNames.validator_commit_2
+        next_phase = PhaseNames.distribute
 
     else:
         raise ValueError(f"Invalid type: {for_role}. Must be 'miner' or 'validator'.")
 
+    # --- Make sure we are not inbetween commit 1 and 2---    
+    current_phase = get_phase_from_api(config)
+    if current_phase.phase_name == phase_name_1 or current_phase.phase_name == phase_name_2:
+        logger.info(f"In between hash commit phase, waiting till {next_phase}")
+        wait_till(config, next_phase)
+        
     # --- Get block ranges for previous phases ---
     previous_phase_range = get_blocks_from_previous_phase_from_api(config)
-    commit_1_end_block = previous_phase_range[phase_name_1][1] + 1
-    commit_2_end_block = previous_phase_range[phase_name_2][1] + 1
 
-    # --- Get commits from chain at the right blocks ---
-    signed_hash_chain_commits: tuple[SignedModelHashChainCommit, bittensor.Neuron] = get_chain_commits(
-        config, subtensor, block=commit_1_end_block
-    )
-    hash_chain_commits: tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(
-        config, subtensor, block=commit_2_end_block
-    )
+    if previous_phase_range is not None: 
+        commit_1_end_block = previous_phase_range[phase_name_1][1] + 1
+        commit_2_end_block = previous_phase_range[phase_name_2][1] + 1
+
+        # --- Get commits from chain at the right blocks ---
+        signed_hash_chain_commits: tuple[SignedModelHashChainCommit, bittensor.Neuron] = get_chain_commits(
+            config, subtensor, block=commit_1_end_block
+        )
+        hash_chain_commits: tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(
+            config, subtensor, block=commit_2_end_block
+        )
+
+    else:
+        signed_hash_chain_commits = []
+        hash_chain_commits = []
+        logger.warning(
+            "Previous phase range unavailable; no chain commits fetched",
+            for_role=for_role,
+        )
 
     # --- Build chain checkpoints ---
     return build_chain_checkpoints(

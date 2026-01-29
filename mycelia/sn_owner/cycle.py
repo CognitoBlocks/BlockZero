@@ -115,29 +115,11 @@ class PhaseManager:
         The range corresponds to the most recent completed
         occurrence of that phase.
         """
-        block = self.subtensor.block
-        cycle_len = self.cycle_length
-
-        cycle_index = block % cycle_len  # position inside current cycle
-        cycle_start_block = block - cycle_index
-
-        result: dict[str, tuple[int, int]] = {}
-
-        start = 0
-        for phase in self.phases:
-            phase_start = start
-            phase_end = start + phase["length"] - 1
-
-            if cycle_index > phase_end:
-                # phase already completed in current cycle
-                start_block = cycle_start_block + phase_start
-            else:
-                # phase not completed yet → previous cycle
-                start_block = cycle_start_block - cycle_len + phase_start
-
-            end_block = start_block + phase["length"] - 1
-
-            result[phase["name"]] = (start_block, end_block)
-            start += phase["length"]
-
-        return result
+        next_phase_ranges = self.blocks_until_next_phase()
+        previous_ranges: dict[str, tuple[int, int]] = {}
+        for phase_name, (start_block, end_block, _blocks_until) in next_phase_ranges.items():
+            previous_ranges[phase_name] = (
+                start_block - self.cycle_length,
+                end_block - self.cycle_length,
+            )
+        return previous_ranges
