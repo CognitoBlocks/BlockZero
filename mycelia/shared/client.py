@@ -4,7 +4,6 @@ import hashlib
 import os
 import sys
 import time
-import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +62,7 @@ def submit_model(
     timeout_s: int = 300,
     retries: int = 3,
     backoff: float = 1.8,
+    expert_groups: list[int | str] | None = None,
     extra_form: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
@@ -92,15 +92,22 @@ def submit_model(
 
     logger.info("Model file validated", file_size=file_size, human_size=human(file_size))
 
+    model_byte = construct_model_message(model_path=model_path, expert_groups=expert_groups)
+    block_byte = construct_block_message(target_hotkey_ss58, block=block)
+    
     data = SignedModelSubmitMessage(
         target_hotkey_ss58=target_hotkey_ss58,
         origin_hotkey_ss58=my_hotkey.ss58_address,
-        block=block,
+        origin_block=block,
+        model_hex=model_byte.hex(),
+        block_hex=block_byte.hex(),
         signature=sign_message(
             my_hotkey,
-            construct_model_message(target_hotkey_ss58=target_hotkey_ss58, block=block, model_path=model_path),
+            model_byte + block_byte,
         ),
     ).to_dict()
+
+    logger.info("Constructed signed submission message", data=data, model_hash=model_byte.hex())
 
     if extra_form:
         # stringify non-bytes for safety in form data
@@ -230,7 +237,7 @@ def download_model(
         target_hotkey_ss58=target_hotkey_ss58,
         origin_hotkey_ss58=my_hotkey.ss58_address,
         expert_group_id=expert_group_id,
-        block=block,
+        origin_block=block,
         signature=sign_message(my_hotkey, construct_block_message(target_hotkey_ss58, block=block)),
     ).to_dict()
 

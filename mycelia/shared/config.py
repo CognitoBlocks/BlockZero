@@ -194,14 +194,18 @@ class OwnerCfg(BaseConfig):
     app_ip: str = "0.0.0.0"
     app_port: int = 7000
 
+
 class ExpertCfg(BaseConfig):
     data: DataCfg = DataCfg()
     group_id: int = 0
+
+
 class TaskCfg(BaseConfig):
     expert_group_name: str = "exp_math"
     base_path: Path = Path("expert_groups")
     path: Path | None = None
     exp: ExpertCfg = ExpertCfg()
+
 
 # ---------------------------
 # Top-level config
@@ -433,6 +437,8 @@ class WorkerConfig(BaseConfig):
             yaml.dump(data, f, sort_keys=False)
 
         logger.info(f"Wrote config to {target}")
+
+        return 
 
 
 class MinerConfig(WorkerConfig):

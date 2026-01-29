@@ -205,7 +205,7 @@ def save_state_dict_by_expert_group(
     for gid, sd in grouped_state.items():
         fname = f"model_expgroup_{gid}.pt" if gid != "shared" else "model_shared.pt"
         path = os.path.join(save_dir, fname)
-        logger.info("Saving for expert group", gid = gid, model_hash = get_model_hash(sd, hex = True))
+        logger.info("Saving for expert group", gid=gid, model_hash=get_model_hash(sd, hex=True))
         torch.save({"model_state_dict": sd}, path)
         paths[gid] = path
 
@@ -408,7 +408,7 @@ def compile_full_state_dict_from_path(checkpoint_path, expert_groups: list[int |
             state_dict = torch.load(fh, map_location=torch.device("cpu"))
             full_state_dict = full_state_dict | state_dict["model_state_dict"]
             logger.info(
-                f"loaded checkpoint file", path=f, loss=round(state_dict["loss"] if "loss" in state_dict else -1, 5)
+                "loaded checkpoint file", path=f, loss=round(state_dict["loss"] if "loss" in state_dict else -1, 5)
             )
 
     return full_state_dict

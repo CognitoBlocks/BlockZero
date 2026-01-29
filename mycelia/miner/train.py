@@ -22,9 +22,9 @@ from mycelia.shared.checkpoint_helper import (
     save_checkpoint,
 )
 from mycelia.shared.checkpoints import (
+    ModelCheckpoint,
     delete_old_checkpoints,
     select_best_checkpoint,
-    ModelCheckpoint,
 )
 from mycelia.shared.config import MinerConfig, parse_args
 from mycelia.shared.dataloader import get_dataloader
@@ -38,6 +38,7 @@ from mycelia.shared.modeling.mycelia import get_base_tokenizer
 configure_logging()
 logger = structlog.get_logger(__name__)
 torch.autograd.set_detect_anomaly(True)
+
 
 # this is for local DP only
 def init_process(local_rank: int, config: MinerConfig, world_size: int, fn: callable, backend: str = "nccl") -> None:
@@ -121,14 +122,14 @@ def setup_training(
     logger.info("(0) Setup training")
 
     # === model & Experts manager ===
-    logger.info(f"init - model and expert manager")
+    logger.info("init - model and expert manager")
     expert_manager = ExpertManager(config)
     model, model_checkpoint = load_model(rank, config, expert_manager, subtensor, wallet)
     model = model.to(device)
     model = freeze_parameters(model=model, expert_manager=expert_manager, expert_group_id=config.task.exp.group_id)
 
     # === optimizers ===
-    logger.info(f"init - optimizer")
+    logger.info("init - optimizer")
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     logger.info(f"trainable params: {len(trainable_params)} / total: {sum(1 for _ in model.parameters())}")
     if len(trainable_params) == 0:
@@ -141,7 +142,7 @@ def setup_training(
     inner_optimizer = torch.optim.AdamW(trainable_params, lr=config.opt.lr, weight_decay=0.1, betas=(0.9, 0.95))
 
     # === scheduler === (for inner optimizer)
-    logger.info(f"init - scheduler")
+    logger.info("init - scheduler")
     scheduler = get_cosine_schedule_with_warmup(
         inner_optimizer,
         num_warmup_steps=config.sched.warmup_steps,
@@ -149,22 +150,24 @@ def setup_training(
     )
 
     # === scaler ===
-    logger.info(f"init - inner scaler")
+    logger.info("init - inner scaler")
     precision = get_nested_attr(config, "model.precision", "fp16-mixed")
     if precision == "bf16-mixed" and torch.cuda.is_available() and not torch.cuda.is_bf16_supported():
         logger.warning("BF16 not supported on this device; falling back to fp16-mixed")
         precision = "fp16-mixed"
     inner_scaler = torch.amp.GradScaler(
         "cuda",
-        enabled=False# (precision == "fp16-mixed"),
+        enabled=False,  # (precision == "fp16-mixed"),
     )
 
     # === dataloader ===
-    logger.info(f"init - train dataloader")
-    train_dataloader = get_dataloader(config, rank=rank, world_size=config.task.exp.data.world_size, tokenizer=tokenizer)
+    logger.info("init - train dataloader")
+    train_dataloader = get_dataloader(
+        config, rank=rank, world_size=config.task.exp.data.world_size, tokenizer=tokenizer
+    )
 
     # === load checkpoint (if any) ===
-    logger.info(f"init - load checkpoint")
+    logger.info("init - load checkpoint")
     resume = False
 
     if get_nested_attr(config, "ckpt.resume_from_ckpt", False):
@@ -182,7 +185,7 @@ def setup_training(
             data_loader=train_dataloader,
         )
 
-    logger.info(f"setup_training: success!")
+    logger.info("setup_training: success!")
     return (
         model,
         inner_optimizer,
@@ -362,7 +365,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
 
             # === inner optimizer ===
             if not is_start_step and is_inner_optimizer_step:
-                old_model_hash = get_model_hash(model.state_dict(), hex = True)
+                old_model_hash = get_model_hash(model.state_dict(), hex=True)
 
                 for n, p in model.named_parameters():
                     if p.grad is None or torch.isnan(p.grad.sum()):
@@ -380,11 +383,11 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 step_skipped = inner_scaler.is_enabled() and step_result is None
 
                 logger.info(
-                        "GradScaler for optimizer step",
-                        grad_norm=grad_norm,
-                        grad_sum = sum_model_gradients(model),
-                        scale_before=scale_before,
-                        skipped = step_skipped
+                    "GradScaler for optimizer step",
+                    grad_norm=grad_norm,
+                    grad_sum=sum_model_gradients(model),
+                    scale_before=scale_before,
+                    skipped=step_skipped,
                 )
 
                 inner_scaler.update()
@@ -405,8 +408,8 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                 gc.collect()
                 torch.cuda.empty_cache()
 
-                new_model_hash = get_model_hash(model.state_dict(), hex = True)
-                logger.info(f"Updated model", old_model_hash=old_model_hash, new_model_hash=new_model_hash)
+                new_model_hash = get_model_hash(model.state_dict(), hex=True)
+                logger.info("Updated model", old_model_hash=old_model_hash, new_model_hash=new_model_hash)
 
             # === Log metric ===
             if (
@@ -514,7 +517,7 @@ def train_worker(rank: int, world_size: int, config: MinerConfig) -> None:
                         largest_avail_model=select_best_checkpoint(
                             primary_dir=config.ckpt.validator_checkpoint_path,
                             secondary_dir=config.ckpt.checkpoint_path,
-                        )
+                        ),
                     )
                     (
                         model,

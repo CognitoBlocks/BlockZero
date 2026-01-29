@@ -7,7 +7,7 @@ from threading import Lock, Thread
 import bittensor
 
 from mycelia.shared.app_logging import configure_logging, structlog
-from mycelia.shared.chain import MinerChainCommit, _subtensor_lock, commit_status
+from mycelia.shared.chain import MinerChainCommit, SignedModelHashChainCommit, commit_status
 from mycelia.shared.checkpoint_helper import (
     compile_full_state_dict_from_path,
 )
@@ -18,8 +18,7 @@ from mycelia.shared.client import submit_model
 from mycelia.shared.config import MinerConfig, parse_args
 from mycelia.shared.cycle import search_model_submission_destination, setup_chain_worker, wait_till
 from mycelia.shared.helper import get_model_hash
-from mycelia.shared.model import fetch_model_from_chain
-from mycelia.shared.schema import sign_message
+from mycelia.shared.model import fetch_model_from_chain_validator
 from mycelia.sn_owner.cycle import PhaseNames
 
 configure_logging()
@@ -71,7 +70,9 @@ def scheduler_service(
         download_queue.put(Job(job_type=JobType.DOWNLOAD))
 
         # --------- COMISSION SCHEDULING ---------
-        _, phase_end_block = wait_till(config, phase_name=PhaseNames.commit, poll_fallback_block=poll_fallback_block)
+        _, phase_end_block = wait_till(
+            config, phase_name=PhaseNames.miner_commit_1, poll_fallback_block=poll_fallback_block
+        )
         commit_queue.put(Job(job_type=JobType.COMMIT, phase_end_block=phase_end_block))
 
         # --------- SUBMISSION SCHEDULING ---------
@@ -103,7 +104,7 @@ def download_worker(
 
             current_model_meta.model_hash = current_model_hash
 
-            download_meta = fetch_model_from_chain(
+            download_meta = fetch_model_from_chain_validator(
                 current_model_meta,
                 config,
                 subtensor,
@@ -124,7 +125,7 @@ def download_worker(
             current_model_meta = select_best_checkpoint(
                 primary_dir=config.ckpt.validator_checkpoint_path,
                 secondary_dir=config.ckpt.checkpoint_path,
-                resume = config.ckpt.resume_from_ckpt,
+                resume=config.ckpt.resume_from_ckpt,
             )
 
             with shared_state.lock:
@@ -156,7 +157,11 @@ def commit_worker(
     while True:
         job = commit_queue.get()
         try:
-            latest_checkpoint = select_best_checkpoint(primary_dir=config.ckpt.checkpoint_path, resume=config.ckpt.resume_from_ckpt)
+            latest_checkpoint = select_best_checkpoint(
+                primary_dir=config.ckpt.checkpoint_path, resume=config.ckpt.resume_from_ckpt
+            )
+            latest_checkpoint.expert_group = config.task.exp.group_id
+            latest_checkpoint.sign_hash(wallet=wallet)
 
             with shared_state.lock:
                 shared_state.latest_checkpoint_path = latest_checkpoint.path
@@ -164,14 +169,28 @@ def commit_worker(
             if latest_checkpoint is None or latest_checkpoint.path is None:
                 raise FileNotReadyError("Not checkpoint found, skip commit.")
 
-            model_hash = get_model_hash(
-                compile_full_state_dict_from_path(latest_checkpoint.path, expert_groups=[config.task.exp.group_id]), hex = True
+            logger.info(
+                f"<{PhaseNames.miner_commit_1}> committing",
+                model_version=latest_checkpoint.global_ver,
+                hash=latest_checkpoint.model_hash,
+                path=latest_checkpoint.path,
             )
 
+            commit_status(
+                config,
+                wallet,
+                subtensor,
+                SignedModelHashChainCommit(
+                    signed_model_hash=latest_checkpoint.signed_model_hash,
+                ),
+            )
+
+            wait_till(config, PhaseNames.miner_commit_2)
+
             logger.info(
-                f"<{PhaseNames.commit}> committing",
+                f"<{PhaseNames.miner_commit_2}> committing",
                 model_version=latest_checkpoint.global_ver,
-                hash=model_hash,
+                hash=latest_checkpoint.model_hash,
                 path=latest_checkpoint.path,
             )
 
@@ -181,7 +200,7 @@ def commit_worker(
                 subtensor,
                 MinerChainCommit(
                     expert_group=config.task.exp.group_id,
-                    model_hash=model_hash,
+                    model_hash=latest_checkpoint.model_hash,
                     block=subtensor.block,
                     global_ver=latest_checkpoint.global_ver,
                     inner_opt=latest_checkpoint.inner_opt,
@@ -189,15 +208,15 @@ def commit_worker(
             )
 
         except FileNotReadyError as e:
-            logger.warning(f"<{PhaseNames.commit}> File not ready error: {e}")
+            logger.warning(f"<{PhaseNames.miner_commit_1}> File not ready error: {e}")
 
         except Exception as e:
-            logger.error(f"<{PhaseNames.commit}> Error while handling job: {e}")
+            logger.error(f"<{PhaseNames.miner_commit_1}> Error while handling job: {e}")
             traceback.print_exc()
 
         finally:
             commit_queue.task_done()
-            logger.info(f"<{PhaseNames.commit}> task completed.")
+            logger.info(f"<{PhaseNames.miner_commit_1}> task completed.")
 
 
 def submit_worker(
@@ -234,6 +253,7 @@ def submit_worker(
                 target_hotkey_ss58=destination_axon.hotkey,
                 block=block,
                 model_path=f"{latest_checkpoint_path}/model_expgroup_{config.task.exp.group_id}.pt",
+                expert_groups=[config.task.exp.group_id],
             )
 
             model_hash = get_model_hash(
@@ -245,7 +265,7 @@ def submit_worker(
                 destination={destination_axon.hotkey},
                 block=block,
                 hash=model_hash,
-                path=latest_checkpoint_path/"model_expgroup_{config.task.exp.group_id}.pt",
+                path=latest_checkpoint_path / "model_expgroup_{config.task.exp.group_id}.pt",
             )
 
         except FileNotReadyError as e:

@@ -1,18 +1,31 @@
 from __future__ import annotations
-from collections import Counter
-from functools import total_ordering
+
 import os
 import time
+from collections import Counter
+from functools import total_ordering
 from pathlib import Path
 from typing import Any
+
+import bittensor
 import fsspec
 from fsspec.generic import GenericFileSystem
 from pydantic import BaseModel, ConfigDict, Field
 
 from mycelia.shared.app_logging import structlog
 from mycelia.shared.checkpoint_helper import compile_full_state_dict_from_path
+from mycelia.shared.expert_manager import get_layer_expert_id
 from mycelia.shared.helper import get_model_hash, parse_dynamic_filename
-from mycelia.shared.schema import construct_block_message, construct_model_message, sign_message, verify_message
+from mycelia.shared.schema import sign_message, verify_message
+
+from mycelia.shared.cycle import PhaseNames, get_blocks_from_previous_phase_from_api
+from mycelia.shared.config import MinerConfig, ValidatorConfig, WorkerConfig
+from mycelia.shared.chain import (
+    SignedModelHashChainCommit,
+    WorkerChainCommit,
+    get_chain_commits,
+)
+from mycelia.shared.cycle import PhaseNames, get_blocks_from_previous_phase_from_api
 
 logger = structlog.get_logger(__name__)
 
@@ -35,13 +48,14 @@ def _hash_bytes(value: str | bytes) -> bytes:
     except ValueError:
         return value.encode()
 
+
 @total_ordering
 class ModelCheckpoint(BaseModel):
     model_config = ConfigDict(populate_by_name=True, arbitrary_types_allowed=True, extra="allow")
 
     signed_model_hash: str | None = Field(default=None, alias="h")
     model_hash: str | None = None
-    global_ver: int | None= None
+    global_ver: int | None = None
     expert_group: int | None = None
 
     inner_opt: int | None = None
@@ -51,14 +65,12 @@ class ModelCheckpoint(BaseModel):
 
     signature_required: bool = False
     signature_verified: bool = False
-    
+
     hash_required: bool = False
     hash_verified: bool = False
-    
+
     expert_group_check_required: bool = False
     expert_group_verified: bool = False
-
-    validated: bool = False  # for validator only
 
     def __eq__(self, other: object) -> bool:
         try:
@@ -73,7 +85,7 @@ class ModelCheckpoint(BaseModel):
             and self.model_hash == other_model_hash
         )
 
-    def __lt__(self, other: "ModelCheckpoint") -> bool:
+    def __lt__(self, other: ModelCheckpoint) -> bool:
         try:
             other_global_ver = other.global_ver  # type: ignore[attr-defined]
             other_inner_opt = other.inner_opt  # type: ignore[attr-defined]
@@ -81,60 +93,20 @@ class ModelCheckpoint(BaseModel):
             return NotImplemented
 
         # Compare by global_ver first
-        if self.global_ver != other_global_ver:
-            return self.global_ver < other_global_ver
+        self_global_ver = self.global_ver if isinstance(self.global_ver, int) else -1
+        other_global_ver = other_global_ver if isinstance(other_global_ver, int) else -1
+        if self_global_ver != other_global_ver:
+            return self_global_ver < other_global_ver
 
         # Then compare by inner_opt
-        return self.inner_opt < other_inner_opt
+        self_inner_opt = self.inner_opt if isinstance(self.inner_opt, int) else -1
+        other_inner_opt = other_inner_opt if isinstance(other_inner_opt, int) else -1
+        return self_inner_opt < other_inner_opt
 
     def _extra(self, key: str, default: Any | None = None) -> Any | None:
         if self.model_extra and key in self.model_extra:
             return self.model_extra[key]
         return default
-
-    def _infer_expert_group_from_path(self) -> int | None:
-        if self.path is None:
-            return None
-
-        if self.path.is_file():
-            name = self.path.name
-            if name.startswith("model_expgroup_") and name.endswith(".pt"):
-                try:
-                    return int(name[len("model_expgroup_") : -len(".pt")])
-                except ValueError:
-                    return None
-            return None
-
-        candidates = list(self.path.glob("model_expgroup_*.pt"))
-        if len(candidates) == 1:
-            name = candidates[0].name
-            try:
-                return int(name[len("model_expgroup_") : -len(".pt")])
-            except ValueError:
-                return None
-        return None
-
-    def _build_signature_message(self) -> bytes:
-        explicit_msg = self._extra("message")
-        if isinstance(explicit_msg, (bytes, bytearray)):
-            return bytes(explicit_msg)
-
-        target_hotkey_ss58 = self._extra("target_hotkey_ss58")
-        block = self._extra("block")
-
-        if self.path is not None and target_hotkey_ss58 is not None and block is not None:
-            return construct_model_message(self.path, target_hotkey_ss58, block)
-
-        if self.model_hash is None and self.path is not None:
-            self.hash_model()
-
-        if self.model_hash is None:
-            raise ValueError("model_hash is required to build a signature message")
-
-        message = _hash_bytes(self.model_hash)
-        if target_hotkey_ss58 is not None and block is not None:
-            message += construct_block_message(target_hotkey_ss58, block)
-        return message
 
     def expired(self) -> bool:
         if self.place == "local" and self.path is not None and not self.path.exists():
@@ -155,84 +127,92 @@ class ModelCheckpoint(BaseModel):
         if self.path is None:
             raise ValueError("path is required to hash a model")
 
-        state = compile_full_state_dict_from_path(self.path)
+        if self.expert_group is None:
+            raise ValueError("expert_group is required to hash a model")
+        
+        state = compile_full_state_dict_from_path(self.path, expert_groups=[self.expert_group])
         self.model_hash = get_model_hash(state, hex=True)
         self.hash_verified = True
         return self.model_hash
 
-    def sign_hash(self) -> str:
-        signer = self._extra("signer")
-        if signer is None:
-            raise ValueError("signer is required to sign the hash")
-
-        message = self._build_signature_message()
-        self.signed_model_hash = sign_message(signer, message)
-        self.signature_verified = True
-        return self.signed_model_hash
-
-    def commit_signature(self) -> dict[str, Any]:
-        if self.signed_model_hash is None:
-            self.sign_hash()
-
-        return {
-            "h": self.signed_model_hash,
-            "v": self.global_ver,
-            "e": self.expert_group,
-            "i": self.inner_opt,
-        }
-
-    def commit_hash(self) -> dict[str, Any]:
+    def sign_hash(self, wallet: bittensor.Wallet) -> str:
         if self.model_hash is None:
             self.hash_model()
 
-        return {
-            "h": self.model_hash,
-            "v": self.global_ver,
-            "e": self.expert_group,
-            "i": self.inner_opt,
-        }
+        self.signed_model_hash = sign_message(
+            wallet.hotkey,
+            self.model_hash,
+        )
+        self.signature_verified = True
+        return self.signed_model_hash
 
-    def verify_hash(self, hash: str | bytes | None) -> bool:
-        expected = _normalize_hash(hash or self.model_hash)
-        if expected is None:
-            self.hash_verified = False
-            return False
-
+    def verify_hash(self) -> bool:
         if self.path is None:
+            logger.warning("Hash verification failed: missing checkpoint path", checkpoint=self)
             self.hash_verified = False
             return False
 
-        actual = _normalize_hash(get_model_hash(compile_full_state_dict_from_path(self.path), hex=True))
-        self.hash_verified = actual == expected
-        if self.hash_verified:
-            self.model_hash = expected
+        state = compile_full_state_dict_from_path(self.path, expert_groups=[self.expert_group])
+        if not state:
+            logger.warning(
+                "Hash verification failed: empty state dict",
+                checkpoint_path=self.path,
+                expert_group=self.expert_group,
+            )
+            self.hash_verified = False
+            return False
+        expected_hash = get_model_hash(state, hex=True)
+
+        if expected_hash is None:
+            logger.warning(
+                "Hash verification failed: unable to compute expected hash",
+                checkpoint_path=self.path,
+                expert_group=self.expert_group,
+            )
+            self.hash_verified = False
+            return False
+
+        self.hash_verified = self.model_hash == expected_hash
+        if not self.hash_verified:
+            logger.info(
+                "Hash verification mismatch",
+                checkpoint_path=self.path,
+                expert_group=self.expert_group,
+                expected_hash=expected_hash,
+                provided_hash=self.model_hash,
+            )
+
         return self.hash_verified
 
-    def verify_signature(self, signature: str | None) -> bool:
-        sig = signature or self.signed_model_hash
-        origin_hotkey_ss58 = self._extra("origin_hotkey_ss58")
-        if sig is None or origin_hotkey_ss58 is None:
+    def verify_signature(self) -> bool:
+        if self.signed_model_hash is None or self.model_hash is None or self.hotkey is None:
+            logger.warning(
+                "Signature verification failed: missing signed hash, model hash, or hotkey",
+                signed_model_hash_present=self.signed_model_hash,
+                model_hash_present=self.model_hash,
+                hotkey_present=self.hotkey,
+                checkpoint=self,
+            )
             self.signature_verified = False
             return False
 
-        try:
-            message = self._build_signature_message()
-        except Exception as exc:
-            logger.warning("failed to build signature message", error=str(exc))
-            self.signature_verified = False
-            return False
+        self.signature_verified = verify_message(
+            self.hotkey, message=self.model_hash, signature_hex=self.signed_model_hash
+        )
+        if not self.signature_verified:
+            logger.info(
+                "Signature verification failed",
+                hotkey=self.hotkey,
+                model_hash=self.model_hash,
+                signed_model_hash=self.signed_model_hash,
+            )
 
-        self.signature_verified = verify_message(origin_hotkey_ss58, message, sig)
         return self.signature_verified
 
-    def verify_expert_group(self, signature: str | None = None) -> bool:
+    def verify_expert_group(self) -> bool:
         if not self.expert_group_check_required:
             self.expert_group_verified = True
             return True
-
-        inferred = self._infer_expert_group_from_path()
-        if inferred is not None and self.expert_group is None:
-            self.expert_group = inferred
 
         expected = self._extra("expected_expert_group")
         if expected is None:
@@ -240,21 +220,68 @@ class ModelCheckpoint(BaseModel):
 
         if expected is None:
             self.expert_group_verified = False
-        else:
-            self.expert_group_verified = self.expert_group == expected
+            return self.expert_group_verified
+
+        if self.expert_group != expected:
+            self.expert_group_verified = False
+            return self.expert_group_verified
+
+        expert_group_assignment = self._extra("expert_group_assignment")
+        if expert_group_assignment is None:
+            self.expert_group_verified = True
+            return self.expert_group_verified
+
+        if self.path is None:
+            self.expert_group_verified = False
+            return self.expert_group_verified
+
+        state_dict = compile_full_state_dict_from_path(self.path, expert_groups=[self.expert_group])
+        if not state_dict:
+            self.expert_group_verified = False
+            return self.expert_group_verified
+
+        allowed_layers = expert_group_assignment.get(expected, {})
+        for name in state_dict.keys():
+            layer_id, expert_id = get_layer_expert_id(name)
+            if layer_id is None or expert_id is None:
+                continue
+
+            mappings = allowed_layers.get(layer_id, [])
+            allowed_expert_ids = {my_expert_id for my_expert_id, _ in mappings}
+            if expert_id not in allowed_expert_ids:
+                self.expert_group_verified = False
+                return self.expert_group_verified
+
+        self.expert_group_verified = True
         return self.expert_group_verified
+
+    def validate(self) -> bool:
+        self.verify_hash()
+        self.verify_signature()
+        # self.verify_expert_group()
+        return self.validated()
+    
+    def validated(self) -> bool:
+        if self.expired():
+            logger.info("checkpoint expired", ckpt=self)
+            return False
+        if self.signature_required and not self.signature_verified:
+            logger.info("checkpoint signature not verified", ckpt=self)
+            return False
+        if self.hash_required and not self.hash_verified:
+            logger.info("checkpoint hash not verified", ckpt=self)
+            return False
+        # if self.expert_group_check_required and not self.expert_group_verified:
+        #     logger.info("checkpoint expert group not verified", ckpt=self)
+        #     return False
+
+        return True
 
     def active(self) -> bool:
         if self.expired():
             return False
 
-        if self.signature_required and not self.signature_verified:
-            return False
-        if self.hash_required and not self.hash_verified:
-            return False
-        if self.expert_group_check_required and not self.expert_group_verified:
-            return False
-        if self.role == "validator" and not self.validated:
+        if self.role == "validator" and not self.validated():
             return False
 
         return True
@@ -263,7 +290,7 @@ class ModelCheckpoint(BaseModel):
 class ChainCheckpoint(ModelCheckpoint):
     uid: int | None = Field(default=None, alias="h")
     ip: str | None = None
-    port: int | None= None
+    port: int | None = None
     hotkey: str | None = None
 
     def __init__(self, **data: Any):
@@ -298,30 +325,45 @@ class ChainCheckpoints(BaseModel):
     def __len__(self) -> int:
         return len(self.checkpoints)
 
-    def filter_checkpoints(self) -> ChainCheckpoints:
+    def get(self, hotkey: str) -> ChainCheckpoint | None:
+        for ckpt in self.checkpoints:
+            if ckpt.hotkey == hotkey:
+                return ckpt  
+            
+        return None
 
+    def filter_checkpoints(self, for_role: str = "validator") -> ChainCheckpoints:
         for ckpt in self.checkpoints:
             logger.info("chain checkpoint A", ckpt=ckpt)
 
         # filter out incomplete checkpoints
         filtered = []
         for ckpt in self.checkpoints:
-            if not ckpt.model_hash or not ckpt.global_ver or not ckpt.miner_seed or not ckpt.expert_group or not ckpt.uid or not ckpt.ip or not ckpt.port or not ckpt.hotkey:
+            if (
+                ckpt.signed_model_hash is None
+                or ckpt.model_hash is None
+                or ckpt.global_ver is None
+                or ckpt.expert_group is None
+                or (ckpt.miner_seed is None and for_role == "validator")
+                or ckpt.uid is None
+                or ckpt.ip is None
+                or ckpt.port is None
+                or ckpt.hotkey is None
+            ):
                 continue
-            
+
             filtered.append(ckpt)
-        
+
         for ckpt in filtered:
             logger.info("chain checkpoint B", ckpt=ckpt)
 
         if not filtered:
             return ChainCheckpoints(checkpoints=[])
-        
+
         # keep only checkpoints with the highest global_ver
         version_filtered = []
         max_model_checkpoint = max(filtered) if filtered else None
         for ckpt in filtered:
-            
             if max_model_checkpoint and ckpt >= max_model_checkpoint:
                 version_filtered.append(ckpt)
 
@@ -337,12 +379,14 @@ class ChainCheckpoints(BaseModel):
             return ChainCheckpoints(checkpoints=[])
 
         majority_hash, _count = hash_counts.most_common(1)[0]
-        
-        majority_filtered = ChainCheckpoints(checkpoints=[ckpt for ckpt in filtered if ckpt.model_hash == majority_hash])
+
+        majority_filtered = ChainCheckpoints(
+            checkpoints=[ckpt for ckpt in filtered if ckpt.model_hash == majority_hash]
+        )
 
         for ckpt in majority_filtered.checkpoints:
             logger.info("chain checkpoint D", ckpt=ckpt)
-        
+
         return majority_filtered
 
     def renew(self) -> None:
@@ -443,6 +487,24 @@ class Checkpoints(BaseModel):
 
         return None
 
+
+def build_local_checkpoint(path: Path, role: str = "miner") -> ModelCheckpoint | None:
+    if path.name.startswith(".tmp_") or "yaml" in path.name.lower():
+        return None
+
+    meta = parse_dynamic_filename(str(path))
+    if meta is None:
+        return None
+
+    return ModelCheckpoint(
+        global_ver=int(meta.get("globalver", 0)),
+        inner_opt=int(meta.get("inneropt", 0)),
+        path=path,
+        role=role,
+        place="local",
+    )
+
+
 def build_local_checkpoints(ckpt_dir: Path, role: str = "miner") -> ModelCheckpoints:
     fs, root = fsspec.core.url_to_fs(str(ckpt_dir))
     checkpoints: list[ModelCheckpoint] = []
@@ -472,40 +534,88 @@ def build_local_checkpoints(ckpt_dir: Path, role: str = "miner") -> ModelCheckpo
 
 
 def build_chain_checkpoints(
-    commits: list[tuple[Any, Any]],
+    signed_hash_chain_commits: list[tuple[Any, Any]],
+    hash_chain_commits: list[tuple[Any, Any]],
+    for_role: str = "validator",
 ) -> ChainCheckpoints:
     """
-    Build chain checkpoints from on-chain commits.
+    Build chain checkpoints by joining signed-hash commits with hash commits.
     """
-    checkpoints: list[ChainCheckpoint] = []
-    for commit, neuron in commits:
+    signed_by_hotkey: dict[str, str] = {}
+    for commit, neuron in signed_hash_chain_commits:
         try:
+            hotkey = getattr(neuron, "hotkey", None)
+            signed = getattr(commit, "signed_model_hash", None)
+            if hotkey and signed:
+                signed_by_hotkey[hotkey] = signed
+        except Exception:
+            logger.info("Cannot read signed hash commit", commit=commit)
+
+    checkpoints: list[ChainCheckpoint] = []
+    for commit, neuron in hash_chain_commits:
+        try:
+            hotkey = getattr(neuron, "hotkey", None)
             checkpoints.append(
                 ChainCheckpoint(
+                    signed_model_hash=signed_by_hotkey.get(hotkey) if hotkey else None,
                     model_hash=getattr(commit, "model_hash", None),
                     global_ver=getattr(commit, "global_ver", None),
                     expert_group=getattr(commit, "expert_group", None),
                     miner_seed=getattr(commit, "miner_seed", None),
-                    
+                    inner_opt=getattr(commit, "inner_opt", None),
                     uid=getattr(neuron, "uid", None),
                     ip=getattr(neuron.axon_info, "ip", None),
                     port=getattr(neuron.axon_info, "port", None),
-                    hotkey=getattr(neuron, "hotkey", None),
-
-                    signature_required = True,
-                    hash_required = True,
-                    expert_group_check_required = True,
+                    hotkey=hotkey,
+                    signature_required=True,
+                    hash_required=True,
+                    expert_group_check_required=True,
                 )
             )
         except Exception:
             logger.info("Cannot append commit", commit=commit)
 
-    filtered_checkpoints = ChainCheckpoints(checkpoints=checkpoints).filter_checkpoints()
+    filtered_checkpoints = ChainCheckpoints(checkpoints=checkpoints).filter_checkpoints(for_role=for_role)
 
     if len(filtered_checkpoints) == 0:
         return ChainCheckpoints(checkpoints=[])
+    return filtered_checkpoints
+
+def build_chain_checkpoints_from_previous_phase(
+    config: WorkerConfig,
+    subtensor: bittensor.Subtensor,
+    for_role: str = "validator",
+) -> ChainCheckpoints:
+    # --- Validate type ---
+    if for_role == "miner":
+        phase_name_1 = PhaseNames.miner_commit_1
+        phase_name_2 = PhaseNames.miner_commit_2
+    elif for_role == "validator":
+        phase_name_1 = PhaseNames.validator_commit_1
+        phase_name_2 = PhaseNames.validator_commit_2
+
     else:
-        return filtered_checkpoints
+        raise ValueError(f"Invalid type: {for_role}. Must be 'miner' or 'validator'.")
+
+    # --- Get block ranges for previous phases ---
+    previous_phase_range = get_blocks_from_previous_phase_from_api(config)
+    commit_1_end_block = previous_phase_range[phase_name_1][1] + 1
+    commit_2_end_block = previous_phase_range[phase_name_2][1] + 1
+
+    # --- Get commits from chain at the right blocks ---
+    signed_hash_chain_commits: tuple[SignedModelHashChainCommit, bittensor.Neuron] = get_chain_commits(
+        config, subtensor, block=commit_1_end_block
+    )
+    hash_chain_commits: tuple[WorkerChainCommit, bittensor.Neuron] = get_chain_commits(
+        config, subtensor, block=commit_2_end_block
+    )
+
+    # --- Build chain checkpoints ---
+    return build_chain_checkpoints(
+        signed_hash_chain_commits=signed_hash_chain_commits,
+        hash_chain_commits=hash_chain_commits,
+        for_role=for_role,
+    )
 
 def delete_old_checkpoints(checkpoint_path: str | Path, topk: int) -> list[str]:
     """
@@ -519,6 +629,7 @@ def delete_old_checkpoints(checkpoint_path: str | Path, topk: int) -> list[str]:
         fs.rm(str(model_meta.path), recursive=True)
         ckpt_deleted.append(str(model_meta.path))
     return ckpt_deleted
+
 
 def delete_old_checkpoints_by_hotkey(folder_path: Path) -> list[str]:
     """
@@ -560,13 +671,13 @@ def delete_old_checkpoints_by_hotkey(folder_path: Path) -> list[str]:
 
     return deleted_files
 
+
 def select_best_checkpoint(
     primary_dir: Path, secondary_dir: Path | None = None, resume: bool = True
 ) -> ModelCheckpoint | None:
-    
     if not resume:
         return None
-    
+
     primary = build_local_checkpoints(primary_dir, role="miner")
 
     if secondary_dir is None:

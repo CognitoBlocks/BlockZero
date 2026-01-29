@@ -2,23 +2,20 @@ import errno
 import os
 import shutil
 from copy import deepcopy
-from dataclasses import dataclass
-from functools import total_ordering
 from pathlib import Path
 
 import fsspec
 import torch
-from fsspec.generic import GenericFileSystem
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from mycelia.shared.app_logging import structlog
-from mycelia.shared.config import MinerConfig, ValidatorConfig
+from mycelia.shared.config import MinerConfig
 from mycelia.shared.expert_manager import (
     ExpertAssignments,
     ExpertManager,
     get_layer_expert_id,
 )
-from mycelia.shared.helper import get_model_hash, parse_dynamic_filename
+from mycelia.shared.helper import get_model_hash
 
 logger = structlog.getLogger(__name__)
 
@@ -59,9 +56,10 @@ logger = structlog.getLogger(__name__)
 #         # Then compare by inner_opt
 #         return self.inner_opt < other_inner_opt
 
-#====================
+
+# ====================
 # Checkpoint saving / loading
-#====================
+# ====================
 def save_state_dict_by_expert_group(
     state_dict: dict[str, torch.Tensor],
     expert_groups: ExpertAssignments,
@@ -115,7 +113,7 @@ def save_state_dict_by_expert_group(
     for gid, sd in grouped_state.items():
         fname = f"model_expgroup_{gid}.pt" if gid != "shared" else "model_shared.pt"
         path = os.path.join(save_dir, fname)
-        logger.info("Saving for expert group", gid = gid, model_hash = get_model_hash(sd, hex = True))
+        logger.info("Saving for expert group", gid=gid, model_hash=get_model_hash(sd, hex=True))
         torch.save({"model_state_dict": sd}, path)
         paths[gid] = path
 
@@ -294,18 +292,26 @@ def compile_full_state_dict_from_path(checkpoint_path, expert_groups: list[int |
         return filename == f"model_expgroup_{groups}.pt"
 
     full_state_dict = {}
-    model_files = get_model_files(checkpoint_path)
-    for f in model_files:
-        if expert_groups is not None and not _matches_expert_group(f.path, expert_groups):
-            logger.info("skipping checkpoint file", path=f, expert_groups=expert_groups)
-            continue
+    checkpoint_path = Path(checkpoint_path)
+    if checkpoint_path.is_file() and checkpoint_path.suffix == ".pt":
+        with checkpoint_path.open("rb") as fh:
+            full_state_dict = torch.load(fh, map_location=torch.device("cpu"))["model_state_dict"]
+            logger.info("loaded checkpoint file", path=fh)
 
-        with f as fh:
-            state_dict = torch.load(fh, map_location=torch.device("cpu"))
-            full_state_dict = full_state_dict | state_dict["model_state_dict"]
-            logger.info(
-                f"loaded checkpoint file", path=f, loss=round(state_dict["loss"] if "loss" in state_dict else -1, 5)
-            )
+    else:
+        model_files = get_model_files(checkpoint_path)
+    
+        for f in model_files:
+            if expert_groups is not None and not _matches_expert_group(f.path, expert_groups):
+                logger.info("skipping checkpoint file", path=f, expert_groups=expert_groups)
+                continue
+
+            with f as fh:
+                state_dict = torch.load(fh, map_location=torch.device("cpu"))
+                full_state_dict = full_state_dict | state_dict["model_state_dict"]
+                logger.info(
+                    "loaded checkpoint file", path=f, loss=round(state_dict["loss"] if "loss" in state_dict else -1, 5)
+                )
 
     return full_state_dict
 
@@ -377,9 +383,10 @@ def load_checkpoint(
 
     return global_state_dict["loss"]
 
-#====================
+
+# ====================
 # Checkpoint selection
-#====================
+# ====================
 
 # def start_model_from(
 #     rank: int, config: MinerConfig, primary_ckpt_path: Path, secondary_ckpt_path: Path | None
@@ -498,6 +505,7 @@ def load_checkpoint(
 #         ckpt_files,
 #         key=lambda item: (-item.global_ver, -item.inner_opt),
 #     )
+
 
 def get_model_files(checkpoint_path):
     checkpoint_path = Path(checkpoint_path)  # normalize to Path object

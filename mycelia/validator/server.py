@@ -1,11 +1,8 @@
 import contextlib
-import glob
 import hashlib
 import mimetypes
 import os
 import re
-import tempfile
-import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,14 +14,25 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from mycelia.shared.app_logging import configure_logging, structlog
-from mycelia.shared.chain import _subtensor_lock
-from mycelia.shared.checkpoints import select_best_checkpoint, delete_old_checkpoints_by_hotkey
+from mycelia.shared.checkpoints import delete_old_checkpoints_by_hotkey, select_best_checkpoint, build_chain_checkpoints_from_previous_phase
 from mycelia.shared.config import ValidatorConfig, parse_args
+from mycelia.shared.cycle import (
+    PhaseNames,
+    PhaseResponseLite,
+    get_blocks_from_previous_phase_from_api,
+    get_blocks_until_next_phase_from_api,
+    get_phase_from_api,
+    get_validator_miner_assignment,
+)
+from mycelia.shared.helper import parse_dynamic_filename, hex_to_byte
 from mycelia.shared.schema import (
     construct_block_message,
     construct_model_message,
     verify_message,
 )
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import HTTPException
 
 SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 configure_logging()
@@ -79,6 +87,128 @@ def get_upload_root() -> Path:
     p.mkdir(parents=True, exist_ok=True)
     return p
 
+class ValidatorStateCache:
+    def __init__(
+        self,
+        config: ValidatorConfig,
+        subtensor: bittensor.Subtensor,
+    ) -> None:
+        self._config = config
+        self._subtensor = subtensor
+        self._blocks_until_cache = None
+        self._previous_phase_cache = None
+        self._assignment_cache = None
+        self._assignment_cache_block = None
+        self._chain_checkpoints_cache = None
+        self._chain_checkpoints_cache_block = None
+        self._phase_cache = None
+        self._phase_cache_block = None
+
+    # ---- Private logic ----
+    def _should_refresh_for_validation(self, _last_cache_block: int | None = None) -> tuple[bool, PhaseResponseLite | None]:
+        current_phase = self.get_phase()
+        
+        if current_phase is None:
+            return False, None
+
+        should_refresh = False
+        if current_phase.phase_name != PhaseNames.submission:
+            # it is the submission phase
+            cycle_length = self._get_cycle_length_from_blocks_until_cache()
+            if (
+                self._assignment_cache is not None
+                and _last_cache_block is not None
+                and cycle_length is not None
+                and _last_cache_block + cycle_length < self._subtensor.block
+            ):
+                # the assignment cache is stale cause it is more than a cycle ago
+                should_refresh = True
+
+        elif _last_cache_block != current_phase.phase_start_block:
+            # it is not the submission phase
+            should_refresh = True
+
+        return should_refresh, current_phase
+    
+    # ---- Public getters ----
+    def get_phase(self):
+        block = self._subtensor.block
+        if (
+            self._phase_cache is None
+            or self._phase_cache_block is None
+            or block > self._phase_cache.phase_end_block
+        ):
+            current_phase = self.get_current_phase_locally()
+            
+            if current_phase is None:
+                # refresh
+                self._phase_cache = get_phase_from_api(self._config)
+                self._phase_cache_block = block
+
+            else:
+                self._phase_cache = current_phase
+
+        return self._phase_cache
+
+    def get_blocks_until_next_phase(self):
+        block = self._subtensor.block
+
+        max_end_block = None
+        if self._blocks_until_cache:
+            max_end_block = max(end for _, end, _ in self._blocks_until_cache.values())
+
+        if self._blocks_until_cache is None or (max_end_block is not None and block > max_end_block):
+            # refresh
+            blocks_until = get_blocks_until_next_phase_from_api(self._config)
+            if blocks_until is not None:
+                self._blocks_until_cache = blocks_until
+
+
+        return self._blocks_until_cache
+
+    def _get_cycle_length_from_blocks_until_cache(self):
+        blocks_until = self.get_blocks_until_next_phase()
+        if not blocks_until:
+            return None
+
+        return sum((end - start + 1) for start, end, _ in blocks_until.values())
+
+    def get_current_phase_locally(self):
+        blocks_until = self.get_blocks_until_next_phase()
+        if blocks_until is None:
+            return None
+
+        block = self._subtensor.block
+        for phase_name, (start, end, _) in blocks_until.items():
+            if start <= block <= end:
+                return PhaseResponseLite(
+                    phase_name=phase_name,
+                    phase_start_block=start,
+                    phase_end_block=end,
+                )
+
+        return None
+
+    def get_assignment(self):
+        should_refresh, current_phase = self._should_refresh_for_validation(_last_cache_block=self._assignment_cache_block)
+        if should_refresh:
+            self._assignment_cache = get_validator_miner_assignment(self._config, self._subtensor)
+            self._assignment_cache_block = current_phase.phase_start_block
+
+        return self._assignment_cache
+    
+    def get_chain_checkpoints(self):
+        should_refresh, current_phase = self._should_refresh_for_validation(_last_cache_block=self._chain_checkpoints_cache_block)
+
+        if should_refresh:
+            self._chain_checkpoints_cache = build_chain_checkpoints_from_previous_phase(
+                config=self._config,
+                subtensor=self._subtensor,
+                for_role="miner",
+            )
+            self._chain_checkpoints_cache_block = current_phase.phase_start_block
+
+        return self._chain_checkpoints_cache
 
 # ---- Schemas ----
 class SendBody(BaseModel):
@@ -93,6 +223,16 @@ async def _startup():
     configure_logging()  # <— configure ONCE
     structlog.get_logger(__name__).info("startup_ok")
 
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    logger.warning(
+        "HTTPException %s %s -> %s | detail=%r",
+        request.method,
+        request.url.path,
+        exc.status_code,
+        exc.detail,
+    )
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 # ---- Routes ----
 @app.get("/")
@@ -130,37 +270,50 @@ async def status():
     pass
 
 
+
 # miners / client get model from validator
 @app.get("/get-checkpoint")
 async def get_checkpoint(
     authorization: str | None = Header(default=None),
     target_hotkey_ss58: str = Form(None, description="Receiver's hotkey"),
     origin_hotkey_ss58: str = Form(None, description="Sender's hotkey"),
-    block: int = Form(
-        None, description="The block that the message was sent."
-    ),  # insecure, do not use this field for validation, TODO: change it to block hash?
+    origin_block: int = Form(None, description="The block that the message was sent."),  # insecure, do not use this field for validation, TODO: change it to block hash?
     signature: str = Form(None, description="Signed message"),
     expert_group_id: int | str | None = Form(None, description="List of expert groups to fetch"),
 ):
     """GET to download the configured checkpoint immediately."""
     require_auth(authorization)
 
+    logger.info("<download> Received get checkpoint request - verifying signature", from_hk=origin_hotkey_ss58, to_hk=target_hotkey_ss58, origin_block=origin_block, signature=signature)
     verify_message(
         origin_hotkey_ss58=origin_hotkey_ss58,
         message=construct_block_message(
             target_hotkey_ss58=target_hotkey_ss58,  # TODO: assert hotkey is valid within the metagraph
-            block=block,  # TODO: change to block hash and assert it is not too far from current
+            block=origin_block,  # TODO: change to block hash and assert it is not too far from current
         ),
         signature_hex=signature,
     )
 
+    validate_get_checkpoint_request(
+        config=config,
+        subtensor=subtensor,
+        origin_block=origin_block,
+        target_hotkey_ss58=target_hotkey_ss58,
+        origin_hotkey_ss58=origin_hotkey_ss58,
+        authorization=authorization,
+    )
+    
     latest_checkpoint = select_best_checkpoint(primary_dir=config.ckpt.checkpoint_path)
 
     if not latest_checkpoint or not latest_checkpoint.path:
         raise HTTPException(status_code=500, detail="CHECKPOINT_PATH env var is not set")
 
-
-    logger.info("<download> Received get checkpoint request", from_hk = origin_hotkey_ss58, block = block, expert_group_id=expert_group_id)
+    logger.info(
+        "<download> Received get checkpoint request",
+        from_hk=origin_hotkey_ss58,
+        block=origin_block,
+        expert_group_id=expert_group_id,
+    )
 
     if expert_group_id is not None:
         if expert_group_id == "shared":
@@ -182,13 +335,74 @@ async def get_checkpoint(
 
     return result
 
+def validate_get_checkpoint_request(
+    config: ValidatorConfig,
+    subtensor: bittensor.Subtensor,
+    origin_block: int,
+    target_hotkey_ss58: str | None,
+    origin_hotkey_ss58: str | None,
+    authorization: str | None = Header(default=None),
+) -> None:
+    
+    # check if the submission is to this validator
+    if target_hotkey_ss58 != config.chain.hotkey_ss58:
+        raise HTTPException(status_code=403, detail="Submission target hotkey does not match this validator")
+
+    # check if it is now the submission phase
+    phase = validator_state_cache.get_phase()
+    if phase is None or phase.phase_name != PhaseNames.submission:
+        raise HTTPException(status_code=409, detail="Submissions are only accepted during submission phase")
+
+    # check of the origin block is within the submission phase
+    if not (phase.phase_start_block <= origin_block <= phase.phase_end_block):
+        raise HTTPException(status_code=400, detail="Origin block is not within the submission phase")
+
+# miners submit checkpoint
+# @app.post("/submit-checkpoint-permit")
+def validate_submission_phase_and_assignment(
+    config: ValidatorConfig,
+    subtensor: bittensor.Subtensor,
+    origin_block: int,
+    target_hotkey_ss58: str | None,
+    origin_hotkey_ss58: str | None,
+    authorization: str | None = Header(default=None),
+) -> None:
+    
+    # check if the submission is to this validator
+    if target_hotkey_ss58 != config.chain.hotkey_ss58:
+        raise HTTPException(status_code=403, detail="Submission target hotkey does not match this validator")
+
+    # check if it is now the submission phase
+    phase = validator_state_cache.get_phase()
+    if phase is None or phase.phase_name != PhaseNames.submission:
+        raise HTTPException(status_code=409, detail="Submissions are only accepted during submission phase")
+
+    # check of the origin block is within the submission phase
+    if not (phase.phase_start_block <= origin_block <= phase.phase_end_block):
+        raise HTTPException(status_code=400, detail="Origin block is not within the submission phase")
+
+    # check if miner is assigned to this validator
+    assignment = validator_state_cache.get_assignment()
+    assigned_miners = assignment.get(config.chain.hotkey_ss58, [])
+    if origin_hotkey_ss58 not in assigned_miners:
+        raise HTTPException(status_code=403, detail="Miner is not assigned to this validator")
+
+    # check if the miner has already submitted during this phase
+    for path in Path(config.ckpt.miner_submission_path).glob(f"hotkey_{origin_hotkey_ss58}_block_*.pt"):
+        meta = parse_dynamic_filename(path.name)
+        block = meta.get("block")
+        if isinstance(block, int) and phase.phase_start_block <= block <= phase.phase_end_block:
+            raise HTTPException(status_code=409, detail=f"Miner already submitted during this phase, existing path {path}, existing range {phase.phase_start_block}-{phase.phase_end_block}")
 
 # miners submit checkpoint
 @app.post("/submit-checkpoint")
 async def submit_checkpoint(
     authorization: str | None = Header(default=None),
+    origin_block: int = Form(None, description="The block that the message was sent."),
     target_hotkey_ss58: str = Form(None, description="Receiver's hotkey"),
     origin_hotkey_ss58: str = Form(None, description="Sender's hotkey"),
+    model_hex: str = Form(None, description="The model bytes"),
+    block_hex: str = Form(None, description="The block bytes"),
     signature: str = Form(None, description="Signed message"),
     file: UploadFile = File(..., description="The checkpoint file, e.g. model.pt"),
 ):
@@ -200,7 +414,20 @@ async def submit_checkpoint(
       - checksum_sha256 (str, optional)
       - file (UploadFile, required)
     """
+
+    logger.info("<submit> Received checkpoint submission request", from_hk=origin_hotkey_ss58, to_hk=target_hotkey_ss58, block=origin_block, signature=signature, model_hex=model_hex, block_hex=block_hex)
     require_auth(authorization)
+
+    validate_submission_phase_and_assignment(
+        config=config,
+        origin_block=origin_block,
+        subtensor=subtensor,
+        target_hotkey_ss58=target_hotkey_ss58,
+        origin_hotkey_ss58=origin_hotkey_ss58,
+    )
+
+    assert model_hex is not None, "model_hex is required"
+    assert block_hex is not None, "block_hex is required"
 
     # Basic filename safety (avoid path tricks). We'll still rename it server-side.
     original_name = file.filename or ""
@@ -246,11 +473,26 @@ async def submit_checkpoint(
 
     logger.info(f"<submit> Stored checkpoint at {dest_path} ({bytes_written} bytes) sha256={computed}")
 
-    verify_message(
+    # get chain checkpoint for model hash, signature, and expert group verification
+    chain_checkpoints = validator_state_cache.get_chain_checkpoints()
+    logger.info(f"<submit> Fetched {len(chain_checkpoints)} chain checkpoints for validation.", chain_checkpoints=chain_checkpoints.checkpoints, origin_hotkey_ss58=origin_hotkey_ss58)
+    chain_checkpoint = chain_checkpoints.get(origin_hotkey_ss58)
+    if chain_checkpoint is None:
+        raise HTTPException(status_code=400, detail="No checkpoint found on chain for this miner")
+    chain_checkpoint.path = dest_path
+
+    logger.info(f"<submit> Validating submitted checkpoint at {dest_path}.", chain_checkpoint_model_hash=chain_checkpoint.model_hash, chain_model_byte = bytes.fromhex(chain_checkpoint.model_hash), wired_model_hex = model_hex)
+    validated = chain_checkpoint.validate() and verify_message(
         origin_hotkey_ss58=origin_hotkey_ss58,
-        message=construct_model_message(model_path=dest_path, target_hotkey_ss58=target_hotkey_ss58, block=block),
+        message=hex_to_byte(model_hex) + hex_to_byte(block_hex),
         signature_hex=signature,
-    )
+    ) # checkpoint validation and package signature validation
+    
+    if not validated:
+        # delete the invalid checkpoint
+        with contextlib.suppress(Exception):
+            dest_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="Submitted checkpoint failed validation.")
 
     logger.info(f"<submit> Verified submission at {dest_path}.")
 
@@ -269,6 +511,7 @@ if __name__ == "__main__":
 
     global config
     global subtensor
+    global validator_state_cache
 
     if args.path:
         config = ValidatorConfig.from_path(args.path)
@@ -278,5 +521,10 @@ if __name__ == "__main__":
     config.write()
 
     subtensor = bittensor.Subtensor(network=config.chain.network)
+
+    validator_state_cache = ValidatorStateCache(config=config, subtensor=subtensor)
+        
+    if validator_state_cache is None:
+        validator_state_cache = ValidatorStateCache(config=config, subtensor=subtensor)
 
     uvicorn.run(app, host=config.chain.ip, port=config.chain.port)

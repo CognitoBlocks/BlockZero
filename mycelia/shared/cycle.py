@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import hashlib
 import time
 from dataclasses import dataclass
@@ -16,7 +18,6 @@ from mycelia.shared.chain import (
     WorkerChainCommit,
     get_chain_commits,
     serve_axon,
-    _subtensor_lock,
 )
 from mycelia.shared.config import MinerConfig, ValidatorConfig, WorkerConfig
 from mycelia.shared.helper import h256_int, parse_dynamic_filename
@@ -25,7 +26,10 @@ from mycelia.validator.evaluator import MinerEvalJob
 configure_logging()
 logger = structlog.get_logger(__name__)
 
-
+class PhaseResponseLite(BaseModel):
+    phase_name: str
+    phase_start_block: int
+    phase_end_block: int
 class PhaseResponse(BaseModel):
     block: int
     cycle_length: int  # how long is one cycle
@@ -43,10 +47,13 @@ class PhaseResponse(BaseModel):
 class PhaseNames:
     distribute: str = "Distribute"  # miner download from validator
     train: str = "Train"  # miner trian
-    commit: str = "Commit"  # miner commit hash and  vlaidators commit seed
+    miner_commit_1: str = "MinerCommit1"  # miner commit signed_model_hash and  vlaidators commit seed
+    miner_commit_2: str = "MinerCommit2"  # miner commit model_hash
     submission: str = "Submission"  # submit model
     validate: str = "Validate"  # validator validate
     merge: str = "Merge"  # validator merge
+    validator_commit_1: str = "ValidatorCommit1"  # validator commit signed_model_hash
+    validator_commit_2: str = "ValidatorCommit2"  # validator commit model_hash
 
 
 def wait_till(config: MinerConfig, phase_name: PhaseNames, poll_fallback_block: int = 3):
@@ -68,19 +75,19 @@ def wait_till(config: MinerConfig, phase_name: PhaseNames, poll_fallback_block: 
 
 
 def should_act(config: MinerConfig, phase_name: PhaseNames, retry_blocks: int) -> tuple[bool, int, int]:
-    phase_response: PhaseResponse | None = get_phase(config)
+    phase_response: PhaseResponse | None = get_phase_from_api(config)
 
     if phase_response is None:
         should_submit = False
     else:
         should_submit = phase_response.phase_name == phase_name
 
-    blocks_till_next_phase = get_blocks_until_next_phase(config)
+    blocks_till_next_phase = get_blocks_until_next_phase_from_api(config)
 
     if blocks_till_next_phase is None:
         blocks_till = retry_blocks
     else:
-        blocks_till = blocks_till_next_phase[phase_name]
+        blocks_till = blocks_till_next_phase[phase_name][2]
 
     return should_submit, blocks_till, phase_response
 
@@ -213,7 +220,7 @@ def get_miners_from_commit(config, commits):
     return miners
 
 
-def get_phase(config: WorkerConfig) -> PhaseResponse | None:
+def get_phase_from_api(config: WorkerConfig) -> PhaseResponse | None:
     """
     Determine current phase based on block schedule.
 
@@ -245,7 +252,7 @@ def get_phase(config: WorkerConfig) -> PhaseResponse | None:
         return None
 
 
-def get_blocks_until_next_phase(config: WorkerConfig) -> PhaseResponse | None:
+def get_blocks_until_next_phase_from_api(config: WorkerConfig) -> dict[str, tuple[int, int, int]] | None:
     """
     Determine current phase based on block schedule.
 
@@ -278,7 +285,7 @@ def get_blocks_until_next_phase(config: WorkerConfig) -> PhaseResponse | None:
         return None
 
 
-def get_blocks_from_previous_phase(config: WorkerConfig) -> PhaseResponse | None:
+def get_blocks_from_previous_phase_from_api(config: WorkerConfig) -> PhaseResponse | None:
     """
     Determine current phase based on block schedule.
 
@@ -320,7 +327,11 @@ def load_submission_files(folder: str = "miner_submission"):
 
     files_dict = {}
     for file_name in folder_path.glob("*.pt"):
+        if file_name.name.startswith("._tmp"):
+            continue
         meta = parse_dynamic_filename(file_name.name)
+        if meta is None:
+            continue
         files_dict[file_name.name] = meta
 
     return files_dict
@@ -330,11 +341,12 @@ def gather_validation_job(config: ValidatorConfig, subtensor: bittensor.Subtenso
     validator_miner_assignment = get_validator_miner_assignment(config, subtensor)
     miner_assignment = validator_miner_assignment.get(config.chain.hotkey_ss58, [])
     miner_submission_files = load_submission_files(str(config.ckpt.miner_submission_path))
-    previous_phase_range = get_blocks_from_previous_phase(config)[PhaseNames.submission]
+    previous_phase_range = get_blocks_from_previous_phase_from_api(config)[PhaseNames.submission]
 
     hotkeys = subtensor.metagraph(netuid=config.chain.netuid).hotkeys
     miner_jobs = []
     for file_name, submission_meta in miner_submission_files.items():
+        logger.debug("Evaluating submission file", file_name=file_name, submission_meta=submission_meta)
         if (
             submission_meta["hotkey"] in miner_assignment
             and submission_meta["block"] >= previous_phase_range[0]

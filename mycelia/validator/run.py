@@ -14,13 +14,12 @@ from transformers import PreTrainedTokenizerBase
 
 from mycelia.miner.train_helper import get_status
 from mycelia.shared.app_logging import configure_logging, structlog
-from mycelia.shared.chain import ValidatorChainCommit, commit_status, setup_chain_worker
+from mycelia.shared.chain import SignedModelHashChainCommit, ValidatorChainCommit, commit_status, setup_chain_worker
 from mycelia.shared.checkpoint_helper import (
-    compile_full_state_dict_from_path,
     load_checkpoint,
     save_checkpoint,
 )
-from mycelia.shared.checkpoints import ModelCheckpoint, delete_old_checkpoints
+from mycelia.shared.checkpoints import ModelCheckpoint, build_local_checkpoint, delete_old_checkpoints
 from mycelia.shared.config import ValidatorConfig, parse_args
 from mycelia.shared.cycle import gather_validation_job, get_combined_validator_seed, wait_till
 from mycelia.shared.dataloader import get_dataloader
@@ -127,14 +126,14 @@ def setup_training(
     latest_checkpoint_path = None
 
     # === model & Experts manager ===
-    logger.info(f"setup training - load model and expert manager")
+    logger.info("setup training - load model and expert manager")
     expert_manager = ExpertManager(config)
     base_model, model_meta = load_model(rank, config, expert_manager, subtensor, wallet, current_model_meta)
     base_model = base_model.cpu()
     global_model = copy.deepcopy(base_model)
 
     # === optimizers ===
-    logger.info(f"setup training - load optimizer")
+    logger.info("setup training - load optimizer")
     outer_optimizer = torch.optim.SGD(
         global_model.named_parameters(),
         lr=config.opt.outer_lr,
@@ -143,18 +142,20 @@ def setup_training(
     )
 
     # === scaler ===
-    logger.info(f"setup training - load scaler")
+    logger.info("setup training - load scaler")
     outer_scaler = torch.amp.GradScaler(
         "cuda", enabled=(get_nested_attr(config, "model.precision", "") == "fp16-mixed")
     )
 
     # === dataloader ===
-    logger.info(f"setup training - load dataloader")
-    train_dataloader = get_dataloader(config, rank=rank, world_size=config.task.exp.data.world_size, tokenizer=tokenizer)
+    logger.info("setup training - load dataloader")
+    train_dataloader = get_dataloader(
+        config, rank=rank, world_size=config.task.exp.data.world_size, tokenizer=tokenizer
+    )
 
     # === load checkpoint (if any) ===
     logger.info(
-        f"setup training - load past checkpoint"
+        "setup training - load past checkpoint"
     )  # outer_optimizer is static, so dont really need to load checkpoint
     if get_nested_attr(config, "resume_from_ckpt", False) and resume and latest_checkpoint_path:
         _ = load_checkpoint(
@@ -167,7 +168,7 @@ def setup_training(
             data_loader=train_dataloader,
         )
 
-    logger.info(f"setup_training - completed successfully!")
+    logger.info("setup_training - completed successfully!")
     return (
         base_model,
         global_model,
@@ -370,7 +371,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             # for each global_opt_interval number of inner_opt_step, we synchronise weight from different ddp worker, and then run global optimization
 
             # === Wait till commit phase to submit random seed ===
-            wait_till(config, PhaseNames.commit)
+            wait_till(config, PhaseNames.miner_commit_1)
             logger.info("(0) Commit new seed for next validation")
 
             commit_status(
@@ -442,7 +443,7 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             # === global optimizer ===
             logger.info("(6) Running global model optimization step")
 
-            org_model_hash = get_model_hash(global_model.state_dict(), hex = True)
+            org_model_hash = get_model_hash(global_model.state_dict(), hex=True)
 
             run_global_optimization(
                 model=base_model,
@@ -457,8 +458,8 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             logger.info(
                 "Complete optimzation step",
                 org_model_hash=org_model_hash,
-                new_model_hash=get_model_hash(global_model.state_dict(), hex = True),
-                new_base_model_hash=get_model_hash(base_model.state_dict(), hex = True),
+                new_model_hash=get_model_hash(global_model.state_dict(), hex=True),
+                new_base_model_hash=get_model_hash(base_model.state_dict(), hex=True),
             )
 
             cleanup(global_model, base_model)
@@ -481,14 +482,30 @@ def run(rank: int, world_size: int, config: ValidatorConfig) -> None:
             )
 
             # === Comit to chain for new model ===
-            current_model_hash = get_model_hash(compile_full_state_dict_from_path(ckpt_path), hex = True)
+            model_ckpt = build_local_checkpoint(ckpt_path)
+            model_ckpt.expert_group = config.task.exp.group_id
+            model_ckpt.sign_hash(wallet=wallet)
+            current_model_hash = model_ckpt.model_hash
+            wait_till(config, PhaseNames.validator_commit_1)
+            logger.info("(8) Commit new signed_model_hash for next validation")
+            commit_status(
+                config,
+                wallet,
+                subtensor,
+                SignedModelHashChainCommit(
+                    signed_model_hash=model_ckpt.signed_model_hash,
+                ),
+            )
+
+            wait_till(config, PhaseNames.validator_commit_2)
+            logger.info("(9) Commit new signed_model_hash and model_hash for next validation")
             commit_status(
                 config,
                 wallet,
                 subtensor,
                 ValidatorChainCommit(
-                    model_hash=current_model_hash,
-                    global_ver=global_opt_step,
+                    model_hash=model_ckpt.model_hash,
+                    global_ver=model_ckpt.global_ver,
                     expert_group=config.task.exp.group_id,
                     miner_seed=0,
                     block=subtensor.block,
