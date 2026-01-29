@@ -342,6 +342,36 @@ def get_blocks_from_previous_phase_from_api(config: WorkerConfig) -> PhaseRespon
         logger.exception("Invalid JSON from %s: %s", url, e)
         return None
 
+def get_init_peer_id(config: WorkerConfig) -> str | None:
+    """
+    Determine current phase based on block schedule.
+
+    Returns:
+        str: one of ["training", "submission", "waiting"]
+    """
+    base_url = f"http://{config.cycle.owner_ip}:{config.cycle.owner_port}"
+    url = f"{base_url}/get_init_peer_id"
+
+    try:
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+
+    except requests.exceptions.HTTPError as e:
+        r = e.response
+        status = r.status_code if r is not None else None
+        body_snippet = r.text[:500] if (r is not None and r.text) else ""
+        logger.exception("HTTPError calling %s (status=%s). Body (first 500 chars): %r", url, status, body_snippet)
+        return None
+
+    except requests.exceptions.RequestException as e:
+        logger.exception("RequestException calling %s: %s", url, e)
+        return None
+
+    except ValueError as e:
+        # JSON decoding failed
+        logger.exception("Invalid JSON from %s: %s", url, e)
+        return None
 
 def load_submission_files(folder: str = "miner_submission"):
     """
